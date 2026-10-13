@@ -27,6 +27,7 @@ library;
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:dart_ui/dart_ui.dart';
 import 'package:dart_ui/src/backends/macos/macos_backend.dart';
@@ -278,6 +279,9 @@ Future<void> _applicationHalf(
   final controller = TextEditingController();
   var presses = 0;
   final dropped = <List<String>>[];
+  final pinch = <String>[];
+  var pinchScale = 0.0;
+  var pinchRotation = 0.0;
   final Application app = await Application.start(
     rootWidget: Column(
       children: <Widget>[
@@ -303,13 +307,28 @@ Future<void> _applicationHalf(
             child: const ColoredBox(color: Color(0xFF203040)),
           ),
         ),
+        SizedBox(
+          width: 280,
+          height: 40,
+          child: GestureDetector(
+            behavior: GestureHitTestBehavior.opaque,
+            onScaleStart: (_) => pinch.add('start'),
+            onScaleUpdate: (ScaleUpdateDetails details) {
+              pinch.add('update');
+              pinchScale = details.scale;
+              pinchRotation = details.rotation;
+            },
+            onScaleEnd: (_) => pinch.add('end'),
+            child: const ColoredBox(color: Color(0xFF304020)),
+          ),
+        ),
       ],
     ),
     backends: PlatformBackendResolver.defaultBackends(),
     presentations: PlatformBackendResolver.defaultPresentations(),
     options: ApplicationOptions(
       title: 'dart_ui input smoke (application)',
-      size: const Size(320, 180),
+      size: const Size(320, 220),
       environment: Platform.environment,
     ),
   );
@@ -510,6 +529,31 @@ Future<void> _applicationHalf(
     await _pump(app, const Duration(milliseconds: 100));
     record('INPUT_APP_DRAG_OUT', dragOut != null,
         'action=$dragOut failure=$dragOutFailure');
+
+    // A trackpad pinch that turns as it goes: AppKit's two streams,
+    // interleaved, entering the view's gesture path below the NSEvent (no
+    // public API builds a gesture event). One scale gesture must come out,
+    // with the product of the magnifications and the turn in radians,
+    // clockwise.
+    native
+      ..synthesizeInput('SYNTH_GESTURE magnify begin 0 140 160')
+      ..synthesizeInput('SYNTH_GESTURE magnify change 0.25 140 160')
+      ..synthesizeInput('SYNTH_GESTURE rotate begin 0 140 160')
+      ..synthesizeInput('SYNTH_GESTURE magnify change 0.25 140 160')
+      ..synthesizeInput('SYNTH_GESTURE rotate change 15 140 160')
+      ..synthesizeInput('SYNTH_GESTURE magnify end 0 140 160')
+      ..synthesizeInput('SYNTH_GESTURE rotate end 0 140 160');
+    await _pump(app, const Duration(milliseconds: 300));
+    record(
+        'INPUT_APP_PINCH',
+        pinch.isNotEmpty &&
+            pinch.first == 'start' &&
+            pinch.last == 'end' &&
+            pinch.where((String step) => step == 'start').length == 1 &&
+            (pinchScale - 1.5625).abs() < 1e-3 &&
+            (pinchRotation + 15 * math.pi / 180).abs() < 1e-3,
+        'steps=${pinch.join(',')} scale=${pinchScale.toStringAsFixed(4)} '
+            'rotation=${pinchRotation.toStringAsFixed(4)}');
 
     // Cmd+A, Cmd+C: Command arrives as meta, and the field reads the Mac
     // convention, so this is copy - checked from outside the process.

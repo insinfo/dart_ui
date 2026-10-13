@@ -3691,9 +3691,20 @@ WindowServer a cada mudança no backend.
   área de rastreamento do ponteiro;
 - [x] CPU — `macos-iosurface`, hoje o fallback do Metal (§21.6);
 - [ ] Retina — a tela daqui e o runner são 1x; ver §21.6;
-- [~] mouse/trackpad — cliques, botões, contagem de cliques, rolagem precisa
-  e entrada/saída do ponteiro (`INPUT_APP_*` na sonda de input); gestos de
-  trackpad (pinça, rotação) não são lidos;
+- [x] mouse/trackpad — cliques, botões, contagem de cliques, rolagem precisa
+  e entrada/saída do ponteiro (`INPUT_APP_*` na sonda de input). Desde
+  13/10/2026, pinça e rotação: `magnifyWithEvent:`/`rotateWithEvent:` na view
+  do host viram `GESTURE=`, e o `MacosGestureAccumulator` junta as duas
+  correntes do AppKit num `PointerPanZoomEvent` (início, atualizações, fim;
+  escala e rotação totais, como os `PointerPanZoom*` do Flutter). O
+  `ScaleGestureRecognizer` e o `PointerListener(onPointerPanZoom:)` o recebem
+  pelo resolvedor de sinais (o mais interno ganha), e o gesto ignora a
+  captura do ponteiro do mouse. `INPUT_APP_PINCH=PASS` pela sonda, com
+  `SYNTH_GESTURE` entrando abaixo do `NSEvent` (não há API pública para
+  construir um evento de gesto). No Windows, a pinça do touchpad continua
+  chegando como Ctrl+roda. `PointerEvent` é `sealed`: um `switch`
+  exaustivo sobre ele em código de aplicação precisa do caso
+  `PointerPanZoomEvent()` (dois exemplos precisaram);
 - [x] teclado — teclas, modificadores e teclas mortas, com a convenção de
   edição do Mac (`INPUT_APP_DEAD_KEYS`);
 - [x] IME — pré-edição, commit e texto ao redor do cursor; ver §20.10;

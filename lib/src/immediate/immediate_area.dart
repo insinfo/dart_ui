@@ -148,6 +148,8 @@ final class RenderImmediate extends RenderBox
         _input
           ..down = false
           ..released = true;
+      case PointerPanZoomEvent():
+        break;
       case PointerScrollEvent():
         final double unit =
             event.scrollDeltaUnit == ScrollDeltaUnit.lines ? 40 : 1;

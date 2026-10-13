@@ -238,7 +238,7 @@ class TapGestureRecognizer extends PrimaryPointerGestureRecognizer {
       case PointerCancelEvent():
         concede();
       case PointerDownEvent():
-      case PointerScrollEvent():
+      case PointerScrollEvent() || PointerPanZoomEvent():
         break;
     }
   }

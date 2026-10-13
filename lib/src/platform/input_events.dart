@@ -15,7 +15,15 @@ sealed class PlatformInputEvent extends PlatformWindowEvent {
   final Duration timestamp;
 }
 
-enum PointerKind { mouse, touch, stylus }
+enum PointerKind {
+  mouse,
+  touch,
+  stylus,
+
+  /// A touchpad's gestures - a pinch, a two-finger turn - which arrive as
+  /// [PointerPanZoomEvent]s and never as pointers of their own.
+  trackpad,
+}
 
 enum PointerButton { primary, secondary, middle, forward, back }
 
@@ -149,6 +157,44 @@ final class PointerScrollEvent extends PointerEvent {
 
   /// Whether [scrollDelta] is expressed as logical pixels or discrete lines.
   final ScrollDeltaUnit scrollDeltaUnit;
+}
+
+/// Where a trackpad gesture is in its life.
+enum PanZoomPhase { start, update, end }
+
+/// A trackpad pinch or two-finger rotation - Flutter's
+/// `PointerPanZoomStart`/`Update`/`End` folded into one event with a
+/// [phase].
+///
+/// Not two pointers: a trackpad reports the gesture, never the fingers, so
+/// there is nothing a recognizer counting pointers could see. The values
+/// are **cumulative from [PanZoomPhase.start]** - the platform's own deltas
+/// summed by the backend - so a consumer that missed an update still reads
+/// the right total, and one that only wants the end has it.
+final class PointerPanZoomEvent extends PointerEvent {
+  const PointerPanZoomEvent({
+    required super.windowId,
+    required super.generation,
+    required super.timestamp,
+    required super.pointerId,
+    required super.kind,
+    required super.logicalPosition,
+    required this.phase,
+    this.scale = 1,
+    this.rotation = 0,
+    this.pan = Offset.zero,
+  });
+
+  final PanZoomPhase phase;
+
+  /// How much larger the content should be than at the start: 2 is twice.
+  final double scale;
+
+  /// The turn since the start, in radians, clockwise on screen.
+  final double rotation;
+
+  /// How far the gesture has moved since the start, in logical pixels.
+  final Offset pan;
 }
 
 /// A physical key transition.

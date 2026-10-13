@@ -123,7 +123,7 @@ final class PointerRouter {
         _gestures.arena.sweep(event.pointerId);
       case PointerCancelEvent():
         _gestures.arena.cancel(event.pointerId);
-      case PointerScrollEvent():
+      case PointerScrollEvent() || PointerPanZoomEvent():
         _gestures.signalResolver.resolve(event);
       case PointerMoveEvent():
         break;
@@ -145,8 +145,14 @@ final class PointerRouter {
     // RenderBox.globalToLocal; targets that need to know whether it is inside
     // them check their own bounds. Neither can be expressed by routing to
     // whoever is underneath.
+    //
+    // A trackpad pinch is not this pointer's at all - it shares the mouse's
+    // id because the platform reports one cursor - so it goes to what is
+    // under the cursor even while a button holds a capture elsewhere.
     final List<PointerEventTarget>? captured = _captures[event.pointerId];
-    if (captured != null && event is! PointerDownEvent) {
+    if (captured != null &&
+        event is! PointerDownEvent &&
+        event is! PointerPanZoomEvent) {
       _path.reset();
       for (final PointerEventTarget target in captured) {
         target.handlePointerEvent(event);

@@ -482,6 +482,7 @@ final class RenderSplitDivider extends RenderBox with ControlBehavior {
         _dragOrigin = null;
       case PointerDownEvent():
       case PointerScrollEvent():
+      case PointerPanZoomEvent():
     }
   }
 

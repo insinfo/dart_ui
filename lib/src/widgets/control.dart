@@ -242,6 +242,7 @@ mixin ControlBehavior on RenderBox
         _pressed = false;
         markNeedsPaint();
       case PointerScrollEvent():
+      case PointerPanZoomEvent():
       case PointerDownEvent():
       case PointerUpEvent():
     }

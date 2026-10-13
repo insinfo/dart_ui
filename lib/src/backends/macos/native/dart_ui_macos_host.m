@@ -44,6 +44,11 @@ static const size_t kDartUiMaximumLineBytes = 8192;
 - (void)hostView:(DartUiHostView *)view exposedRect:(NSRect)rect;
 - (void)hostView:(DartUiHostView *)view pointerInside:(BOOL)inside;
 - (void)hostView:(DartUiHostView *)view
+         gesture:(NSString *)kind
+           phase:(NSEventPhase)phase
+           value:(double)value
+              at:(NSPoint)point;
+- (void)hostView:(DartUiHostView *)view
       insertText:(NSString *)text
        committing:(BOOL)committing;
 - (void)hostView:(DartUiHostView *)view
@@ -543,6 +548,31 @@ static const unsigned long long kA11yActionDecrement = 1ull << 4;
 
 - (void)scrollWheel:(NSEvent *)event {
   [self.sink hostView:self reportEvent:@"scroll" of:event];
+}
+
+// A trackpad pinch and a two-finger turn. Not in the event monitor's mask:
+// they are only meaningful to the view under the pointer, which is where
+// AppKit sends them. SYNTH_GESTURE enters at reportGesture, below the
+// NSEvent, because AppKit has no public way to build a gesture event.
+- (void)magnifyWithEvent:(NSEvent *)event {
+  [self reportGesture:@"magnify"
+                phase:event.phase
+                value:event.magnification
+                   at:[self convertPoint:event.locationInWindow fromView:nil]];
+}
+
+- (void)rotateWithEvent:(NSEvent *)event {
+  [self reportGesture:@"rotate"
+                phase:event.phase
+                value:event.rotation
+                   at:[self convertPoint:event.locationInWindow fromView:nil]];
+}
+
+- (void)reportGesture:(NSString *)kind
+                phase:(NSEventPhase)phase
+                value:(double)value
+                   at:(NSPoint)point {
+  [self.sink hostView:self gesture:kind phase:phase value:value at:point];
 }
 
 // The pointer leaving the window has no NSEvent of its own unless something
@@ -1430,6 +1460,30 @@ static NSAccessibilityRole DartUiA11yRole(NSString *role) {
   fflush(stdout);
 }
 
+// GESTURE=<kind>:<phase>:<value>:<x>:<y>:<machTime>. The phase of an event
+// outside any phase - some magnify events carry none - is "once".
+- (void)hostView:(DartUiHostView *)view
+         gesture:(NSString *)kind
+           phase:(NSEventPhase)phase
+           value:(double)value
+              at:(NSPoint)point {
+  (void)view;
+  if (!self.protocolReady || self.terminating) return;
+  const char *name = "once";
+  if (phase & NSEventPhaseBegan) {
+    name = "begin";
+  } else if (phase & NSEventPhaseChanged) {
+    name = "change";
+  } else if (phase & NSEventPhaseEnded) {
+    name = "end";
+  } else if (phase & NSEventPhaseCancelled) {
+    name = "cancel";
+  }
+  printf("GESTURE=%s:%s:%.6f:%.4f:%.4f:%llu\n", kind.UTF8String, name, value,
+         point.x, point.y, (unsigned long long)mach_absolute_time());
+  fflush(stdout);
+}
+
 - (void)hostView:(DartUiHostView *)view exposedRect:(NSRect)rect {
   (void)view;
   if (!self.protocolReady || self.terminating) return;
@@ -2031,6 +2085,7 @@ static void DartUiPrintClipboardPayload(long long request, NSString *payload) {
 //   SYNTH_KEY <down|up> <keyCode> <flags> <characters-b64|-> <ignoring-b64|->
 //   SYNTH_SCROLL <x> <y> <deltaX> <deltaY> <precise 0|1>
 //   SYNTH_POINTER <enter|leave>
+//   SYNTH_GESTURE <magnify|rotate> <begin|change|end|cancel|once> <value> <x> <y>
 //
 // SYNTH_POINTER calls the view's tracking-area handlers directly: AppKit
 // routes a real crossing to them from its tracking area, and an enter/exit
@@ -2168,6 +2223,26 @@ static void DartUiPrintClipboardPayload(long long request, NSString *payload) {
       }
       self.synthDrag = nil;
     }
+    return;
+  }
+  if ([verb isEqualToString:@"SYNTH_GESTURE"] && parts.count == 6) {
+    NSDictionary<NSString *, NSNumber *> *phases = @{
+      @"begin" : @(NSEventPhaseBegan),
+      @"change" : @(NSEventPhaseChanged),
+      @"end" : @(NSEventPhaseEnded),
+      @"cancel" : @(NSEventPhaseCancelled),
+      @"once" : @(NSEventPhaseNone),
+    };
+    NSNumber *phase = phases[parts[2]];
+    if (phase == nil) {
+      [self printError:@"BAD_SYNTH"];
+      return;
+    }
+    [self.hostView reportGesture:parts[1]
+                           phase:(NSEventPhase)phase.unsignedIntegerValue
+                           value:parts[3].doubleValue
+                              at:NSMakePoint(parts[4].doubleValue,
+                                             parts[5].doubleValue)];
     return;
   }
   if ([verb isEqualToString:@"SYNTH_POINTER"] && parts.count == 2) {

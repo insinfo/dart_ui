@@ -1033,6 +1033,23 @@ final class MacosWindow
     );
   }
 
+  final MacosGestureAccumulator _gestures = MacosGestureAccumulator();
+
+  void _onGesture(String kind, String phase, double value, double x, double y,
+      int machTime) {
+    for (final PointerPanZoomEvent event in _gestures.take(
+      kind: kind,
+      phase: phase,
+      value: value,
+      position: Offset(x, y),
+      windowId: _id,
+      generation: _generation.current,
+      timestamp: macosMachTimeToDuration(machTime),
+    )) {
+      _emit(event);
+    }
+  }
+
   /// The key press a `TEXT_INPUT=` line belongs to: the host prints the text
   /// straight after the `INPUT=keyDown` that produced it.
   int _lastKeyDownMachTime = 0;
@@ -1181,6 +1198,11 @@ final class _HostSink with HostMessageSinkAdapter {
   @override
   void onDragItem(String kind, String base64) =>
       _window.dropTarget?.onItem(kind, base64);
+
+  @override
+  void onGesture(String kind, String phase, double value, double x, double y,
+          int machTime) =>
+      _window._onGesture(kind, phase, value, x, y, machTime);
 
   @override
   void onDrag(HostDragPhase phase, double x, double y, int mask, int flags) =>

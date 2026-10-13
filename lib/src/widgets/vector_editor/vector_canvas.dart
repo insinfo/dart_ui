@@ -426,6 +426,13 @@ class VectorCanvasState extends State<VectorCanvas>
         } else {
           binding.signalResolver.register(event, _applyWheel);
         }
+      case PointerPanZoomEvent():
+        final GestureBinding? binding = GestureBinding.current;
+        if (binding == null) {
+          _applyPanZoom(event);
+        } else {
+          binding.signalResolver.register(event, _applyPanZoom);
+        }
       case PointerDownEvent():
         _handleDown(event);
       case PointerMoveEvent():
@@ -880,6 +887,21 @@ class VectorCanvasState extends State<VectorCanvas>
       _zoomAround(
           event.logicalPosition, math.pow(kWheelZoomBase, -dy).toDouble());
     }
+  }
+
+  /// The scale already applied for the trackpad pinch in progress: the
+  /// event carries the total since the start, and the view takes only what
+  /// is new.
+  double _pinchApplied = 1;
+
+  /// A trackpad pinch zooms about the pointer, like Ctrl and the wheel.
+  void _applyPanZoom(PointerPanZoomEvent event) {
+    if (event.phase == PanZoomPhase.start) _pinchApplied = 1;
+    final double scale = event.scale <= 0 ? 1 : event.scale;
+    final double step = scale / _pinchApplied;
+    _pinchApplied = scale;
+    if (step != 1) _zoomAround(event.logicalPosition, step);
+    if (event.phase == PanZoomPhase.end) _pinchApplied = 1;
   }
 
   // -------------------------------------------------------------------------

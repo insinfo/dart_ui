@@ -23,7 +23,10 @@
 /// platform - the wheel acts on the thing under the cursor, not on its
 /// container.
 ///
-/// The design is Flutter's `PointerSignalResolver`.
+/// The design is Flutter's `PointerSignalResolver`. A trackpad pinch
+/// ([PointerPanZoomEvent]) is resolved the same way: it is a signal too -
+/// no press, no fingers to count - and a zoomable inside a zoomable must
+/// not both zoom.
 library;
 
 import '../platform/input_events.dart';
@@ -31,13 +34,18 @@ import '../platform/input_events.dart';
 /// Handles a scroll signal that has been awarded to its registrant.
 typedef PointerSignalResolvedCallback = void Function(PointerScrollEvent event);
 
+/// Whether [event] is a pointer signal: answered by one registrant, not
+/// arbitrated as a gesture.
+bool isPointerSignal(PointerEvent event) =>
+    event is PointerScrollEvent || event is PointerPanZoomEvent;
+
 /// Collects candidates for one scroll signal and awards it to the first.
 ///
 /// One instance per router. Registration is only meaningful during the
 /// dispatch of the event being registered for; [resolve] closes the round.
 final class PointerSignalResolver {
-  PointerSignalResolvedCallback? _firstRegistered;
-  PointerScrollEvent? _currentEvent;
+  void Function()? _firstRegistered;
+  PointerEvent? _currentEvent;
 
   /// Whether a candidate has claimed the event currently being dispatched.
   bool get hasCandidate => _firstRegistered != null;
@@ -52,11 +60,11 @@ final class PointerSignalResolver {
   /// caller: it means a node acted on an event that was never resolved, and
   /// the pending callback would then be invoked with the wrong event. It
   /// throws rather than silently mismatching them.
-  void register(
-    PointerScrollEvent event,
-    PointerSignalResolvedCallback callback,
+  void register<E extends PointerEvent>(
+    E event,
+    void Function(E event) callback,
   ) {
-    final PointerScrollEvent? pending = _currentEvent;
+    final PointerEvent? pending = _currentEvent;
     if (pending != null && !identical(pending, event)) {
       throw StateError(
         'PointerSignalResolver.register() was called for a different event '
@@ -67,7 +75,7 @@ final class PointerSignalResolver {
     }
     if (_firstRegistered != null) return;
     _currentEvent = event;
-    _firstRegistered = callback;
+    _firstRegistered = () => callback(event);
   }
 
   /// Awards [event] to its first registrant, if there was one.
@@ -79,9 +87,9 @@ final class PointerSignalResolver {
   /// Always leaves the resolver empty, including when the callback throws:
   /// a pending registration that outlived its event would attach itself to the
   /// next notch of the wheel.
-  bool resolve(PointerScrollEvent event) {
-    final PointerSignalResolvedCallback? callback = _firstRegistered;
-    final PointerScrollEvent? pending = _currentEvent;
+  bool resolve(PointerEvent event) {
+    final void Function()? callback = _firstRegistered;
+    final PointerEvent? pending = _currentEvent;
     _firstRegistered = null;
     _currentEvent = null;
     if (callback == null || pending == null) return false;
@@ -91,7 +99,7 @@ final class PointerSignalResolver {
         'the one candidates registered for.',
       );
     }
-    callback(pending);
+    callback();
     return true;
   }
 }

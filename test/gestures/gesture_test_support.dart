@@ -136,7 +136,7 @@ final class RecognizerHarness {
       case PointerCancelEvent():
         arena.cancel(event.pointerId);
       case PointerMoveEvent():
-      case PointerScrollEvent():
+      case PointerScrollEvent() || PointerPanZoomEvent():
         break;
     }
   }

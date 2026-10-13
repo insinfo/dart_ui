@@ -155,6 +155,7 @@ final class RenderDrumPadGrid extends RenderBox with ControlBehavior {
       case PointerCancelEvent():
         _pointerPads.remove(event.pointerId);
       case PointerScrollEvent():
+      case PointerPanZoomEvent():
       case PointerDownEvent():
     }
   }

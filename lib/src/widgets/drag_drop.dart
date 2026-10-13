@@ -858,7 +858,7 @@ final class RenderDragSource extends RenderSingleChildBox
       case PointerUpEvent():
       case PointerCancelEvent():
         if (_pointerId == event.pointerId) _pointerId = null;
-      case PointerScrollEvent():
+      case PointerScrollEvent() || PointerPanZoomEvent():
         break;
     }
   }

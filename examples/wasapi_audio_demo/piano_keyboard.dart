@@ -291,6 +291,7 @@ final class RenderPianoKeyboard extends RenderBox with ControlBehavior {
         final int? note = _pointerNotes.remove(event.pointerId);
         if (note != null) onNoteChanged(note, false);
       case PointerScrollEvent():
+      case PointerPanZoomEvent():
       case PointerDownEvent():
     }
   }

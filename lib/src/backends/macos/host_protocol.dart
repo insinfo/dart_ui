@@ -299,6 +299,13 @@ abstract interface class HostMessageSink {
   /// carries - a file path or the text - sent before its `DRAG=ENTER`.
   void onDragItem(String kind, String base64);
 
+  /// `GESTURE=<magnify|rotate>:<begin|change|end|cancel|once>:<value>:<x>:<y>:<machTime>`:
+  /// one trackpad gesture event from the view's `magnifyWithEvent:` or
+  /// `rotateWithEvent:` - the magnification change, or degrees
+  /// counterclockwise - at a view point. See `MacosGestureAccumulator`.
+  void onGesture(String kind, String phase, double value, double x, double y,
+      int machTime);
+
   /// `DRAG=<ENTER|OVER|DROP>:<x>:<y>:<mask>:<flags>` or `DRAG=LEAVE`: a drag
   /// over the view, in view points (top-left origin), with the source's
   /// `NSDragOperation` mask and the modifier flags.
@@ -421,6 +428,10 @@ mixin HostMessageSinkAdapter implements HostMessageSink {
 
   @override
   void onDragItem(String kind, String base64) {}
+
+  @override
+  void onGesture(String kind, String phase, double value, double x, double y,
+      int machTime) {}
 
   @override
   void onDrag(HostDragPhase phase, double x, double y, int mask, int flags) {}
@@ -804,6 +815,8 @@ final class HostProtocolParser {
         }
       case 0x46: // 'F'
         if (_startsWith('FRAME_OK ')) return _ackAt(HostAckKind.frame, 9);
+      case 0x47: // 'G'
+        if (_startsWith('GESTURE=')) return _parseGesture(8);
     }
     _sink.onUnrecognised(_stringFrom(0));
   }
@@ -852,6 +865,35 @@ final class HostProtocolParser {
   }
 
   // DRAG_ITEM=<file|text>:<base64>
+  // GESTURE=<kind>:<phase>:<value>:<x>:<y>:<machTime>
+  void _parseGesture(int offset) {
+    var kindEnd = offset;
+    while (kindEnd < _length && _line[kindEnd] != _kColon) {
+      kindEnd++;
+    }
+    var phaseEnd = kindEnd + 1;
+    while (phaseEnd < _length && _line[phaseEnd] != _kColon) {
+      phaseEnd++;
+    }
+    if (phaseEnd >= _length) return _sink.onError('BAD_GESTURE');
+    _cursor = phaseEnd;
+    final double value = _readDoubleField();
+    final double x = _readDoubleField();
+    final double y = _readDoubleField();
+    final int machTime = _readIntField();
+    if (value.isNaN || x.isNaN || y.isNaN) {
+      return _sink.onError('BAD_GESTURE');
+    }
+    _sink.onGesture(
+      String.fromCharCodes(_line, offset, kindEnd),
+      String.fromCharCodes(_line, kindEnd + 1, phaseEnd),
+      value,
+      x,
+      y,
+      machTime == kHostFieldMissing ? 0 : machTime,
+    );
+  }
+
   void _parseDragItem(int offset) {
     var colon = offset;
     while (colon < _length && _line[colon] != _kColon) {

@@ -91,9 +91,19 @@ abstract class GestureRecognizer implements GestureArenaMember {
       addPointer(event);
       return;
     }
+    if (event is PointerPanZoomEvent) {
+      handlePanZoom(event);
+      return;
+    }
     if (!_entries.containsKey(event.pointerId)) return;
     handleEvent(event);
   }
+
+  /// A trackpad pinch or rotation under this recognizer's node. A signal
+  /// rather than a pointer - there is no arena to join - so the default is
+  /// to ignore it; a recognizer that can use it overrides this.
+  @protected
+  void handlePanZoom(PointerPanZoomEvent event) {}
 
   /// Joins [pointer]'s arena and starts following it.
   @protected

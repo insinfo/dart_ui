@@ -225,6 +225,11 @@ final class _RelaySink with HostMessageSinkAdapter {
       target?.onDragItem(kind, base64);
 
   @override
+  void onGesture(String kind, String phase, double value, double x, double y,
+          int machTime) =>
+      target?.onGesture(kind, phase, value, x, y, machTime);
+
+  @override
   void onDrag(HostDragPhase phase, double x, double y, int mask, int flags) =>
       target?.onDrag(phase, x, y, mask, flags);
 }

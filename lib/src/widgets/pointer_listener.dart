@@ -53,6 +53,7 @@ final class PointerListener extends SingleChildRenderObjectWidget {
     this.onPointerUp,
     this.onPointerCancel,
     this.onPointerScroll,
+    this.onPointerPanZoom,
     this.behavior = GestureHitTestBehavior.opaque,
     super.child,
   });
@@ -69,6 +70,10 @@ final class PointerListener extends SingleChildRenderObjectWidget {
   /// is what makes a zoomable view inside a scrolling page usable at all.
   final void Function(PointerScrollEvent event)? onPointerScroll;
 
+  /// A trackpad pinch or rotation, offered like the wheel: to the innermost
+  /// listener that wants it.
+  final void Function(PointerPanZoomEvent event)? onPointerPanZoom;
+
   /// Defaults to [GestureHitTestBehavior.opaque], unlike [GestureDetector].
   ///
   /// A listener is nearly always wrapped around a surface the user is meant to
@@ -84,7 +89,8 @@ final class PointerListener extends SingleChildRenderObjectWidget {
         ..onPointerMove = onPointerMove
         ..onPointerUp = onPointerUp
         ..onPointerCancel = onPointerCancel
-        ..onPointerScroll = onPointerScroll;
+        ..onPointerScroll = onPointerScroll
+        ..onPointerPanZoom = onPointerPanZoom;
 
   @override
   void updateRenderObject(
@@ -97,7 +103,8 @@ final class PointerListener extends SingleChildRenderObjectWidget {
       ..onPointerMove = onPointerMove
       ..onPointerUp = onPointerUp
       ..onPointerCancel = onPointerCancel
-      ..onPointerScroll = onPointerScroll;
+      ..onPointerScroll = onPointerScroll
+      ..onPointerPanZoom = onPointerPanZoom;
   }
 }
 
@@ -116,6 +123,7 @@ final class RenderPointerListener extends RenderSingleChildBox
   void Function(PointerUpEvent event)? onPointerUp;
   void Function(PointerCancelEvent event)? onPointerCancel;
   void Function(PointerScrollEvent event)? onPointerScroll;
+  void Function(PointerPanZoomEvent event)? onPointerPanZoom;
 
   @override
   void performLayout() {
@@ -152,6 +160,17 @@ final class RenderPointerListener extends RenderSingleChildBox
         // listener and the scrollable around it do not both act on it. With no
         // binding - a render object driven directly by a test - there is
         // nobody to arbitrate with, so it is applied at once.
+        final GestureBinding? binding = GestureBinding.current;
+        if (binding == null) {
+          handler(event);
+        } else {
+          binding.signalResolver.register(event, handler);
+        }
+      case PointerPanZoomEvent():
+        final void Function(PointerPanZoomEvent event)? handler =
+            onPointerPanZoom;
+        if (handler == null) return;
+        // A signal like the wheel: the innermost listener gets it.
         final GestureBinding? binding = GestureBinding.current;
         if (binding == null) {
           handler(event);

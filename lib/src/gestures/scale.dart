@@ -6,6 +6,7 @@ import 'dart:math' as math;
 import '../geometry/offset.dart';
 import '../platform/input_events.dart';
 import 'arena.dart';
+import 'binding.dart';
 import 'constants.dart';
 import 'recognizer.dart';
 import 'velocity_tracker.dart';
@@ -230,8 +231,67 @@ final class ScaleGestureRecognizer extends GestureRecognizer
         _removePointer(event, cancelled: event is PointerCancelEvent);
       case PointerDownEvent():
       case PointerScrollEvent():
+      case PointerPanZoomEvent():
         break;
     }
+  }
+
+  /// A trackpad pinch or rotation: the same callbacks, from the gesture the
+  /// platform measured instead of from fingers this recognizer follows.
+  ///
+  /// Claimed like the wheel, through the signal resolver - the innermost
+  /// zoomable gets it - and reported as a two-pointer gesture, which is
+  /// what it is on the glass. [ScaleUpdateDetails.scale] and `rotation` are
+  /// the platform's totals since the start: one baseline, never re-taken,
+  /// because a trackpad never adds a finger mid-gesture.
+  @override
+  void handlePanZoom(PointerPanZoomEvent event) {
+    if (onStart == null && onUpdate == null && onEnd == null) return;
+    final GestureBinding? binding = GestureBinding.current;
+    if (binding == null) {
+      _panZoom(event);
+    } else {
+      binding.signalResolver.register(event, _panZoom);
+    }
+  }
+
+  bool _panZooming = false;
+  Offset _panZoomFocal = Offset.zero;
+
+  void _panZoom(PointerPanZoomEvent event) {
+    final Offset focal = event.logicalPosition + event.pan;
+    if (event.phase == PanZoomPhase.end) {
+      if (!_panZooming) return;
+      _panZooming = false;
+      onEnd?.call(ScaleEndDetails(
+        velocity: Velocity.zero,
+        pointerCount: 0,
+        timestamp: event.timestamp,
+      ));
+      return;
+    }
+    if (!_panZooming) {
+      // An update with no start - one missed while the node was not under
+      // the pointer - starts the gesture where it is.
+      _panZooming = true;
+      _panZoomFocal = focal;
+      onStart?.call(ScaleStartDetails(
+        focalPoint: focal,
+        pointerCount: 2,
+        timestamp: event.timestamp,
+      ));
+      if (event.phase == PanZoomPhase.start) return;
+    }
+    final Offset delta = focal - _panZoomFocal;
+    _panZoomFocal = focal;
+    onUpdate?.call(ScaleUpdateDetails(
+      focalPoint: focal,
+      focalPointDelta: delta,
+      scale: event.scale,
+      rotation: event.rotation,
+      pointerCount: 2,
+      timestamp: event.timestamp,
+    ));
   }
 
   @override

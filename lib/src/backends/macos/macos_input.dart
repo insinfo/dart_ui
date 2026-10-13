@@ -38,6 +38,7 @@ library;
 import 'dart:convert';
 import 'dart:ffi';
 import 'dart:io' show Platform;
+import 'dart:math' as math;
 
 import '../../ffi/native_memory.dart';
 import '../../geometry/offset.dart';
@@ -341,3 +342,103 @@ const Set<int> _keypadKeys = <int>{
   0x52, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5B, 0x5C, //
   0x41, 0x43, 0x45, 0x4E, 0x4B, 0x4C, 0x47, 0x51,
 };
+
+/// Folds AppKit's trackpad gestures into [PointerPanZoomEvent]s.
+///
+/// AppKit reports a pinch and a two-finger turn as two streams -
+/// `magnifyWithEvent:` and `rotateWithEvent:`, each with its own began,
+/// changed and ended - and a hand that pinches while turning interleaves
+/// them. The framework has one gesture with one start and one end, so the
+/// gesture starts with whichever stream begins first and ends when both
+/// have ended, and its scale and rotation are the streams' totals:
+///
+///  * a magnify event's value is the change in magnification, so the scale
+///    is the product of `1 + value` over the gesture;
+///  * a rotate event's value is degrees, counterclockwise - AppKit's y goes
+///    up - and the framework's rotation is radians clockwise on a y-down
+///    screen, hence the sign.
+///
+/// A phase of `once` - an event outside any phase - is a whole gesture in
+/// one event.
+final class MacosGestureAccumulator {
+  bool _magnifying = false;
+  bool _rotating = false;
+  double _scale = 1;
+  double _rotation = 0;
+
+  bool get isActive => _magnifying || _rotating;
+
+  /// The framework events one `GESTURE=` line makes, in order.
+  List<PointerPanZoomEvent> take({
+    required String kind,
+    required String phase,
+    required double value,
+    required Offset position,
+    required NativeWindowId windowId,
+    required int generation,
+    required Duration timestamp,
+  }) {
+    final bool magnify = kind == 'magnify';
+    if (!magnify && kind != 'rotate') return const <PointerPanZoomEvent>[];
+    final List<PointerPanZoomEvent> out = <PointerPanZoomEvent>[];
+    PointerPanZoomEvent event(PanZoomPhase panZoomPhase) => PointerPanZoomEvent(
+          windowId: windowId,
+          generation: generation,
+          timestamp: timestamp,
+          pointerId: 0,
+          kind: PointerKind.trackpad,
+          logicalPosition: position,
+          phase: panZoomPhase,
+          scale: _scale,
+          rotation: _rotation,
+        );
+    void begin() {
+      if (!isActive) {
+        _scale = 1;
+        _rotation = 0;
+        out.add(event(PanZoomPhase.start));
+      }
+      if (magnify) {
+        _magnifying = true;
+      } else {
+        _rotating = true;
+      }
+    }
+
+    void change() {
+      if (!(magnify ? _magnifying : _rotating)) begin();
+      if (magnify) {
+        _scale *= 1 + value;
+      } else {
+        _rotation -= value * math.pi / 180;
+      }
+      out.add(event(PanZoomPhase.update));
+    }
+
+    void end() {
+      if (!(magnify ? _magnifying : _rotating)) return;
+      if (magnify) {
+        _magnifying = false;
+      } else {
+        _rotating = false;
+      }
+      if (!isActive) out.add(event(PanZoomPhase.end));
+    }
+
+    switch (phase) {
+      case 'begin':
+        begin();
+        if (value != 0) change();
+      case 'change':
+        change();
+      case 'end' || 'cancel':
+        if (value != 0) change();
+        end();
+      case 'once':
+        begin();
+        change();
+        end();
+    }
+    return out;
+  }
+}

@@ -866,6 +866,11 @@ final class MacosHostProcess
   void onDragItem(String kind, String base64) => _sink.onDragItem(kind, base64);
 
   @override
+  void onGesture(String kind, String phase, double value, double x, double y,
+          int machTime) =>
+      _sink.onGesture(kind, phase, value, x, y, machTime);
+
+  @override
   void onDrag(HostDragPhase phase, double x, double y, int mask, int flags) =>
       _sink.onDrag(phase, x, y, mask, flags);
 
