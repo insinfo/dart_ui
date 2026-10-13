@@ -14,6 +14,14 @@ typedef DartExeCompiler = Future<void> Function(
   String outputPath,
 );
 
+/// Runs a platform tool - `codesign`, `sips`, `iconutil`, `xcrun` - and
+/// answers what it said. A seam so the bundle steps can be tested without
+/// the tools, and so a test can see exactly which commands a build ran.
+typedef ToolRunner = Future<ProcessResult> Function(
+  String executable,
+  List<String> arguments,
+);
+
 final class ApplicationBuildRequest {
   const ApplicationBuildRequest({
     required this.entrypoint,
@@ -24,6 +32,13 @@ final class ApplicationBuildRequest {
     this.windowsConsole = false,
     this.embed = const <String>[],
     this.embedFrameworkFonts = true,
+    this.iconPath,
+    this.codesignIdentity = '-',
+    this.hardenedRuntime = false,
+    this.entitlementsPath,
+    this.minimumSystemVersion = '11.0',
+    this.infoPlist = const <String, String>{},
+    this.notaryProfile,
   });
 
   final String entrypoint;
@@ -43,6 +58,38 @@ final class ApplicationBuildRequest {
   /// Whether dart_ui's own fonts - the interface face and the icon fonts -
   /// are compiled in, so nothing has to sit beside the executable.
   final bool embedFrameworkFonts;
+
+  /// A square PNG - 1024 pixels is what the largest macOS size wants - made
+  /// into the application's icon: an `.icns` in a macOS bundle, a PNG named
+  /// by `Icon=` beside a Linux launcher. Windows' icon resource is not
+  /// written yet.
+  final String? iconPath;
+
+  /// What `codesign -s` signs a macOS bundle with: a Developer ID identity
+  /// for distribution, or `-` - the default - for an ad-hoc signature, which
+  /// is enough to run on the machine that built it and to keep the bundle
+  /// sealed. Null leaves the bundle unsigned.
+  final String? codesignIdentity;
+
+  /// Signs with the hardened runtime (`--options runtime`), which
+  /// notarization requires.
+  final bool hardenedRuntime;
+
+  /// An entitlements plist for both executables in the bundle - the AppKit
+  /// host is the one that touches the camera or the microphone.
+  final String? entitlementsPath;
+
+  /// `LSMinimumSystemVersion`.
+  final String minimumSystemVersion;
+
+  /// More string keys for `Info.plist`, such as the usage descriptions
+  /// (`NSMicrophoneUsageDescription`) a permission prompt shows.
+  final Map<String, String> infoPlist;
+
+  /// A `notarytool` keychain profile (`xcrun notarytool store-credentials`):
+  /// when set, the signed bundle is submitted, waited for and stapled.
+  /// Needs a Developer ID identity and [hardenedRuntime].
+  final String? notaryProfile;
 }
 
 final class ApplicationBuildResult {
@@ -76,7 +123,9 @@ final class DesktopApplicationBuilder {
     DartExeCompiler? compiler,
     StringSink? output,
     String? Function()? macosHost,
+    ToolRunner? tools,
   })  : platform = platform ?? _currentPlatform(),
+        _tools = tools ?? _runTool,
         _compiler = compiler,
         _macosHost = macosHost ?? (() => null),
         _output = output ?? stdout;
@@ -85,6 +134,7 @@ final class DesktopApplicationBuilder {
   /// by `bin/dart_ui.dart`: tooling imports no runtime layer, the backend
   /// that knows where the host lives included.
   final String? Function() _macosHost;
+  final ToolRunner _tools;
 
   final DesktopHostPlatform platform;
   final DartExeCompiler? _compiler;
@@ -251,6 +301,15 @@ final class DesktopApplicationBuilder {
     await _compile(_entrypointFor(request), outputPath);
 
     final String absoluteExecutable = File(outputPath).absolute.path;
+    String? iconLine;
+    if (request.iconPath case final String icon) {
+      if (!File(icon).existsSync()) {
+        throw ApplicationBuildException('icon does not exist: $icon');
+      }
+      final String target = '$outputPath.png';
+      File(icon).copySync(target);
+      iconLine = 'Icon=${_desktopString(File(target).absolute.path)}\n';
+    }
     final String desktopPath = '$outputPath.desktop';
     final File desktopFile = File(desktopPath);
     desktopFile.parent.createSync(recursive: true);
@@ -261,6 +320,7 @@ final class DesktopApplicationBuilder {
       'Name=${_desktopString(appName)}\n'
       'Exec=${_desktopExec(absoluteExecutable)}\n'
       'Terminal=false\n'
+      '${iconLine ?? ''}'
       'StartupNotify=true\n'
       'Categories=Utility;\n',
       flush: true,
@@ -311,6 +371,11 @@ final class DesktopApplicationBuilder {
       _output.writeln('macOS host: $name');
     }
 
+    String? iconFile;
+    if (request.iconPath case final String icon) {
+      iconFile = await _macosIcon(icon, resourcesDirectory.path);
+    }
+
     final File plist = File('$bundlePath/Contents/Info.plist');
     plist.writeAsStringSync(
       '<?xml version="1.0" encoding="UTF-8"?>\n'
@@ -336,18 +401,149 @@ final class DesktopApplicationBuilder {
       '  <string>${_xml(request.version)}</string>\n'
       '  <key>CFBundleVersion</key>\n'
       '  <string>${_xml(request.version)}</string>\n'
+      '${iconFile == null ? '' : '  <key>CFBundleIconFile</key>\n'
+          '  <string>${_xml(iconFile)}</string>\n'}'
+      // Two processes run from this bundle: the Dart program, which
+      // LaunchServices starts, and the AppKit host it spawns. Both would
+      // get a Dock icon. LSUIElement keeps the program - which never draws -
+      // out of the Dock, and the host promotes itself back to a regular
+      // application with setActivationPolicy, so the app shows exactly once.
+      '  <key>LSUIElement</key>\n'
+      '  <true/>\n'
+      '  <key>LSMinimumSystemVersion</key>\n'
+      '  <string>${_xml(request.minimumSystemVersion)}</string>\n'
       '  <key>NSHighResolutionCapable</key>\n'
       '  <true/>\n'
+      '${<String>[
+        for (final MapEntry<String, String> entry in request.infoPlist.entries)
+          '  <key>${_xml(entry.key)}</key>\n'
+              '  <string>${_xml(entry.value)}</string>\n',
+      ].join()}'
       '</dict>\n'
       '</plist>\n',
       flush: true,
     );
+    if (request.codesignIdentity case final String identity) {
+      await _codesign(request, identity, bundlePath, <String>[
+        if (host != null)
+          '${macosDirectory.path}/${File(host).uri.pathSegments.last}',
+      ]);
+      if (request.notaryProfile case final String profile) {
+        await _notarize(bundlePath, profile);
+      }
+    } else if (request.notaryProfile != null) {
+      throw const ApplicationBuildException(
+          'notarization needs a signed bundle; pass --sign with a Developer '
+          'ID identity');
+    }
     _output
         .writeln('Application bundle: ${Directory(bundlePath).absolute.path}');
     return ApplicationBuildResult(
       platform: platform,
       primaryArtifact: Directory(bundlePath).absolute.path,
     );
+  }
+
+  /// [png] as `AppIcon.icns` in [resources]: every size an iconset holds,
+  /// scaled by `sips`, packed by `iconutil`. Returns the file's name.
+  Future<String> _macosIcon(String png, String resources) async {
+    if (!File(png).existsSync()) {
+      throw ApplicationBuildException('icon does not exist: $png');
+    }
+    final Directory iconset =
+        Directory('${Directory.systemTemp.path}/dart_ui_icon_$pid.iconset');
+    if (iconset.existsSync()) iconset.deleteSync(recursive: true);
+    iconset.createSync(recursive: true);
+    try {
+      for (final (String name, int pixels) in macosIconsetSizes) {
+        await _tool('sips', <String>[
+          '-z',
+          '$pixels',
+          '$pixels',
+          png,
+          '--out',
+          '${iconset.path}/$name',
+        ]);
+      }
+      await _tool('iconutil', <String>[
+        '-c',
+        'icns',
+        iconset.path,
+        '-o',
+        '$resources/AppIcon.icns',
+      ]);
+    } finally {
+      if (iconset.existsSync()) iconset.deleteSync(recursive: true);
+    }
+    _output.writeln('Icon: AppIcon.icns');
+    return 'AppIcon';
+  }
+
+  /// Signs [nested] executables, then the bundle - inside out, which is the
+  /// order `codesign` requires, since sealing the bundle hashes what is in
+  /// it - and verifies the result strictly.
+  Future<void> _codesign(
+    ApplicationBuildRequest request,
+    String identity,
+    String bundlePath,
+    List<String> nested,
+  ) async {
+    final List<String> options = <String>[
+      '--force',
+      '--sign',
+      identity,
+      // A secure timestamp needs Apple's server, and an ad-hoc signature
+      // cannot carry one.
+      if (identity != '-') '--timestamp',
+      if (request.hardenedRuntime) ...<String>['--options', 'runtime'],
+      if (request.entitlementsPath case final String entitlements) ...<String>[
+        '--entitlements',
+        entitlements
+      ],
+    ];
+    for (final String path in nested) {
+      await _tool('codesign', <String>[...options, path]);
+    }
+    await _tool('codesign', <String>[...options, bundlePath]);
+    await _tool('codesign',
+        <String>['--verify', '--deep', '--strict', '--verbose=2', bundlePath]);
+    _output.writeln(identity == '-'
+        ? 'Signed ad hoc (runs on this machine; distribute with a '
+            'Developer ID identity)'
+        : 'Signed: $identity');
+  }
+
+  /// Submits the bundle to Apple's notary service, waits, and staples the
+  /// ticket so Gatekeeper accepts it offline.
+  Future<void> _notarize(String bundlePath, String profile) async {
+    final String zip = '$bundlePath.zip';
+    await _tool('ditto', <String>['-c', '-k', '--keepParent', bundlePath, zip]);
+    try {
+      await _tool('xcrun', <String>[
+        'notarytool',
+        'submit',
+        zip,
+        '--keychain-profile',
+        profile,
+        '--wait',
+      ]);
+    } finally {
+      final File archive = File(zip);
+      if (archive.existsSync()) archive.deleteSync();
+    }
+    await _tool('xcrun', <String>['stapler', 'staple', bundlePath]);
+    _output.writeln('Notarized and stapled');
+  }
+
+  Future<ProcessResult> _tool(String executable, List<String> arguments) async {
+    final ProcessResult result = await _tools(executable, arguments);
+    if (result.exitCode != 0) {
+      throw ApplicationBuildException(
+        '$executable ${arguments.join(' ')} failed with exit code '
+        '${result.exitCode}:\n${result.stderr}${result.stdout}',
+      );
+    }
+    return result;
   }
 
   Future<void> _compile(String entrypoint, String outputPath) async {
@@ -375,6 +571,24 @@ final class DesktopApplicationBuilder {
     }
   }
 }
+
+/// The files of a macOS iconset and their pixel sizes: each point size at
+/// 1x and 2x, which is what `iconutil` expects to find.
+const List<(String, int)> macosIconsetSizes = <(String, int)>[
+  ('icon_16x16.png', 16),
+  ('icon_16x16@2x.png', 32),
+  ('icon_32x32.png', 32),
+  ('icon_32x32@2x.png', 64),
+  ('icon_128x128.png', 128),
+  ('icon_128x128@2x.png', 256),
+  ('icon_256x256.png', 256),
+  ('icon_256x256@2x.png', 512),
+  ('icon_512x512.png', 512),
+  ('icon_512x512@2x.png', 1024),
+];
+
+Future<ProcessResult> _runTool(String executable, List<String> arguments) =>
+    Process.run(executable, arguments);
 
 DesktopHostPlatform _currentPlatform() {
   if (Platform.isWindows) return DesktopHostPlatform.windows;

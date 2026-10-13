@@ -71,6 +71,7 @@ void main() {
       macosHost: () => (File('${temporary.path}/dart_ui_macos_host')
             ..writeAsStringSync('h'))
           .path,
+      tools: _FakeTools().run,
     );
 
     final ApplicationBuildResult result = await builder.build(
@@ -100,6 +101,147 @@ void main() {
     expect(plist, contains('<string>Hello &amp; World</string>'));
     expect(plist, contains('<string>com.example.hello-world</string>'));
     expect(plist, contains('<string>2.1.0</string>'));
+    expect(plist, contains('<key>LSMinimumSystemVersion</key>'));
+    expect(plist, contains('<key>LSUIElement</key>'),
+        reason: 'the Dart program stays out of the Dock; the host shows');
+  });
+
+  group('macOS bundle tools', () {
+    late _FakeTools tools;
+    late String host;
+
+    DesktopApplicationBuilder builder() => DesktopApplicationBuilder(
+          platform: DesktopHostPlatform.macos,
+          compiler: _fakeCompiler(),
+          output: StringBuffer(),
+          macosHost: () => host,
+          tools: tools.run,
+        );
+
+    setUp(() {
+      tools = _FakeTools();
+      host = (File('${temporary.path}/dart_ui_macos_host')
+            ..writeAsStringSync('h'))
+          .path;
+    });
+
+    test('an icon becomes every iconset size and an icns the plist names',
+        () async {
+      final File icon = File('${temporary.path}/icon.png')
+        ..writeAsBytesSync(<int>[0x89, 0x50, 0x4E, 0x47]);
+      final ApplicationBuildResult result = await builder().build(
+        ApplicationBuildRequest(
+          entrypoint: entrypoint.path,
+          outputPath: '${temporary.path}/App',
+          iconPath: icon.path,
+          codesignIdentity: null,
+        ),
+      );
+      final List<List<String>> sips = tools.calls
+          .where((List<String> call) => call.first == 'sips')
+          .toList();
+      expect(sips, hasLength(macosIconsetSizes.length));
+      expect(sips.map((List<String> call) => call[2]),
+          containsAll(<String>['16', '32', '64', '128', '256', '512', '1024']));
+      final List<String> iconutil = tools.calls
+          .singleWhere((List<String> call) => call.first == 'iconutil');
+      expect(iconutil.last,
+          '${result.primaryArtifact}/Contents/Resources/AppIcon.icns');
+      final String plist = File('${result.primaryArtifact}/Contents/Info.plist')
+          .readAsStringSync();
+      expect(plist, contains('<key>CFBundleIconFile</key>'));
+      expect(plist, contains('<string>AppIcon</string>'));
+      expect(tools.calls.where((List<String> call) => call.first == 'codesign'),
+          isEmpty,
+          reason: 'unsigned on request');
+    });
+
+    test('signs the host, then the bundle, then verifies; ad hoc by default',
+        () async {
+      final ApplicationBuildResult result = await builder().build(
+        ApplicationBuildRequest(
+          entrypoint: entrypoint.path,
+          outputPath: '${temporary.path}/App',
+        ),
+      );
+      final List<List<String>> codesign = tools.calls
+          .where((List<String> call) => call.first == 'codesign')
+          .toList();
+      expect(codesign, hasLength(3));
+      expect(codesign[0], containsAllInOrder(<String>['--sign', '-']));
+      expect(codesign[0].last, endsWith('Contents/MacOS/dart_ui_macos_host'));
+      expect(codesign[0], isNot(contains('--timestamp')),
+          reason: 'an ad-hoc signature takes no timestamp');
+      expect(codesign[1].last, result.primaryArtifact);
+      expect(codesign[2], containsAll(<String>['--verify', '--strict']));
+    });
+
+    test('a Developer ID signs hardened with entitlements and notarizes',
+        () async {
+      final File entitlements = File('${temporary.path}/app.entitlements')
+        ..writeAsStringSync('<plist/>');
+      final ApplicationBuildResult result = await builder().build(
+        ApplicationBuildRequest(
+          entrypoint: entrypoint.path,
+          outputPath: '${temporary.path}/App',
+          codesignIdentity: 'Developer ID Application: Example (ABCDE12345)',
+          hardenedRuntime: true,
+          entitlementsPath: entitlements.path,
+          infoPlist: const <String, String>{
+            'NSMicrophoneUsageDescription': 'Records <voice> notes',
+          },
+          notaryProfile: 'notary',
+        ),
+      );
+      final List<String> sign = tools.calls
+          .firstWhere((List<String> call) => call.first == 'codesign');
+      expect(
+          sign,
+          containsAll(<String>[
+            '--timestamp',
+            '--options',
+            'runtime',
+            '--entitlements',
+            entitlements.path,
+          ]));
+      final List<String> names = <String>[
+        for (final List<String> call in tools.calls) call.first,
+      ];
+      expect(names, containsAllInOrder(<String>['codesign', 'ditto', 'xcrun']));
+      final List<String> staple = tools.calls.last;
+      expect(staple,
+          <String>['xcrun', 'stapler', 'staple', result.primaryArtifact]);
+      final String plist = File('${result.primaryArtifact}/Contents/Info.plist')
+          .readAsStringSync();
+      expect(plist, contains('<key>NSMicrophoneUsageDescription</key>'));
+      expect(plist, contains('Records &lt;voice&gt; notes'));
+    });
+
+    test('a failing tool fails the build with what it said', () async {
+      tools.failing = 'codesign';
+      await expectLater(
+        builder().build(ApplicationBuildRequest(
+          entrypoint: entrypoint.path,
+          outputPath: '${temporary.path}/App',
+        )),
+        throwsA(isA<ApplicationBuildException>().having(
+            (ApplicationBuildException e) => e.message,
+            'message',
+            contains('no identity found'))),
+      );
+    });
+
+    test('notarizing an unsigned bundle is refused', () async {
+      await expectLater(
+        builder().build(ApplicationBuildRequest(
+          entrypoint: entrypoint.path,
+          outputPath: '${temporary.path}/App',
+          codesignIdentity: null,
+          notaryProfile: 'notary',
+        )),
+        throwsA(isA<ApplicationBuildException>()),
+      );
+    });
   });
 
   test('rejects invalid metadata before invoking the compiler', () async {
@@ -171,4 +313,18 @@ Uint8List _minimalPe() {
   data.setUint16(optionalHeaderOffset, 0x020B, Endian.little);
   data.setUint16(optionalHeaderOffset + 68, 3, Endian.little);
   return bytes;
+}
+
+/// Records each tool call and succeeds, except for [failing].
+final class _FakeTools {
+  final List<List<String>> calls = <List<String>>[];
+  String? failing;
+
+  Future<ProcessResult> run(String executable, List<String> arguments) async {
+    calls.add(<String>[executable, ...arguments]);
+    if (executable == failing) {
+      return ProcessResult(0, 1, '', 'error: no identity found');
+    }
+    return ProcessResult(0, 0, '', '');
+  }
 }

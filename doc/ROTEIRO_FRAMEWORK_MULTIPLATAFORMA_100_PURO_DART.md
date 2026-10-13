@@ -3661,7 +3661,7 @@ Revisto em 12/10/2026 contra o host (`native/dart_ui_macos_host.m`) e as
 sondas do workflow `macos_popup_probe.yml`, que rodam num `macos-14` com
 WindowServer a cada mudança no backend.
 
-- [ ] app bundle — o host é um binário avulso, sem `Info.plist`;
+- [x] app bundle — `dart run dart_ui:dart_ui build app.dart` (`lib/src/tooling/application_builder.dart`) gera `App.app` com o executável AOT e o host lado a lado em `Contents/MacOS` (o localizador acha o host ao lado do executável), `Info.plist` (`LSMinimumSystemVersion`, `NSHighResolutionCapable`, chaves extras por `--plist`, como as descrições de uso) e, desde 13/10/2026, ícone (`--icon` PNG → iconset por `sips` → `AppIcon.icns` por `iconutil`). `LSUIElement` tira do Dock o processo Dart, que o LaunchServices abre, e o host se promove a app comum: um ícone só no Dock. Verificado neste Mac com o explorador: `open` abre o app, `lsappinfo` mostra o bundle e o Dock mostra um ícone (antes, dois);
 - [x] NSApplication — o host roda `NSApp` na thread principal (ADR 0001);
 - [x] janela — `MacosWindow` e a galeria (`MACOS_GALLERY=PASS`), multijanela
   com modal (`MULTIWINDOW_GALLERY=PASS`, `5412cbd`) e popups nativos
@@ -3700,7 +3700,7 @@ WindowServer a cada mudança no backend.
   (o botão conta o clique). Falta validar com o VoiceOver falando;
 - [ ] x64 — nenhum runner Intel;
 - [x] arm64 — o job `AOT (macos-arm64)` e todo o resto rodam em Apple Silicon;
-- [ ] assinatura/notarização documentadas.
+- [~] assinatura/notarização — desde 13/10/2026 o build assina por dentro para fora (host, depois o bundle) e verifica com `codesign --verify --deep --strict`: ad hoc por padrão (`--sign -`), identidade Developer ID com `--sign`, `--hardened-runtime`, `--entitlements` (aplicados às duas executáveis), `--no-sign`; `--notarize <perfil>` compacta com `ditto`, envia por `xcrun notarytool submit --wait` e grampeia com `stapler`. A assinatura ad hoc foi verificada aqui; Developer ID e notarização só por testes com executor falso, por falta de conta.
 
 ---
 
@@ -5896,6 +5896,12 @@ MyApp.app/
 - hardened runtime;
 - notarization;
 - universal binary ou bundles separados.
+
+Estado em 13/10/2026: bundle, ícone, `Info.plist`, assinatura (ad hoc
+verificada; Developer ID e notarização por testes) e um ícone só no Dock
+estão no `dart_ui build`; ver §20.15. Falta binário universal (`dart compile
+exe` não compila cruzado para x64 a partir de arm64) e o ícone do `.exe` no
+Windows (recurso de ícone no PE).
 
 ## 39.5 Licenças
 

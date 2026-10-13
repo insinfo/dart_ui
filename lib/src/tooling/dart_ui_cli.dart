@@ -65,6 +65,13 @@ final class DartUiCli {
     var console = false;
     final List<String> embed = <String>[];
     var embedFonts = true;
+    String? icon;
+    String? sign = '-';
+    var hardened = false;
+    String? entitlements;
+    var minimumMacos = '11.0';
+    final Map<String, String> plist = <String, String>{};
+    String? notaryProfile;
 
     for (var index = 0; index < arguments.length; index++) {
       final String argument = arguments[index];
@@ -88,6 +95,36 @@ final class DartUiCli {
           index++;
         case '--no-embed-fonts':
           embedFonts = false;
+        case '--icon':
+          icon = _valueAfter(arguments, index, argument);
+          index++;
+        case '--sign':
+          // `-` is a value here (ad hoc), not the start of another option.
+          if (index + 1 >= arguments.length) {
+            throw const _UsageException('--sign requires an identity or -');
+          }
+          sign = arguments[++index];
+        case '--no-sign':
+          sign = null;
+        case '--hardened-runtime':
+          hardened = true;
+        case '--entitlements':
+          entitlements = _valueAfter(arguments, index, argument);
+          index++;
+        case '--min-macos':
+          minimumMacos = _valueAfter(arguments, index, argument);
+          index++;
+        case '--plist':
+          final String pair = _valueAfter(arguments, index, argument);
+          index++;
+          final int equals = pair.indexOf('=');
+          if (equals <= 0) {
+            throw _UsageException('--plist takes KEY=VALUE; got "$pair"');
+          }
+          plist[pair.substring(0, equals)] = pair.substring(equals + 1);
+        case '--notarize':
+          notaryProfile = _valueAfter(arguments, index, argument);
+          index++;
         default:
           if (argument.startsWith('-')) {
             throw _UsageException('unknown build option "$argument"');
@@ -117,6 +154,13 @@ final class DartUiCli {
       windowsConsole: console,
       embed: embed,
       embedFrameworkFonts: embedFonts,
+      iconPath: icon,
+      codesignIdentity: sign,
+      hardenedRuntime: hardened,
+      entitlementsPath: entitlements,
+      minimumSystemVersion: minimumMacos,
+      infoPlist: plist,
+      notaryProfile: notaryProfile,
     ));
     _output.writeln('Built: ${result.primaryArtifact}');
     if (result.launcherArtifact case final String launcher) {
@@ -207,6 +251,25 @@ final class DartUiCli {
         'EmbeddedAssets)');
     _output.writeln("      --no-embed-fonts      Leave dart_ui's fonts out; "
         'they are embedded by default');
+    _output.writeln('      --icon <png>          Application icon (square, '
+        '1024 px for macOS)');
+    _output.writeln('  macOS bundle:');
+    _output.writeln('      --sign <identity|->   codesign identity; - (the '
+        'default) signs ad hoc');
+    _output.writeln('      --no-sign             Leave the bundle unsigned');
+    _output.writeln('      --hardened-runtime    Sign with the hardened '
+        'runtime (needed to notarize)');
+    _output.writeln('      --entitlements <file> Entitlements plist for the '
+        'executables');
+    _output.writeln('      --min-macos <x.y>     LSMinimumSystemVersion '
+        '(default 11.0)');
+    _output.writeln('      --plist KEY=VALUE     Extra Info.plist string '
+        '(repeatable), e.g.');
+    _output.writeln('                            '
+        'NSMicrophoneUsageDescription=...');
+    _output.writeln('      --notarize <profile>  Submit to Apple with a '
+        'notarytool keychain profile');
+    _output.writeln('                            and staple the ticket');
   }
 
   void _writePeHelp() {
