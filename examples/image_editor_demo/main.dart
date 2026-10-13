@@ -582,7 +582,7 @@ class _ImageEditorAppState extends State<ImageEditorApp> {
 
   @override
   Widget build(BuildContext context) {
-    const ThemeData theme = ThemeData.materialLight;
+    const ThemeData theme = ThemeData.modernLight;
     return Theme(
       data: theme,
       child: ColoredBox(

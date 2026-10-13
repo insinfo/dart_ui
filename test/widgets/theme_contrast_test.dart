@@ -23,8 +23,12 @@ void main() {
   const Map<String, ThemeData> themes = <String, ThemeData>{
     'neutral-light': ThemeData.neutralLight,
     'neutral-dark': ThemeData.neutralDark,
+    'modern-light': ThemeData.modernLight,
+    'modern-dark': ThemeData.modernDark,
     'material-light': ThemeData.materialLight,
     'material-dark': ThemeData.materialDark,
+    'cupertino-light': ThemeData.cupertinoLight,
+    'cupertino-dark': ThemeData.cupertinoDark,
     'fluent-light': ThemeData.fluentLight,
     'high-contrast-dark': ThemeData.highContrastDark,
   };

@@ -61,7 +61,7 @@ void main() {
   });
 
   test('modern ThemeData exposes Flutter-shaped semantic contracts', () {
-    const ThemeData theme = ThemeData.materialDark;
+    const ThemeData theme = ThemeData.modernDark;
     expect(theme.brightness, Brightness.dark);
     expect(theme.colorScheme.brightness, Brightness.dark);
     expect(theme.useMaterial3, isTrue);
@@ -73,7 +73,7 @@ void main() {
   test('Text resolves style, colour, family and weight into RenderText', () {
     final BuildOwner owner = _mount(
       Theme(
-        data: ThemeData.materialLight,
+        data: ThemeData.modernLight,
         child: const Text(
           'Portável',
           style: TextStyle(
@@ -101,28 +101,26 @@ void main() {
       ],
     );
     final BuildOwner owner = _mount(
-      Theme(data: ThemeData.materialLight, child: content),
+      Theme(data: ThemeData.modernLight, child: content),
     );
     addTearDown(owner.dispose);
 
     final RenderText text = _find<RenderText>(owner.renderRoot!);
     final RenderIcon icon = _find<RenderIcon>(owner.renderRoot!);
-    expect(text.color, ThemeData.materialLight.foreground);
+    expect(text.color, ThemeData.modernLight.foreground);
     expect(
       icon.color,
-      ThemeData.materialLight.iconTheme.color ??
-          ThemeData.materialLight.foreground,
+      ThemeData.modernLight.iconTheme.color ?? ThemeData.modernLight.foreground,
     );
 
-    owner.updateRoot(Theme(data: ThemeData.materialDark, child: content));
+    owner.updateRoot(Theme(data: ThemeData.modernDark, child: content));
     owner.buildScope();
     owner.pipelineOwner.flushLayout();
 
-    expect(text.color, ThemeData.materialDark.foreground);
+    expect(text.color, ThemeData.modernDark.foreground);
     expect(
       icon.color,
-      ThemeData.materialDark.iconTheme.color ??
-          ThemeData.materialDark.foreground,
+      ThemeData.modernDark.iconTheme.color ?? ThemeData.modernDark.foreground,
     );
   });
 

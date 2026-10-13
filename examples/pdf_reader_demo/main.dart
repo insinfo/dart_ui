@@ -218,7 +218,7 @@ class _PdfReaderDemoAppState extends State<PdfReaderDemoApp> {
     final PdfDocument? document = _document;
     final PdfViewState reader = _pdfController.value;
     final ThemeData theme =
-        _darkMode ? ThemeData.materialDark : ThemeData.materialLight;
+        _darkMode ? ThemeData.modernDark : ThemeData.modernLight;
     final ApplicationRuntimeInfo runtime = ApplicationInfo.of(context);
     return Theme(
       data: theme,

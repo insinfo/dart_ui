@@ -436,7 +436,20 @@ final class RenderToggle extends RenderBox with ControlBehavior {
     // A radio is a circle and a check box is a small rounded square: the shape
     // is what tells the two apart at a glance, so the radius is derived from
     // which one this is rather than taken from the theme wholesale.
-    final double radius = square ? theme.cornerRadiusSmall : extent / 2;
+    // Material 3's check box is a 2 dp square; iOS marks a choice with a
+    // round check, so its "box" is a circle too.
+    final double radius = !square
+        ? extent / 2
+        : switch (theme.controlStyle) {
+            ControlStyle.material => 2,
+            ControlStyle.cupertino => extent / 2,
+            ControlStyle.standard => theme.cornerRadiusSmall,
+          };
+    final double outline = theme.controlStyle == ControlStyle.material
+        ? 2
+        : theme.controlStyle == ControlStyle.cupertino
+            ? 1.5
+            : 1;
     final bool marked = _value || _indeterminate;
     // Checked is a *filled* shape and unchecked is an outline. An accent tick
     // inside a white box is the 1995 drawing of this state; a white tick on an
@@ -467,7 +480,7 @@ final class RenderToggle extends RenderBox with ControlBehavior {
                 ? theme.accent
                 : theme.borderStrong,
         radius,
-        width: marked && !square ? 1.5 : 1,
+        width: marked && !square && outline < 1.5 ? 1.5 : outline,
       );
     }
     if (_indeterminate) {
@@ -940,8 +953,16 @@ final class RenderSlider extends RenderBox with ControlBehavior {
         _max = max,
         _orientation = orientation;
 
-  static const double trackThickness = 4.0;
-  static const double thumbExtent = 16.0;
+  /// The track: 4 px in every style; iOS's is the same hairline-thick pill.
+  double get trackThickness => 4.0;
+
+  /// The thumb: ours is 16 px with an outline, Material 3's a 20 dp filled
+  /// circle, iOS's a 28 pt white knob with a shadow.
+  double get thumbExtent => switch (theme.controlStyle) {
+        ControlStyle.cupertino => 28.0,
+        ControlStyle.material => 20.0,
+        ControlStyle.standard => 16.0,
+      };
 
   double _value;
   double _min;
@@ -1095,8 +1116,14 @@ final class RenderSlider extends RenderBox with ControlBehavior {
     // Track, filled portion and thumb are all pills. A slider is the one
     // control a user drags along a line, and a square end on that line is the
     // detail that dates the whole screen.
-    const double trackRadius = trackThickness / 2;
-    paintRoundedFill(list, track, theme.disabledSurface, trackRadius);
+    final double trackRadius = trackThickness / 2;
+    paintRoundedFill(
+        list,
+        track,
+        theme.controlStyle == ControlStyle.material
+            ? theme.accentSubtle
+            : theme.disabledSurface,
+        trackRadius);
     final double usable =
         (size.width - thumbExtent).clamp(0.0, double.infinity);
     final double thumbLeft = (offset.dx + usable * normalized).roundToDouble();
@@ -1115,26 +1142,7 @@ final class RenderSlider extends RenderBox with ControlBehavior {
       thumbExtent,
       thumbExtent,
     );
-    paintRoundedFill(
-      list,
-      thumb,
-      !enabled ? theme.disabledSurface : theme.surfaceAlternate,
-      thumbExtent / 2,
-    );
-    paintRoundedBorder(
-      list,
-      thumb,
-      !enabled
-          ? theme.disabledForeground
-          : isPressed
-              ? theme.accentPressed
-              : isHovered
-                  ? theme.accentHovered
-                  : theme.accent,
-      thumbExtent / 2,
-      width: 2,
-    );
-    paintFocusRing(list, thumb, radius: thumbExtent / 2);
+    _paintThumb(list, thumb);
   }
 
   void _paintVertical(DisplayList list, Offset offset) {
@@ -1146,7 +1154,7 @@ final class RenderSlider extends RenderBox with ControlBehavior {
       trackThickness,
       size.height,
     );
-    const double trackRadius = trackThickness / 2;
+    final double trackRadius = trackThickness / 2;
     paintRoundedFill(list, track, theme.disabledSurface, trackRadius);
     final double usable =
         (size.height - thumbExtent).clamp(0.0, double.infinity);
@@ -1172,26 +1180,47 @@ final class RenderSlider extends RenderBox with ControlBehavior {
       thumbExtent,
       thumbExtent,
     );
-    paintRoundedFill(
-      list,
-      thumb,
-      !enabled ? theme.disabledSurface : theme.surfaceAlternate,
-      thumbExtent / 2,
-    );
-    paintRoundedBorder(
-      list,
-      thumb,
-      !enabled
-          ? theme.disabledForeground
-          : isPressed
-              ? theme.accentPressed
-              : isHovered
-                  ? theme.accentHovered
-                  : theme.accent,
-      thumbExtent / 2,
-      width: 2,
-    );
-    paintFocusRing(list, thumb, radius: thumbExtent / 2);
+    _paintThumb(list, thumb);
+  }
+
+  void _paintThumb(DisplayList list, Rect thumb) {
+    final double radius = thumb.width / 2;
+    switch (theme.controlStyle) {
+      case ControlStyle.cupertino:
+        // A white knob that floats: its shadow is what separates it from
+        // the white page behind it.
+        paintRoundedFill(list, thumb.translate(0, 1).inflate(0.5),
+            const Color(0x26000000), radius);
+        paintRoundedFill(list, thumb,
+            enabled ? const Color(0xFFFFFFFF) : theme.disabledSurface, radius);
+      case ControlStyle.material:
+        paintRoundedFill(
+            list,
+            thumb,
+            !enabled
+                ? theme.disabledForeground
+                : isPressed
+                    ? theme.accentPressed
+                    : theme.accent,
+            radius);
+      case ControlStyle.standard:
+        paintRoundedFill(list, thumb,
+            !enabled ? theme.disabledSurface : theme.surfaceAlternate, radius);
+        paintRoundedBorder(
+          list,
+          thumb,
+          !enabled
+              ? theme.disabledForeground
+              : isPressed
+                  ? theme.accentPressed
+                  : isHovered
+                      ? theme.accentHovered
+                      : theme.accent,
+          radius,
+          width: 2,
+        );
+    }
+    paintFocusRing(list, thumb, radius: radius);
   }
 
   @override

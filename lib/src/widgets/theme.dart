@@ -1002,8 +1002,10 @@ final class ThemeData {
     ),
   );
 
-  /// Modern defaults for new applications: rounder, roomier, 14 px text.
-  static const ThemeData materialLight = ThemeData(
+  /// dart_ui's own modern defaults: rounder, roomier, 14 px text. Not
+  /// Material - that is [materialLight]; until 12/10/2026 this one carried
+  /// the name.
+  static const ThemeData modernLight = ThemeData(
     name: 'dart-ui-light',
     surfaceSunken: Color(0xFFDDE1E8),
     cornerRadius: 8,
@@ -1012,7 +1014,7 @@ final class ThemeData {
     iconTheme: IconThemeData(size: 20),
   );
 
-  static const ThemeData materialDark = ThemeData(
+  static const ThemeData modernDark = ThemeData(
     name: 'dart-ui-dark',
     brightness: Brightness.dark,
     accent: Color(0xFF8AB4FF),
@@ -1101,8 +1103,8 @@ final class ThemeData {
   /// Material 3's baseline scheme (the purple one its specification shows),
   /// with M3's shapes: pill buttons, the M3 switch and slider, 40 dp controls
   /// and 14 sp body text. Values from the published baseline tonal palette.
-  static const ThemeData material3Light = ThemeData(
-    name: 'material3-light',
+  static const ThemeData materialLight = ThemeData(
+    name: 'material-light',
     brightness: Brightness.light,
     controlStyle: ControlStyle.material,
     accent: Color(0xFF6750A4),
@@ -1110,7 +1112,7 @@ final class ThemeData {
     accentPressed: Color(0xFF4F378B),
     accentSubtle: Color(0xFFE8DEF8),
     surfaceBase: Color(0xFFFEF7FF),
-    surfaceSunken: Color(0xFFECE6F0),
+    surfaceSunken: Color(0xFFDED8E1),
     surface: Color(0xFFFEF7FF),
     surfaceAlternate: Color(0xFFF7F2FA),
     surfaceRaised: Color(0xFFF3EDF7),
@@ -1140,8 +1142,8 @@ final class ThemeData {
     controlPadding: 24,
   );
 
-  static const ThemeData material3Dark = ThemeData(
-    name: 'material3-dark',
+  static const ThemeData materialDark = ThemeData(
+    name: 'material-dark',
     brightness: Brightness.dark,
     controlStyle: ControlStyle.material,
     accent: Color(0xFFD0BCFF),
@@ -1151,8 +1153,8 @@ final class ThemeData {
     surfaceBase: Color(0xFF141218),
     surfaceSunken: Color(0xFF0F0D13),
     surface: Color(0xFF141218),
-    surfaceAlternate: Color(0xFF1D1B20),
-    surfaceRaised: Color(0xFF211F26),
+    surfaceAlternate: Color(0xFF211F26),
+    surfaceRaised: Color(0xFF2B2930),
     borderSubtle: Color(0xFF49454F),
     border: Color(0xFF49454F),
     borderStrong: Color(0xFF938F99),
@@ -1180,13 +1182,18 @@ final class ThemeData {
   );
 
   /// iOS: system blue on grouped backgrounds, 17 pt text, 44 pt controls, the
-  /// green switch. The system colours of UIKit's light appearance.
+  /// green switch. UIKit's system colours, with the secondary text, strong
+  /// outline and disabled grey taken from its Increase Contrast variants, and
+  /// the accent #0071E3 (Apple's own web blue) in place of #007AFF: the stock
+  /// colours miss this framework's contrast floors - white on #007AFF is
+  /// 4.0:1, the secondary label 3.1:1 - which `theme_contrast_test.dart`
+  /// holds every theme to.
   static const ThemeData cupertinoLight = ThemeData(
     name: 'cupertino-light',
     brightness: Brightness.light,
     controlStyle: ControlStyle.cupertino,
-    accent: Color(0xFF007AFF),
-    accentHovered: Color(0xFF0A6FE0),
+    accent: Color(0xFF0071E3),
+    accentHovered: Color(0xFF0068D1),
     accentPressed: Color(0xFF0051A8),
     accentSubtle: Color(0xFFE1EEFF),
     toggleActiveColor: Color(0xFF34C759),
@@ -1197,17 +1204,17 @@ final class ThemeData {
     surfaceRaised: Color(0xFFFFFFFF),
     borderSubtle: Color(0xFFE5E5EA),
     border: Color(0xFFC6C6C8),
-    borderStrong: Color(0xFF8E8E93),
+    borderStrong: Color(0xFF7C7C80),
     foreground: Color(0xFF000000),
-    foregroundSecondary: Color(0xFF8A8A8E),
-    disabledForeground: Color(0xFFC7C7CC),
+    foregroundSecondary: Color(0xFF6C6C70),
+    disabledForeground: Color(0xFFA1A1A6),
     disabledSurface: Color(0xFFE5E5EA),
     hoverSurface: Color(0xFFEFEFF4),
     pressedSurface: Color(0xFFD1D1D6),
-    focusRing: Color(0xFF007AFF),
+    focusRing: Color(0xFF0071E3),
     selection: Color(0xFFCCE4FF),
     colorScheme: ColorScheme.light(
-      primary: Color(0xFF007AFF),
+      primary: Color(0xFF0071E3),
       onPrimary: Color(0xFFFFFFFF),
       surface: Color(0xFFFFFFFF),
       onSurface: Color(0xFF000000),
@@ -1215,7 +1222,7 @@ final class ThemeData {
       outline: Color(0xFFC6C6C8),
     ),
     textTheme: TextTheme(base: 17),
-    iconTheme: IconThemeData(color: Color(0xFF007AFF), size: 22),
+    iconTheme: IconThemeData(color: Color(0xFF0071E3), size: 22),
     cornerRadius: 10,
     controlHeight: 44,
     controlPadding: 20,
@@ -1225,10 +1232,10 @@ final class ThemeData {
     name: 'cupertino-dark',
     brightness: Brightness.dark,
     controlStyle: ControlStyle.cupertino,
-    accent: Color(0xFF0A84FF),
-    accentHovered: Color(0xFF3395FF),
-    accentPressed: Color(0xFF66AFFF),
-    accentSubtle: Color(0xFF0F2E52),
+    accent: Color(0xFF0071E3),
+    accentHovered: Color(0xFF0068D1),
+    accentPressed: Color(0xFF0058B0),
+    accentSubtle: Color(0xFF0B1F38),
     toggleActiveColor: Color(0xFF30D158),
     surfaceBase: Color(0xFF000000),
     surfaceSunken: Color(0xFF000000),
@@ -1239,15 +1246,15 @@ final class ThemeData {
     border: Color(0xFF38383A),
     borderStrong: Color(0xFF8E8E93),
     foreground: Color(0xFFFFFFFF),
-    foregroundSecondary: Color(0xFF8D8D93),
+    foregroundSecondary: Color(0xFF98989F),
     disabledForeground: Color(0xFF48484A),
     disabledSurface: Color(0xFF2C2C2E),
     hoverSurface: Color(0xFF2C2C2E),
     pressedSurface: Color(0xFF3A3A3C),
-    focusRing: Color(0xFF0A84FF),
+    focusRing: Color(0xFF409CFF),
     selection: Color(0xFF0F3E73),
     colorScheme: ColorScheme.dark(
-      primary: Color(0xFF0A84FF),
+      primary: Color(0xFF0071E3),
       onPrimary: Color(0xFFFFFFFF),
       surface: Color(0xFF1C1C1E),
       onSurface: Color(0xFFFFFFFF),
@@ -1266,8 +1273,8 @@ final class ThemeData {
   static ThemeData platformDefault(String operatingSystem,
           {Brightness brightness = Brightness.light}) =>
       switch ((operatingSystem, brightness)) {
-        ('android', Brightness.light) => material3Light,
-        ('android', Brightness.dark) => material3Dark,
+        ('android', Brightness.light) => materialLight,
+        ('android', Brightness.dark) => materialDark,
         ('ios', Brightness.light) => cupertinoLight,
         ('ios', Brightness.dark) => cupertinoDark,
         (_, Brightness.light) => neutralLight,
