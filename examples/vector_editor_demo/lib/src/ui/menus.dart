@@ -82,6 +82,7 @@ final class EditorMenus {
           _,
           const CommandItem('view.grid'),
           const CommandItem('view.guides'),
+          const CommandItem('guide.clear'),
           _,
           const CommandItem('view.snapGrid'),
           _,

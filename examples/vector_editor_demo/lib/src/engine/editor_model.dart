@@ -392,6 +392,36 @@ class EditorModel {
     touch(description);
   }
 
+  // --- Guides -------------------------------------------------------------
+
+  /// The active page's guide layer, made if the page has none.
+  GuideLayer get guideLayer {
+    final VectorPage page = active.page;
+    for (final DocumentObject child in page.children) {
+      if (child is GuideLayer) return child;
+    }
+    final GuideLayer layer = GuideLayer(parent: page);
+    page.children.add(layer);
+    return layer;
+  }
+
+  /// The active page's guides.
+  List<VectorGuide> get guides => hasDocument
+      ? guideLayer.children.whereType<VectorGuide>().toList()
+      : const <VectorGuide>[];
+
+  /// The guide of that orientation at [position], to a hundredth of a
+  /// point - the precision a command names one with.
+  VectorGuide? guideAt(bool horizontal, double position) {
+    for (final VectorGuide guide in guides) {
+      if (guide.isHorizontal == horizontal &&
+          (guide.position - position).abs() < 0.01) {
+        return guide;
+      }
+    }
+    return null;
+  }
+
   // --- Layers -------------------------------------------------------------
 
   void addLayer() {

@@ -328,8 +328,9 @@ const List<ParityFeature> kParityCatalog = <ParityFeature>[
   ParityFeature(_snap, 'Rulers', 'P0',
       evidence: 'both rulers are mounted, one per axis'),
   ParityFeature(_snap, 'Guides', 'P0',
-      commands: <String>['view.guides'],
-      partial: 'shown; not created by dragging from a ruler'),
+      commands: <String>['view.guides', 'guide.add', 'guide.clear'],
+      partial: 'dragged out of a ruler; not yet moved or removed by dragging '
+          'the guide itself'),
   ParityFeature(_snap, 'Grid', 'P1', commands: <String>['view.grid']),
   ParityFeature(_snap, 'Master page', 'P2'),
 

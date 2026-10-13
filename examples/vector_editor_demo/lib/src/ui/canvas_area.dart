@@ -48,15 +48,19 @@ class CanvasArea extends StatelessWidget {
                 child: ValueListenableBuilder<Offset?>(
                   valueListenable: model.pointer,
                   builder: (BuildContext context, Offset? cursor, _) =>
-                      RulerWidget(
-                    zoom: session.zoom,
-                    pan: session.pan.dx,
-                    unit: model.units,
-                    rulerThickness:
-                        ChromeMetrics.of(Theme.of(context)).rulerThickness,
-                    cursorPosition: cursor == null
-                        ? null
-                        : session.pan.dx + cursor.dx * session.zoom,
+                      _GuideSource(
+                    model: model,
+                    horizontal: true,
+                    child: RulerWidget(
+                      zoom: session.zoom,
+                      pan: session.pan.dx,
+                      unit: model.units,
+                      rulerThickness:
+                          ChromeMetrics.of(Theme.of(context)).rulerThickness,
+                      cursorPosition: cursor == null
+                          ? null
+                          : session.pan.dx + cursor.dx * session.zoom,
+                    ),
                   ),
                 ),
               ),
@@ -70,16 +74,20 @@ class CanvasArea extends StatelessWidget {
               ValueListenableBuilder<Offset?>(
                 valueListenable: model.pointer,
                 builder: (BuildContext context, Offset? cursor, _) =>
-                    RulerWidget(
-                  isVertical: true,
-                  zoom: session.zoom,
-                  pan: session.pan.dy,
-                  unit: model.units,
-                  rulerThickness:
-                      ChromeMetrics.of(Theme.of(context)).rulerThickness,
-                  cursorPosition: cursor == null
-                      ? null
-                      : session.pan.dy + cursor.dy * session.zoom,
+                    _GuideSource(
+                  model: model,
+                  horizontal: false,
+                  child: RulerWidget(
+                    isVertical: true,
+                    zoom: session.zoom,
+                    pan: session.pan.dy,
+                    unit: model.units,
+                    rulerThickness:
+                        ChromeMetrics.of(Theme.of(context)).rulerThickness,
+                    cursorPosition: cursor == null
+                        ? null
+                        : session.pan.dy + cursor.dy * session.zoom,
+                  ),
                 ),
               ),
               Expanded(
@@ -244,6 +252,22 @@ class _RenderSizeReporter extends RenderSingleChildBox {
   void Function(Size size) onSize;
   Size _reported = Size.zero;
 
+  /// The canvas box on screen, for a ruler drag that has to know where a
+  /// point on the page is. One canvas is on screen at a time.
+  static _RenderSizeReporter? current;
+
+  @override
+  void attach(PipelineOwner owner) {
+    super.attach(owner);
+    current = this;
+  }
+
+  @override
+  void detach() {
+    if (identical(current, this)) current = null;
+    super.detach();
+  }
+
   @override
   void performLayout() {
     final child = this.child;
@@ -258,4 +282,98 @@ class _RenderSizeReporter extends RenderSingleChildBox {
       onSize(size);
     }
   }
+}
+
+/// A ruler as a source of guides, as in CorelDRAW: drag out of the top ruler
+/// for a horizontal guide and out of the left one for a vertical guide; let
+/// go on the page to place it, back on the ruler to change your mind.
+///
+/// The guide follows the pointer while it is dragged - a real guide on the
+/// page, added outside the history - and the drop is `guide.add`, one undo
+/// step like any other command.
+class _GuideSource extends StatefulWidget {
+  const _GuideSource({
+    required this.model,
+    required this.horizontal,
+    required this.child,
+  });
+
+  final EditorModel model;
+  final bool horizontal;
+  final Widget child;
+
+  @override
+  State<_GuideSource> createState() => _GuideSourceState();
+}
+
+class _GuideSourceState extends State<_GuideSource> {
+  VectorGuide? _preview;
+
+  EditorModel get model => widget.model;
+
+  /// Where [global] is on the page, across the guide's orientation, and
+  /// whether it is over the canvas at all.
+  (double, bool)? _locate(Offset global) {
+    final _RenderSizeReporter? canvas = _RenderSizeReporter.current;
+    if (canvas == null || !model.hasDocument) return null;
+    final Offset local = canvas.globalToLocal(global);
+    final bool over = local.dx >= 0 &&
+        local.dy >= 0 &&
+        local.dx < canvas.size.width &&
+        local.dy < canvas.size.height;
+    final session = model.active;
+    final double zoom = session.zoom == 0 ? 1.0 : session.zoom;
+    final Offset point = (local - session.pan) / zoom;
+    return (widget.horizontal ? point.dy : point.dx, over);
+  }
+
+  void _start(DragStartDetails details) {
+    final (double, bool)? at = _locate(details.globalPosition);
+    if (at == null) return;
+    final GuideLayer layer = model.guideLayer;
+    final VectorGuide guide = VectorGuide(
+      parent: layer,
+      position: at.$1,
+      isHorizontal: widget.horizontal,
+    );
+    layer.children.add(guide);
+    _preview = guide;
+    model.refresh('Release on the page to place the guide');
+  }
+
+  void _update(DragUpdateDetails details) {
+    final VectorGuide? guide = _preview;
+    final (double, bool)? at = _locate(details.globalPosition);
+    if (guide == null || at == null) return;
+    guide.position = at.$1;
+    model.refresh(at.$2
+        ? 'Release on the page to place the guide'
+        : 'Release on the ruler to cancel');
+  }
+
+  void _end(Offset global) {
+    final VectorGuide? guide = _preview;
+    _preview = null;
+    if (guide == null) return;
+    guide.parent?.children.remove(guide);
+    final (double, bool)? at = _locate(global);
+    final CommandRegistry? registry = EditorScope.maybeOf(context)?.registry;
+    if (at == null || !at.$2 || registry == null) {
+      model.refresh('Guide cancelled');
+      return;
+    }
+    registry.execute('guide.add', <String, Object?>{
+      'orientation': widget.horizontal ? 'horizontal' : 'vertical',
+      'position': at.$1,
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) => GestureDetector(
+        behavior: GestureHitTestBehavior.opaque,
+        onPanStart: _start,
+        onPanUpdate: _update,
+        onPanEnd: (DragEndDetails details) => _end(details.globalPosition),
+        child: widget.child,
+      );
 }

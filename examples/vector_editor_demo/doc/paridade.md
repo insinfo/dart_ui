@@ -14,9 +14,9 @@
 
 Cobertura = (feitas + metade das parciais) / total.
 
-Menus do editor: 81 de 96 linhas têm comando registrado; as outras aparecem desabilitadas.
+Menus do editor: 82 de 97 linhas têm comando registrado; as outras aparecem desabilitadas.
 
-Comandos registrados: 114.
+Comandos registrados: 117.
 
 ## Por área
 
@@ -238,7 +238,7 @@ Comandos registrados: 114.
 | ❌ | Snap off (Alt+Q) | P1 |  | tudo |
 | ❌ | Dynamic / alignment guides | P1 |  | tudo |
 | ✅ | Rulers | P0 | teste: "both rulers are mounted, one per axis" |  |
-| 🟡 | Guides | P0 | `view.guides` | shown; not created by dragging from a ruler |
+| 🟡 | Guides | P0 | `view.guides`, `guide.add`, `guide.clear` | dragged out of a ruler; not yet moved or removed by dragging the guide itself |
 | ✅ | Grid | P1 | `view.grid` |  |
 | ❌ | Master page | P2 |  | tudo |
 

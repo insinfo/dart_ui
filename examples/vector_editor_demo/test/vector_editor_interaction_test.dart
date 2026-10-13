@@ -494,6 +494,43 @@ void main() {
       harness.dispose();
     });
 
+    test('dragging out of a ruler places a guide; undo takes it back', () {
+      final harness = _Harness()..withoutSnapping();
+      RenderRuler ruler(bool vertical) {
+        RenderRuler? found;
+        void walk(RenderBox node) {
+          if (node is RenderRuler && node.isVertical == vertical) found = node;
+          node.visitChildren(walk);
+        }
+
+        walk(harness.owner.renderRoot!);
+        return found!;
+      }
+
+      final RenderRuler top = ruler(false);
+      final Offset start =
+          top.localToGlobal(Offset(top.size.width / 2, top.size.height / 2));
+      // Down onto the page, to the document's y = 100.
+      final Offset onPage = harness.toGlobal(const Offset(150, 100));
+      harness.dragGlobal(start, Offset(start.dx, onPage.dy));
+      final List<VectorGuide> guides = harness.model.guides;
+      expect(guides, hasLength(1));
+      expect(guides.single.isHorizontal, isTrue,
+          reason: 'out of the top ruler, a horizontal guide');
+      expect(guides.single.position, closeTo(100, 0.5));
+
+      // Out and straight back onto the ruler: nothing.
+      final RenderRuler left = ruler(true);
+      final Offset side =
+          left.localToGlobal(Offset(left.size.width / 2, left.size.height / 2));
+      harness.dragGlobal(side, side + const Offset(0, 30));
+      expect(harness.model.guides, hasLength(1));
+
+      harness.model.undo();
+      expect(harness.model.guides, isEmpty);
+      harness.dispose();
+    });
+
     test('the outline is drawn with its caps, joins and dashes', () {
       final harness = _Harness()..withoutSnapping();
       final rectangle = harness.rectangle;
@@ -1791,6 +1828,9 @@ final class _Harness {
     tapGlobal(global);
     tapGlobal(global, clickCount: 2);
   }
+
+  /// [document] on screen.
+  Offset toGlobal(Offset document) => _toGlobal(document);
 
   void dragDocument(
     Offset from,

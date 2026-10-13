@@ -197,6 +197,10 @@ final class RenderRuler extends RenderBox {
   static final TextPainter _painter = TextPainter();
 
   bool _isVertical;
+
+  /// Whether this is the ruler down the side, measuring y.
+  bool get isVertical => _isVertical;
+
   set isVertical(bool value) {
     if (_isVertical == value) return;
     _isVertical = value;

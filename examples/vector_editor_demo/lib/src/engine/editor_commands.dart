@@ -18,6 +18,7 @@ import 'commands/command_context.dart';
 import 'commands/document_commands.dart';
 import 'commands/edit_commands.dart';
 import 'commands/file_commands.dart';
+import 'commands/guide_commands.dart';
 import 'commands/layer_commands.dart';
 import 'commands/node_commands.dart';
 import 'commands/object_commands.dart';
@@ -40,6 +41,7 @@ const List<CommandModule> kEditorCommandModules = <CommandModule>[
   fileCommands,
   editCommands,
   viewCommands,
+  guideCommands,
   objectCommands,
   arrangeCommands,
   shapingCommands,
