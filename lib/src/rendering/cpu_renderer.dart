@@ -1040,8 +1040,8 @@ final class _RasterizerSink implements RasterSink, GradientRasterSink {
   /// width animating through zero is not a programming error the frame can do
   /// anything about, and it is a stroke of no width, not a hairline.
   ///
-  /// Cap, join and miter limit take [StrokeStyle]'s defaults because the
-  /// display list has no operand for them; see `ReplayPaint.strokeWidth`.
+  /// Cap, join, miter limit and dashes are the paint's; see
+  /// [ReplayPaint.outline].
   Path _outlineOf(Path path, Transform2D transform, ReplayPaint paint) {
     // The stroker's tolerance is in local units and the error it allows is
     // magnified by the transform, so a curve stroked inside a 4x scale would
@@ -1049,9 +1049,9 @@ final class _RasterizerSink implements RasterSink, GradientRasterSink {
     // zoomed-in border. Dividing by the scale spends the same tenth of a
     // device pixel at every zoom level.
     final double scale = _maxAxisScale(transform);
-    return _stroker.stroke(
+    return paint.outline(
+      _stroker,
       path,
-      StrokeStyle(width: paint.strokeWidth),
       tolerance: scale > 0 && scale.isFinite
           ? kDefaultStrokeTolerance / scale
           : kDefaultStrokeTolerance,

@@ -71,6 +71,8 @@ import '../../graphics/display_list.dart';
 import '../../graphics/display_list_opcodes.dart';
 import '../../graphics/display_list_reader.dart';
 import '../../graphics/gradient.dart';
+import '../path/dasher.dart';
+import '../path/stroker.dart';
 import 'replay_state.dart';
 
 /// A paint, resolved out of the resource table and flattened.
@@ -88,6 +90,9 @@ final class ReplayPaint {
     this.fillRule = pathFillRuleNonZero,
     this.gradient,
     this.shaderTransform = Transform2D.identity,
+    this.strokeCap = StrokeCap.butt,
+    this.strokeJoin = StrokeJoin.miter,
+    this.strokeExtras,
   });
 
   /// Non-premultiplied 0xAARRGGBB, exactly as the encoder stored it. The
@@ -102,18 +107,46 @@ final class ReplayPaint {
   /// sink scales it, because only it knows whether it strokes geometry before
   /// or after transforming it.
   ///
-  /// It is the *only* stroke attribute on the wire. The encoded paint record
-  /// is two ints and one float - colour, a flag word holding style, blend mode
-  /// and antialias, and this width - with no operand for cap, join or miter
-  /// limit, so a sink that strokes has to supply them. `StrokeStyle`'s
-  /// defaults (butt cap, miter join, miter limit 4) are the answer, and they
-  /// are not an arbitrary pick: they are the same defaults every drawing API
-  /// this list can be produced from starts a paint at, so nothing that can
-  /// currently be *encoded* renders differently for the omission. When a
-  /// producer grows a way to say otherwise, the flag word has free bits at
-  /// 3..7 for a cap and a join, and the miter limit needs a second float -
-  /// which is the change to make then, and dead wire format now.
+  /// The rest of the pen is [strokeCap], [strokeJoin] and [strokeExtras];
+  /// [pen] puts them together for the stroker.
   final double strokeWidth;
+
+  /// How an open contour's ends are drawn.
+  final StrokeCap strokeCap;
+
+  /// How a corner is drawn.
+  final StrokeJoin strokeJoin;
+
+  /// A miter limit other than the default, and a dash pattern; null for
+  /// neither.
+  final StrokeExtras? strokeExtras;
+
+  /// The pen a sink strokes with: width, cap, join and miter limit. Dashes
+  /// are not a pen property - a dashed stroke is the pen run over the
+  /// pieces [strokeExtras] cuts the path into.
+  StrokeStyle get pen => StrokeStyle(
+        width: strokeWidth,
+        cap: strokeCap,
+        join: strokeJoin,
+        miterLimit: strokeExtras?.miterLimit ?? kDefaultMiterLimit,
+      );
+
+  /// The fillable outline of [path] stroked with this paint: cut into its
+  /// dashes when it has a pattern, then run through [stroker] with [pen].
+  /// The one place a sink turns a stroke into a shape, so every sink dashes
+  /// and caps alike. Fill the result non-zero - the stroker's contract.
+  Path outline(
+    PathStroker stroker,
+    Path path, {
+    double tolerance = kDefaultStrokeTolerance,
+  }) {
+    final StrokeExtras? extras = strokeExtras;
+    final List<double>? dashes = extras?.dashArray;
+    final Path centreline = dashes == null
+        ? path
+        : dashPath(path, dashes, offset: extras!.dashOffset);
+    return stroker.stroke(centreline, pen, tolerance: tolerance);
+  }
 
   /// One of the `blendMode*` constants.
   final int blendMode;
@@ -143,6 +176,9 @@ final class ReplayPaint {
         fillRule: fillRule,
         gradient: gradient,
         shaderTransform: transform,
+        strokeCap: strokeCap,
+        strokeJoin: strokeJoin,
+        strokeExtras: strokeExtras,
       );
 
   @override
@@ -155,16 +191,31 @@ final class ReplayPaint {
       other.antiAlias == antiAlias &&
       other.fillRule == fillRule &&
       other.gradient == gradient &&
-      other.shaderTransform == shaderTransform;
+      other.shaderTransform == shaderTransform &&
+      other.strokeCap == strokeCap &&
+      other.strokeJoin == strokeJoin &&
+      other.strokeExtras == strokeExtras;
 
   @override
-  int get hashCode => Object.hash(argbColor, style, strokeWidth, blendMode,
-      antiAlias, fillRule, gradient, shaderTransform);
+  int get hashCode => Object.hash(
+      argbColor,
+      style,
+      strokeWidth,
+      blendMode,
+      antiAlias,
+      fillRule,
+      gradient,
+      shaderTransform,
+      strokeCap,
+      strokeJoin,
+      strokeExtras);
 
   @override
   String toString() => 'ReplayPaint(0x${argbColor.toRadixString(16)}, '
       'style: $style, strokeWidth: $strokeWidth, blend: $blendMode, '
       'aa: $antiAlias, fillRule: $fillRule'
+      '${strokeCap == StrokeCap.butt && strokeJoin == StrokeJoin.miter ? '' : ', cap: ${strokeCap.name}, join: ${strokeJoin.name}'}'
+      '${strokeExtras == null ? '' : ', $strokeExtras'}'
       '${gradient == null ? '' : ', gradient: $gradient, shader: $shaderTransform'})';
 }
 
@@ -191,6 +242,9 @@ abstract interface class ReplayResources {
   bool paintAntiAlias(int id);
   int paintFillRule(int id);
   Gradient? paintGradient(int id);
+  StrokeCap paintStrokeCap(int id);
+  StrokeJoin paintStrokeJoin(int id);
+  StrokeExtras? paintStrokeExtras(int id);
 
   /// The path object that was interned under [id]. Opaque to the player -
   /// the display list stores paths as `Object` and offers no bounds, which is
@@ -238,6 +292,15 @@ final class DisplayListResources implements ReplayResources {
 
   @override
   Gradient? paintGradient(int id) => _list.paintGradient(id);
+
+  @override
+  StrokeCap paintStrokeCap(int id) => _list.paintStrokeCap(id);
+
+  @override
+  StrokeJoin paintStrokeJoin(int id) => _list.paintStrokeJoin(id);
+
+  @override
+  StrokeExtras? paintStrokeExtras(int id) => _list.paintStrokeExtras(id);
 
   @override
   Object pathAt(int id) => _list.pathAt(id);
@@ -780,6 +843,9 @@ final class DisplayListPlayer {
       antiAlias: resources.paintAntiAlias(id),
       fillRule: resources.paintFillRule(id),
       gradient: gradient,
+      strokeCap: resources.paintStrokeCap(id),
+      strokeJoin: resources.paintStrokeJoin(id),
+      strokeExtras: resources.paintStrokeExtras(id),
     );
     _paints[id] = paint;
     return gradient == null

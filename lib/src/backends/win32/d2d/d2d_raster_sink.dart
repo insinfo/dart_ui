@@ -98,6 +98,7 @@ import '../../../foundation/diagnostics.dart';
 import '../../../geometry/offset.dart';
 import '../../../geometry/path.dart';
 import '../../../geometry/rect.dart';
+import '../../../geometry/stroke.dart';
 import '../../../geometry/transform2d.dart';
 import '../../../graphics/display_list_opcodes.dart';
 import '../../../rendering/framebuffer.dart';
@@ -192,7 +193,7 @@ final class D2dRasterSink implements RasterSink {
       ..startCap = d2d1CapStyleFlat
       ..endCap = d2d1CapStyleFlat
       ..dashCap = d2d1CapStyleFlat
-      ..lineJoin = d2d1LineJoinMiter
+      ..lineJoin = d2d1LineJoinMiterOrBevel
       ..miterLimit = 4
       ..dashStyle = d2d1DashStyleSolid
       ..dashOffset = 0;
@@ -473,7 +474,86 @@ final class D2dRasterSink implements RasterSink {
     _brush?.release();
     _brush = null;
     ComObject(_strokeStyle).release();
+    _releaseStrokeStyles();
     _releaseScratch();
+  }
+
+  /// Stroke styles other than the default, by what makes them differ.
+  ///
+  /// Direct2D measures a custom dash in stroke widths, so a dashed style
+  /// is particular to its width as well; the width is part of the key only
+  /// then. Bounded: a document with a thousand dash patterns rebuilds the
+  /// cache rather than holding a thousand COM objects.
+  final Map<(StrokeCap, StrokeJoin, StrokeExtras?, double), Pointer<Void>>
+      _strokeStyles =
+      <(StrokeCap, StrokeJoin, StrokeExtras?, double), Pointer<Void>>{};
+
+  static const int _maxStrokeStyles = 64;
+
+  Pointer<Void> _strokeStyleFor(ReplayPaint paint) {
+    final StrokeExtras? extras = paint.strokeExtras;
+    if (paint.strokeCap == StrokeCap.butt &&
+        paint.strokeJoin == StrokeJoin.miter &&
+        extras == null) {
+      return _strokeStyle;
+    }
+    final List<double>? dashes = extras?.dashArray;
+    final double width = paint.strokeWidth;
+    final (StrokeCap, StrokeJoin, StrokeExtras?, double) key = (
+      paint.strokeCap,
+      paint.strokeJoin,
+      extras,
+      dashes == null ? 0 : width,
+    );
+    final Pointer<Void>? cached = _strokeStyles[key];
+    if (cached != null) return cached;
+    if (_strokeStyles.length >= _maxStrokeStyles) _releaseStrokeStyles();
+
+    final int cap = switch (paint.strokeCap) {
+      StrokeCap.butt => d2d1CapStyleFlat,
+      StrokeCap.round => d2d1CapStyleRound,
+      StrokeCap.square => d2d1CapStyleSquare,
+    };
+    final Pointer<D2dStrokeStyleProperties> properties = _allocator
+        .allocate<D2dStrokeStyleProperties>(sizeOf<D2dStrokeStyleProperties>());
+    // A dash in widths; a hairline has no width to measure one in, and is
+    // drawn solid.
+    final bool dashed = dashes != null && width > 0;
+    properties.ref
+      ..startCap = cap
+      ..endCap = cap
+      ..dashCap = cap
+      ..lineJoin = switch (paint.strokeJoin) {
+        StrokeJoin.miter => d2d1LineJoinMiterOrBevel,
+        StrokeJoin.round => d2d1LineJoinRound,
+        StrokeJoin.bevel => d2d1LineJoinBevel,
+      }
+      ..miterLimit = extras?.miterLimit ?? kDefaultMiterLimit
+      ..dashStyle = dashed ? d2d1DashStyleCustom : d2d1DashStyleSolid
+      ..dashOffset = dashed ? extras!.dashOffset / width : 0;
+    Pointer<Float> array = nullptr.cast<Float>();
+    if (dashed) {
+      array = _allocator.allocate<Float>(sizeOf<Float>() * dashes.length);
+      for (var i = 0; i < dashes.length; i++) {
+        array[i] = dashes[i] / width;
+      }
+    }
+    final int hr = _factory.createStrokeStyle(
+        properties, array, dashed ? dashes.length : 0, _out);
+    _allocator.free(properties);
+    if (dashed) _allocator.free(array);
+    if (comFailed(hr)) {
+      throw StateError(
+          '$backendName: CreateStrokeStyle failed: ${d2dHresultText(hr)}');
+    }
+    return _strokeStyles[key] = _out.value;
+  }
+
+  void _releaseStrokeStyles() {
+    for (final Pointer<Void> style in _strokeStyles.values) {
+      ComObject(style).release();
+    }
+    _strokeStyles.clear();
   }
 
   void _releaseScratch() {
@@ -650,7 +730,8 @@ final class D2dRasterSink implements RasterSink {
     }
     if (paint.style == paintStyleStroke ||
         paint.style == paintStyleFillAndStroke) {
-      _target.drawGeometry(geometry, brush, paint.strokeWidth, _strokeStyle);
+      _target.drawGeometry(
+          geometry, brush, paint.strokeWidth, _strokeStyleFor(paint));
     }
 
     if (aliased) _target.setAntialiasMode(d2d1AntialiasModePerPrimitive);

@@ -83,11 +83,31 @@ const int d2d1FigureEndClosed = 1;
 /// the cap the replay contract promises (see `ReplayPaint.strokeWidth`).
 const int d2d1CapStyleFlat = 0;
 
-/// `D2D1_LINE_JOIN_MITER`.
+/// `D2D1_CAP_STYLE_SQUARE`.
+const int d2d1CapStyleSquare = 1;
+
+/// `D2D1_CAP_STYLE_ROUND`.
+const int d2d1CapStyleRound = 2;
+
+/// `D2D1_LINE_JOIN_MITER`: a miter past the limit is *clipped*, which no
+/// other renderer here does - so the sink uses [d2d1LineJoinMiterOrBevel].
 const int d2d1LineJoinMiter = 0;
+
+/// `D2D1_LINE_JOIN_BEVEL`.
+const int d2d1LineJoinBevel = 1;
+
+/// `D2D1_LINE_JOIN_ROUND`.
+const int d2d1LineJoinRound = 2;
+
+/// `D2D1_LINE_JOIN_MITER_OR_BEVEL`: a miter, or a bevel past the limit -
+/// SVG's rule, and the CPU stroker's.
+const int d2d1LineJoinMiterOrBevel = 3;
 
 /// `D2D1_DASH_STYLE_SOLID`.
 const int d2d1DashStyleSolid = 0;
+
+/// `D2D1_DASH_STYLE_CUSTOM`: the dashes are an array, in stroke widths.
+const int d2d1DashStyleCustom = 5;
 
 /// `D2D1_GAMMA_2_2`: interpolate gradient stops in the space the colours were
 /// specified in, which is what the CPU rasteriser does too.

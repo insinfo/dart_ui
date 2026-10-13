@@ -35,6 +35,7 @@ library;
 
 import 'dart:typed_data';
 
+import '../geometry/stroke.dart';
 import 'content_hint.dart';
 import 'display_list_opcodes.dart';
 import 'glyph_text.dart';
@@ -54,7 +55,7 @@ final class DisplayList {
         assert(initialPaintCapacity > 0),
         _ops = Uint32List(initialOpCapacity),
         _floats = Float32List(initialFloatCapacity),
-        _paintInts = Uint32List(initialPaintCapacity * 2),
+        _paintInts = Uint32List(initialPaintCapacity * _paintWords),
         _paintFloats = Float32List(initialPaintCapacity + 1),
         _paintWidthBits = _noBits,
         _paintSlots = Uint32List(_slotCountFor(initialPaintCapacity)) {
@@ -71,13 +72,25 @@ final class DisplayList {
   int _commandCount = 0;
   int _bufferGrowths = 0;
 
-  // Paints are stored flat, two words and one float each, so that adding one
-  // costs no object either. Slot `_paintCount` of `_paintFloats` doubles as
+  // Paints are stored flat, three words and one float each, so that adding
+  // one costs no object either: the colour, the flag word, and the stroke
+  // word (cap, join, and the id of the stroke's extras - see
+  // [_strokeExtras]). Slot `_paintCount` of `_paintFloats` doubles as
   // the scratch slot used to narrow a candidate stroke width before
   // comparing it - which is why that buffer is one slot longer than the
   // paint capacity.
   Uint32List _paintInts;
   Float32List _paintFloats;
+
+  /// Words per paint in [_paintInts].
+  static const int _paintWords = 3;
+
+  /// The rarer half of a stroke - a miter limit other than 4, a dash
+  /// pattern - interned by value and referenced from the stroke word, the
+  /// way gradients are from the flag word. A paint with neither refers to
+  /// none, so an ordinary stroke still costs three words and a float.
+  final List<StrokeExtras> _strokeExtras = <StrokeExtras>[];
+  final Map<StrokeExtras, int> _strokeExtraIds = <StrokeExtras, int>{};
   int _paintCount = 0;
 
   /// The bit patterns of [_paintFloats], aliasing the same storage.
@@ -201,6 +214,8 @@ final class DisplayList {
     _fontIds.clear();
     _gradients.clear();
     _gradientIds.clear();
+    _strokeExtras.clear();
+    _strokeExtraIds.clear();
     _hintSpanCount = 0;
     _hintDepth = 0;
     _glyphText.reset();
@@ -233,6 +248,11 @@ final class DisplayList {
     bool antiAlias = true,
     int fillRule = pathFillRuleNonZero,
     Gradient? gradient,
+    StrokeCap strokeCap = StrokeCap.butt,
+    StrokeJoin strokeJoin = StrokeJoin.miter,
+    double miterLimit = kDefaultMiterLimit,
+    List<double>? dashArray,
+    double dashOffset = 0,
   }) {
     if (style < 0 || style >= kPaintStyleCount) {
       throw ArgumentError.value(style, 'style', 'unknown paint style');
@@ -255,15 +275,22 @@ final class DisplayList {
         ((fillRule & 0x1) << 3) |
         ((blendMode & 0xFF) << 8) |
         shaderBits;
-    final int base = _paintCount * 2;
+    final int base = _paintCount * _paintWords;
+    final StrokeExtras? extras =
+        StrokeExtras.of(miterLimit, dashArray, dashOffset);
+    final int strokeWord = strokeCap.index |
+        (strokeJoin.index << 2) |
+        ((extras == null ? 0 : _internStrokeExtras(extras) + 1) << 4);
     // Written before the lookup so the comparison runs against the exact
     // values that would be stored, quantisation included.
     _paintInts[base] = colorArgb;
     _paintInts[base + 1] = flags;
+    _paintInts[base + 2] = strokeWord;
     _paintFloats[_paintCount] = strokeWidth;
 
     final int storedColor = _paintInts[base];
     final int storedFlags = _paintInts[base + 1];
+    final int storedStroke = _paintInts[base + 2];
     var storedWidth = _paintWidthBits[_paintCount];
     if (storedWidth == 0x80000000) {
       // -0.0. It is `==` to 0.0 and strokes identically, and the old
@@ -284,7 +311,8 @@ final class DisplayList {
     }
 
     final int mask = _paintSlotMask;
-    var slot = _hashPaint(storedColor, storedFlags, storedWidth) & mask;
+    var slot =
+        _hashPaint(storedColor, storedFlags, storedStroke, storedWidth) & mask;
     while (true) {
       final int entry = _paintSlots[slot];
       if (entry == 0) {
@@ -294,9 +322,10 @@ final class DisplayList {
       // The full key is compared, never the hash, so a probe collision can
       // only cost one more step - it can never merge two different paints.
       final int candidate = entry - 1;
-      final int candidateBase = candidate * 2;
+      final int candidateBase = candidate * _paintWords;
       if (_paintInts[candidateBase] == storedColor &&
           _paintInts[candidateBase + 1] == storedFlags &&
+          _paintInts[candidateBase + 2] == storedStroke &&
           _paintWidthBits[candidate] == storedWidth) {
         return candidate;
       }
@@ -322,9 +351,10 @@ final class DisplayList {
   /// 16-bit halves by [_mul32], because this library is compiled for the web
   /// too, where an `int` is a double and a 64-bit product would silently lose
   /// its low bits.
-  static int _hashPaint(int color, int flags, int widthBits) {
+  static int _hashPaint(int color, int flags, int stroke, int widthBits) {
     var h = _mul32(color, 0xCC9E2D51);
     h = _mul32(h ^ flags, 0x1B873593);
+    h = _mul32(h ^ stroke, 0x1B873593);
     h = _mul32(h ^ widthBits, 0x85EBCA6B);
     h ^= h >>> 15;
     h = _mul32(h, 0xC2B2AE35);
@@ -349,29 +379,30 @@ final class DisplayList {
     return slots;
   }
 
-  int paintColor(int id) => _paintInts[_checkPaint(id) * 2];
+  int paintColor(int id) => _paintInts[_checkPaint(id) * _paintWords];
 
-  int paintStyle(int id) => _paintInts[_checkPaint(id) * 2 + 1] & 0x3;
+  int paintStyle(int id) => _paintInts[_checkPaint(id) * _paintWords + 1] & 0x3;
 
   bool paintAntiAlias(int id) =>
-      (_paintInts[_checkPaint(id) * 2 + 1] & 0x4) != 0;
+      (_paintInts[_checkPaint(id) * _paintWords + 1] & 0x4) != 0;
 
-  int paintFillRule(int id) => (_paintInts[_checkPaint(id) * 2 + 1] >> 3) & 0x1;
+  int paintFillRule(int id) =>
+      (_paintInts[_checkPaint(id) * _paintWords + 1] >> 3) & 0x1;
 
   int paintBlendMode(int id) =>
-      (_paintInts[_checkPaint(id) * 2 + 1] >> 8) & 0xFF;
+      (_paintInts[_checkPaint(id) * _paintWords + 1] >> 8) & 0xFF;
 
   double paintStrokeWidth(int id) => _paintFloats[_checkPaint(id)];
 
   /// One of `shaderKindSolid`, `shaderKindLinear`, `shaderKindRadial` from
   /// `gradient.dart`. Bits 4..5 of the flag word.
   int paintShaderKind(int id) =>
-      (_paintInts[_checkPaint(id) * 2 + 1] >> 4) & 0x3;
+      (_paintInts[_checkPaint(id) * _paintWords + 1] >> 4) & 0x3;
 
   /// The gradient table id of a non-solid paint. Only meaningful when
   /// [paintShaderKind] is not solid; a solid paint reports 0.
   int paintGradientId(int id) =>
-      (_paintInts[_checkPaint(id) * 2 + 1] >> 16) & 0xFFFF;
+      (_paintInts[_checkPaint(id) * _paintWords + 1] >> 16) & 0xFFFF;
 
   /// The [Gradient] behind [id]'s paint, or null for a solid paint. This is
   /// the accessor replay code reads; the id-level pair above exists for wire
@@ -381,6 +412,31 @@ final class DisplayList {
       : _gradients[paintGradientId(id)];
 
   Gradient gradientAt(int id) => _gradients[id];
+
+  int _strokeWord(int id) => _paintInts[_checkPaint(id) * _paintWords + 2];
+
+  /// How [id]'s stroke ends an open contour.
+  StrokeCap paintStrokeCap(int id) => StrokeCap.values[_strokeWord(id) & 0x3];
+
+  /// How [id]'s stroke turns a corner.
+  StrokeJoin paintStrokeJoin(int id) =>
+      StrokeJoin.values[(_strokeWord(id) >> 2) & 0x3];
+
+  /// The miter limit and dash pattern of [id]'s stroke, or null for the
+  /// defaults: a miter limit of [kDefaultMiterLimit] and a solid line.
+  StrokeExtras? paintStrokeExtras(int id) {
+    final int extras = _strokeWord(id) >> 4;
+    return extras == 0 ? null : _strokeExtras[extras - 1];
+  }
+
+  int _internStrokeExtras(StrokeExtras extras) {
+    final int? existing = _strokeExtraIds[extras];
+    if (existing != null) return existing;
+    final int id = _strokeExtras.length;
+    _strokeExtras.add(extras);
+    _strokeExtraIds[extras] = id;
+    return id;
+  }
 
   int _internGradient(Gradient gradient) {
     final int? existing = _gradientIds[gradient];
@@ -1119,12 +1175,14 @@ final class DisplayList {
 
   void _ensurePaintCapacity(int count) {
     // One spare float slot is always kept for the dedup scratch write.
-    if (count * 2 <= _paintInts.length && count < _paintFloats.length) {
+    if (count * _paintWords <= _paintInts.length &&
+        count < _paintFloats.length) {
       return;
     }
-    final int capacity = _grownCapacity(_paintInts.length ~/ 2, count);
-    final Uint32List grownInts = Uint32List(capacity * 2);
-    grownInts.setRange(0, _paintCount * 2, _paintInts);
+    final int capacity =
+        _grownCapacity(_paintInts.length ~/ _paintWords, count);
+    final Uint32List grownInts = Uint32List(capacity * _paintWords);
+    grownInts.setRange(0, _paintCount * _paintWords, _paintInts);
     _paintInts = grownInts;
     final Float32List grownFloats = Float32List(capacity + 1);
     grownFloats.setRange(0, _paintCount, _paintFloats);
@@ -1140,10 +1198,11 @@ final class DisplayList {
     _paintSlots = Uint32List(slots);
     _paintSlotMask = slots - 1;
     for (var id = 0; id < _paintCount; id++) {
-      final int idBase = id * 2;
+      final int idBase = id * _paintWords;
       var slot = _hashPaint(
             _paintInts[idBase],
             _paintInts[idBase + 1],
+            _paintInts[idBase + 2],
             _paintWidthBits[id],
           ) &
           _paintSlotMask;

@@ -4,6 +4,7 @@ import 'dart:typed_data';
 import 'package:dart_ui/src/geometry/offset.dart';
 import 'package:dart_ui/src/geometry/path.dart';
 import 'package:dart_ui/src/geometry/rect.dart';
+import 'package:dart_ui/src/geometry/stroke.dart';
 import 'package:dart_ui/src/geometry/transform2d.dart';
 import 'package:dart_ui/src/graphics/display_list.dart';
 import 'package:dart_ui/src/graphics/display_list_geometry.dart';
@@ -707,6 +708,15 @@ final class _PaintStyleOverride implements ReplayResources {
 
   @override
   Gradient? paintGradient(int id) => _inner.paintGradient(id);
+
+  @override
+  StrokeCap paintStrokeCap(int id) => _inner.paintStrokeCap(id);
+
+  @override
+  StrokeJoin paintStrokeJoin(int id) => _inner.paintStrokeJoin(id);
+
+  @override
+  StrokeExtras? paintStrokeExtras(int id) => _inner.paintStrokeExtras(id);
 
   @override
   Object pathAt(int id) => _inner.pathAt(id);

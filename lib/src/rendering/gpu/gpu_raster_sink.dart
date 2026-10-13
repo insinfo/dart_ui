@@ -716,7 +716,7 @@ final class GpuRasterSink
         break;
       case paintStyleStroke:
         _drawMask(
-          _stroker.stroke(path, StrokeStyle(width: paint.strokeWidth)),
+          paint.outline(_stroker, path),
           transform,
           clip,
           paint,
@@ -733,7 +733,7 @@ final class GpuRasterSink
           rule: _fillRule(paint),
         );
         _drawMask(
-          _stroker.stroke(path, StrokeStyle(width: paint.strokeWidth)),
+          paint.outline(_stroker, path),
           transform,
           clip,
           paint,

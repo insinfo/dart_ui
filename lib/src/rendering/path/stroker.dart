@@ -90,37 +90,9 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import '../../geometry/path.dart';
+import '../../geometry/stroke.dart';
 
-/// How an open contour's ends are finished.
-enum StrokeCap {
-  /// Stops at the endpoint. A dot - a contour with no length - draws nothing.
-  butt,
-
-  /// A semicircle of radius `width / 2` beyond the endpoint. A dot draws a
-  /// filled circle, which is what makes a single tap or a lone `moveTo`
-  /// visible.
-  round,
-
-  /// Extends by `width / 2` and squares off, so the end is a rectangle. A dot
-  /// draws an axis-aligned square: with no segment there is no direction to
-  /// align the square to, and picking the axes is the only answer that does
-  /// not depend on invisible state.
-  square,
-}
-
-/// How the outer side of a corner is filled in.
-enum StrokeJoin {
-  /// Extends both offset edges to their intersection, unless that point is
-  /// further from the corner than [StrokeStyle.miterLimit] allows, in which
-  /// case this behaves as [bevel].
-  miter,
-
-  /// A circular arc of radius `width / 2` centred on the corner.
-  round,
-
-  /// A straight line between the two offset points.
-  bevel,
-}
+export '../../geometry/stroke.dart';
 
 /// The pen: a width plus what to do at ends and corners.
 final class StrokeStyle {
