@@ -50,6 +50,7 @@ final ChromeMetrics _chrome =
 const Size kWindowSize = Size(1400, 880);
 
 void main() {
+  _rightClickAndCurveTests();
   setUpAll(() {
     final fonts = FrameworkFonts.install();
     expect(fonts.uiFontLoaded, isTrue);
@@ -1212,6 +1213,91 @@ void main() {
   });
 }
 
+void _rightClickAndCurveTests() {
+  group('right-click menus', () {
+    test('a right click on an object selects it and offers its commands', () {
+      final harness = _Harness();
+      final rectangle = harness.rectangle;
+      harness.rightClickDocument(rectangle.cacheBbox.center);
+      expect(harness.model.selection.selectedObjects, <Object>[rectangle]);
+      final labels = harness.openMenuLabels;
+      expect(labels, containsAll(<String>['Cut', 'Copy', 'Convert to curves']));
+      expect(labels, contains('Order'));
+      harness.dispose();
+    });
+
+    test('a right click on the empty page clears the selection', () {
+      final harness = _Harness();
+      harness.model.selectAll();
+      harness.frame();
+      harness.rightClickDocument(
+          harness.session.page.rect.bottomRight - const Offset(20, 20));
+      expect(harness.model.hasSelection, isFalse);
+      expect(harness.openMenuLabels, containsAll(<String>['Paste', 'Zoom']));
+      harness.dispose();
+    });
+
+    test('a right click inside the selection keeps all of it', () {
+      final harness = _Harness();
+      harness.model.selectAll();
+      harness.frame();
+      final count = harness.model.selection.count;
+      harness.rightClickDocument(harness.rectangle.cacheBbox.center);
+      expect(harness.model.selection.count, count);
+      harness.dispose();
+    });
+  });
+
+  group('Convert to curves', () {
+    test('a rectangle becomes a curve in its place, one undo step', () {
+      final harness = _Harness();
+      final rectangle = harness.rectangle;
+      final index = harness.layer.children.indexOf(rectangle);
+      final box = rectangle.cacheBbox;
+      harness.model.pickObject(rectangle);
+      harness.model.convertSelectionToCurves();
+      final curve = harness.layer.children[index];
+      expect(curve, isA<VectorCurve>());
+      expect((curve as VectorCurve).cacheBbox.left, closeTo(box.left, 0.01));
+      expect(curve.cacheBbox.bottom, closeTo(box.bottom, 0.01));
+      expect(harness.model.selection.selectedObjects, <Object>[curve]);
+
+      harness.model.undo();
+      expect(harness.layer.children[index], same(rectangle));
+      harness.dispose();
+    });
+
+    test('a text becomes the outlines of its glyphs', () {
+      final harness = _Harness();
+      final text = harness.text;
+      final box = text.cacheBbox;
+      harness.model.pickObject(text);
+      harness.model.convertSelectionToCurves();
+      final curve = harness.model.singleSelection;
+      expect(curve, isA<VectorCurve>());
+      curve as VectorCurve;
+      // One contour at least per visible glyph.
+      final glyphs = text.textContent.replaceAll(' ', '').length;
+      expect(curve.paths.length, greaterThanOrEqualTo(glyphs));
+      // The ink sits inside the text's line box.
+      expect(curve.cacheBbox.left, greaterThanOrEqualTo(box.left - 1));
+      expect(curve.cacheBbox.right, lessThanOrEqualTo(box.right + 1));
+      expect(curve.cacheBbox.top, greaterThanOrEqualTo(box.top - 1));
+      expect(curve.cacheBbox.bottom, lessThanOrEqualTo(box.bottom + 1));
+      expect(curve.style.fill.fillRule.name, 'nonZero');
+      harness.dispose();
+    });
+
+    test('a curve is already one: nothing to convert', () {
+      final harness = _Harness();
+      harness.model.pickObject(harness.rectangle);
+      harness.model.convertSelectionToCurves();
+      expect(harness.model.canConvertToCurves, isFalse);
+      harness.dispose();
+    });
+  });
+}
+
 // ---------------------------------------------------------------------------
 // The harness
 // ---------------------------------------------------------------------------
@@ -1432,6 +1518,30 @@ final class _Harness {
 
   void tapDocument(Offset document, {Set<KeyModifier> modifiers = const {}}) =>
       tapGlobal(_toGlobal(document), modifiers: modifiers);
+
+  /// A right click at [document], as a mouse sends it.
+  void rightClickDocument(Offset document) {
+    final global = _toGlobal(document);
+    _down(global, PointerButton.secondary);
+    _up(global, PointerButton.secondary);
+    frame();
+  }
+
+  /// The labels of the rows of every open menu panel, top panel last.
+  List<String> get openMenuLabels {
+    final labels = <String>[];
+    void walk(RenderBox node) {
+      if (node is RenderMenuPanel && node.decorated) {
+        for (final RenderBox child in node.children) {
+          if (child is MenuRowBehavior) labels.add(child.rowLabel ?? '');
+        }
+      }
+      node.visitChildren(walk);
+    }
+
+    walk(owner.renderRoot!);
+    return labels;
+  }
 
   void doubleTapDocument(Offset document) {
     final global = _toGlobal(document);

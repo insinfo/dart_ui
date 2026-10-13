@@ -23,7 +23,12 @@
 /// clickable area of a text every time the user zoomed.
 library;
 
+import '../../geometry/offset.dart';
+import '../../geometry/path.dart';
+import '../../graphics/color.dart';
+import '../../graphics/vector/constants.dart';
 import '../../graphics/vector/primitives.dart';
+import '../../graphics/vector/style.dart';
 import '../../rendering/text/font_registry.dart';
 import '../../rendering/text/text_painter.dart';
 import '../../text/grapheme.dart';
@@ -121,5 +126,82 @@ abstract final class VectorTextMetrics {
       if (offset == content.length) break;
     }
     return best;
+  }
+
+  /// [text] as a curve with the same outline: every glyph's contours, placed
+  /// where the shaper put them, in the text's own units and under its
+  /// transform - CorelDRAW's Convert to Curves (Ctrl+Q) on artistic text.
+  ///
+  /// The fill is the text's colour - black when it has none, as the renderer
+  /// draws it - with the nonzero rule fonts are designed for, so a glyph whose
+  /// contours overlap is not punched with holes. Null when the registry has no
+  /// font to take the outlines from, or the text is empty.
+  static VectorCurve? toCurves(VectorText text) {
+    final content = text.textContent;
+    final face = faceFor(text);
+    if (face == null || content.isEmpty) return null;
+    final run = _painter.shapeRun(content, face);
+    final paths = <VectorPath>[];
+    final double scale = face.scale;
+    for (var i = 0; i < run.length; i++) {
+      final double gx = run.positions[2 * i];
+      final double gy = run.positions[2 * i + 1];
+      // Font units, y up, to text units, y down from the baseline.
+      Offset at(Path path, int point) => Offset(
+            gx + path.pointX(point) * scale,
+            gy - path.pointY(point) * scale,
+          );
+      final Path outline = face.typeface.outlineOf(run.glyphIds[i]);
+      VectorPath? current;
+      Offset pen = Offset.zero;
+      var point = 0;
+      for (var v = 0; v < outline.verbCount; v++) {
+        final int verb = outline.verbAt(v);
+        switch (verb) {
+          case verbMoveTo:
+            pen = at(outline, point);
+            current = VectorPath(start: pen);
+            paths.add(current);
+          case verbLineTo:
+            pen = at(outline, point);
+            current?.points.add(pen);
+          case verbQuadraticTo:
+            // Exact as a cubic: controls two thirds of the way to the
+            // quadratic's one.
+            final Offset q = at(outline, point);
+            final Offset end = at(outline, point + 1);
+            current?.points.add(CurvePoint(
+              pen + (q - pen) * (2 / 3),
+              end + (q - end) * (2 / 3),
+              end,
+            ));
+            pen = end;
+          case verbCubicTo:
+            final Offset end = at(outline, point + 2);
+            current?.points.add(
+                CurvePoint(at(outline, point), at(outline, point + 1), end));
+            pen = end;
+          case verbClose:
+            current?.closure = PathClosure.closed;
+        }
+        point += pointsPerVerb(verb);
+      }
+    }
+    if (paths.isEmpty) return null;
+    final fill = text.style.fill.isNone
+        ? const FillDescriptor.solid(Color(0xFF000000))
+        : text.style.fill;
+    final curve = VectorCurve(
+      trafo: List.of(text.trafo),
+      style: text.style.copyWith(
+        fill: fill.copyWith(fillRule: FillRule.nonZero),
+        // The renderer draws text without its outline; the curve must look
+        // the same the moment it replaces it.
+        stroke: StrokeDescriptor.none,
+      ),
+      paths: paths,
+    );
+    curve.update();
+    return curve;
   }
 }

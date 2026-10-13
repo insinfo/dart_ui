@@ -7,6 +7,7 @@ library;
 
 import 'package:dart_ui/dart_ui.dart';
 
+import 'context_menus.dart';
 import 'document_api.dart';
 import 'metrics.dart';
 import 'workspace.dart';
@@ -179,6 +180,10 @@ class EditorModel {
   /// Whether this window can put its menus in the system's bar; set by the
   /// window as it builds.
   bool nativeMenuAvailable = false;
+
+  /// The right-click menus, over the window's command catalog; set by the
+  /// window as it builds. Null in a model no window shows.
+  EditorContextMenus? contextMenus;
 
   void setNativeMenuBar(bool value) {
     nativeMenuBar = value;
@@ -649,6 +654,42 @@ class EditorModel {
     });
     selection.setSelection(copies);
     touch('Duplicated ${copies.length} object(s)');
+  }
+
+  /// Whether Convert to Curves has something to convert: a shape or a text
+  /// in the selection. A curve is already one, and a group is converted by
+  /// ungrouping first, as in CorelDRAW.
+  bool get canConvertToCurves => selection.selectedObjects.any(
+      (o) => o is VectorText || (o is! VectorCurve && o.toCurve() != null));
+
+  /// Replaces every shape and text in the selection by a curve with the same
+  /// outline, in the same place in the stacking order - CorelDRAW's Ctrl+Q.
+  /// One undo step; the curves are selected afterwards.
+  void convertSelectionToCurves() {
+    if (!canConvertToCurves) return;
+    final originals = _inDocumentOrder(selection.selectedObjects);
+    final converted = active.api.record('Convert to curves', () {
+      final result = <SelectableObject>[];
+      for (final original in originals) {
+        final parent = original.parent;
+        final DocumentObject? curve = switch (original) {
+          VectorText() => VectorTextMetrics.toCurves(original),
+          VectorCurve() => null,
+          _ => original.toCurve(),
+        };
+        if (parent is! VectorLayer || curve is! SelectableObject) {
+          result.add(original);
+          continue;
+        }
+        final index = parent.children.indexOf(original);
+        active.api.methods.removeObject(original);
+        active.api.methods.addObject(parent, curve, index);
+        result.add(curve);
+      }
+      return result;
+    });
+    selection.setSelection(converted);
+    touch('Converted ${converted.length} object(s) to curves');
   }
 
   /// [objects] sorted bottom to top, so copies keep the stacking order.

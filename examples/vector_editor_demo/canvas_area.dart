@@ -146,41 +146,63 @@ class _MeasuredCanvas extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final session = model.active;
-    return _SizeReporter(
-      onSize: onViewportResized,
-      child: VectorCanvas(
-        doc: session.document,
-        page: session.page,
-        zoom: session.zoom,
-        pan: session.pan,
-        tool: model.tool,
-        selection: session.selection,
-        snap: session.snap,
-        showGrid: model.showGrid,
-        showGuides: model.showGuides,
-        polygonCorners: model.polygonCorners,
-        activeLayer: session.layer,
-        onZoomChanged: model.setZoom,
-        onPanChanged: (pan) {
-          session
-            ..pan = pan
-            ..viewTouched = true;
-          model.refresh();
-        },
-        onCursorMoved: (point) {
-          model.cursor = point;
-          model.refresh();
-        },
-        onSelectionChanged: (_) => model.refresh(),
-        onDocumentChanged: () => model.touch(),
-        onObjectCreated: (Object object) {
-          if (object is SelectableObject) model.objectCreated(object);
-        },
-        onTransformCommitted: model.commitTransform,
-        onTextCommitted: model.commitTextEdit,
-        onHint: (String hint) => model.refresh(hint),
+    return ContextMenuArea(
+      enabled: model.contextMenus != null,
+      onOpen: _selectUnder,
+      menuChildren: () =>
+          PlatformMenuBar.menuWidgets(model.contextMenus?.canvas() ?? const []),
+      child: _SizeReporter(
+        onSize: onViewportResized,
+        child: VectorCanvas(
+          doc: session.document,
+          page: session.page,
+          zoom: session.zoom,
+          pan: session.pan,
+          tool: model.tool,
+          selection: session.selection,
+          snap: session.snap,
+          showGrid: model.showGrid,
+          showGuides: model.showGuides,
+          polygonCorners: model.polygonCorners,
+          activeLayer: session.layer,
+          onZoomChanged: model.setZoom,
+          onPanChanged: (pan) {
+            session
+              ..pan = pan
+              ..viewTouched = true;
+            model.refresh();
+          },
+          onCursorMoved: (point) {
+            model.cursor = point;
+            model.refresh();
+          },
+          onSelectionChanged: (_) => model.refresh(),
+          onDocumentChanged: () => model.touch(),
+          onObjectCreated: (Object object) {
+            if (object is SelectableObject) model.objectCreated(object);
+          },
+          onTransformCommitted: model.commitTransform,
+          onTextCommitted: model.commitTextEdit,
+          onHint: (String hint) => model.refresh(hint),
+        ),
       ),
     );
+  }
+
+  /// What every editor does before a right-click menu: an object under the
+  /// pointer that is not selected becomes the selection, so the menu is about
+  /// what was clicked; empty page clears it, for the page's menu.
+  void _selectUnder(Offset local) {
+    final session = model.active;
+    final zoom = session.zoom == 0 ? 1.0 : session.zoom;
+    final point = (local - session.pan) / zoom;
+    final hit =
+        session.selection.hitTest(point, session.page, tolerance: 4 / zoom);
+    if (hit == null) {
+      if (model.hasSelection) model.deselect();
+    } else if (!session.selection.contains(hit)) {
+      model.pickObject(hit);
+    }
   }
 }
 

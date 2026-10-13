@@ -517,6 +517,19 @@ class CommandCatalog {
         },
       );
 
+  /// CorelDRAW's Ctrl+Q. On a Mac that chord is Quit, so there it has none
+  /// in the menu and the context menu carries it.
+  EditorCommand get toCurves => EditorCommand(
+        id: 'toCurves',
+        label: 'Convert to curves',
+        icon: PhosphorIcons.bezierCurve,
+        shortcut: _mac ? null : const KeyGesture(logicalKeyQ, command: true),
+        enabled: model.canConvertToCurves,
+        disabledReason:
+            model.canConvertToCurves ? null : 'select a shape or a text',
+        onInvoke: model.convertSelectionToCurves,
+      );
+
   EditorCommand get moveToTop => _needsSelection(
         'moveTop',
         'Move to Top',
@@ -711,10 +724,7 @@ class CommandCatalog {
           group,
           ungroup,
           null,
-          // sK1's Ctrl+Q; on a Mac that chord is Quit.
-          _todo('toCurves', 'Convert to curves',
-              shortcut:
-                  _mac ? null : const KeyGesture(logicalKeyQ, command: true)),
+          toCurves,
         ]),
         EditorMenu(label: 'Paths', items: <EditorCommand?>[
           _todo('selAllNodes', 'Select all nodes'),

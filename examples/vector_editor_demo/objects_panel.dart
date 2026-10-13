@@ -111,57 +111,64 @@ class _LayerRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final count = layer.children.whereType<SelectableObject>().length;
-    return GestureDetector(
-      behavior: GestureHitTestBehavior.opaque,
-      onTap: () => model.activateLayer(layer),
-      child: SizedBox(
-        height: _rowHeight(theme),
-        child: ColoredBox(
-          color: active ? theme.surfaceRaised : theme.surfaceAlternate,
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.center,
-            children: <Widget>[
-              SizedBox(
-                width: 3,
-                height: _rowHeight(theme),
-                child: ColoredBox(
-                    color: active ? theme.accent : const Color(0x00000000)),
-              ),
-              _IconButton(
-                icon: layer.isVisible
-                    ? PhosphorIcons.eye
-                    : PhosphorIcons.eyeSlash,
-                tooltip: layer.isVisible ? 'Hide layer' : 'Show layer',
-                dim: !layer.isVisible,
-                onTap: () => model.setLayerVisible(layer, !layer.isVisible),
-              ),
-              _IconButton(
-                icon: layer.isEditable
-                    ? PhosphorIcons.lockSimpleOpen
-                    : PhosphorIcons.lockSimple,
-                tooltip: layer.isEditable ? 'Lock layer' : 'Unlock layer',
-                dim: layer.isEditable,
-                onTap: () => model.setLayerLocked(layer, layer.isEditable),
-              ),
-              const SizedBox(width: 4),
-              const Icon(PhosphorIcons.stack),
-              const SizedBox(width: 6),
-              Expanded(
-                child: Text(
-                  layer.name,
-                  style: theme.textTheme.bodySmall,
-                  color: active ? theme.foreground : theme.foregroundSecondary,
-                  maxLines: 1,
+    final menus = model.contextMenus;
+    return ContextMenuArea(
+      enabled: menus != null,
+      menuChildren: () => PlatformMenuBar.menuWidgets(
+          menus?.layer(layer) ?? const <PlatformMenuEntry>[]),
+      child: GestureDetector(
+        behavior: GestureHitTestBehavior.opaque,
+        onTap: () => model.activateLayer(layer),
+        child: SizedBox(
+          height: _rowHeight(theme),
+          child: ColoredBox(
+            color: active ? theme.surfaceRaised : theme.surfaceAlternate,
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: <Widget>[
+                SizedBox(
+                  width: 3,
+                  height: _rowHeight(theme),
+                  child: ColoredBox(
+                      color: active ? theme.accent : const Color(0x00000000)),
                 ),
-              ),
-              Text(
-                '$count',
-                style: theme.textTheme.labelSmall,
-                color: theme.foregroundSecondary,
-              ),
-              // Clear of the scrollbar.
-              const SizedBox(width: 14),
-            ],
+                _IconButton(
+                  icon: layer.isVisible
+                      ? PhosphorIcons.eye
+                      : PhosphorIcons.eyeSlash,
+                  tooltip: layer.isVisible ? 'Hide layer' : 'Show layer',
+                  dim: !layer.isVisible,
+                  onTap: () => model.setLayerVisible(layer, !layer.isVisible),
+                ),
+                _IconButton(
+                  icon: layer.isEditable
+                      ? PhosphorIcons.lockSimpleOpen
+                      : PhosphorIcons.lockSimple,
+                  tooltip: layer.isEditable ? 'Lock layer' : 'Unlock layer',
+                  dim: layer.isEditable,
+                  onTap: () => model.setLayerLocked(layer, layer.isEditable),
+                ),
+                const SizedBox(width: 4),
+                const Icon(PhosphorIcons.stack),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    layer.name,
+                    style: theme.textTheme.bodySmall,
+                    color:
+                        active ? theme.foreground : theme.foregroundSecondary,
+                    maxLines: 1,
+                  ),
+                ),
+                Text(
+                  '$count',
+                  style: theme.textTheme.labelSmall,
+                  color: theme.foregroundSecondary,
+                ),
+                // Clear of the scrollbar.
+                const SizedBox(width: 14),
+              ],
+            ),
           ),
         ),
       ),
@@ -208,52 +215,64 @@ class _ObjectRow extends StatelessWidget {
     final selected = model.selection.contains(object);
     final (icon, label) = describe(object);
     final fill = object.style.fill;
-    return GestureDetector(
-      behavior: GestureHitTestBehavior.opaque,
-      onTap: enabled
-          ? () => model.pickObject(
-                object,
-                toggle: model.selection.hasSelection && _shiftHeld(context),
-              )
-          : null,
-      child: SizedBox(
-        height: _rowHeight(theme),
-        child: ColoredBox(
-          color: selected ? theme.selection : const Color(0x00000000),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.center,
-            children: <Widget>[
-              const SizedBox(width: 30),
-              // The object's own colour, the closest thing to a thumbnail a
-              // row this small can hold.
-              SizedBox(
-                width: 12,
-                height: 12,
-                child: DecoratedBox(
-                  decoration: BoxDecoration(
-                    color: fill.isNone ? null : fill.color,
-                    border: BoxBorder(
-                      color: object.style.stroke.isNone
-                          ? theme.borderStrong
-                          : object.style.stroke.color,
-                      width: 1,
+    final menus = model.contextMenus;
+    return ContextMenuArea(
+      enabled: enabled && menus != null,
+      // The row's object becomes the selection unless it is already part of
+      // it - the same rule as the canvas.
+      onOpen: (_) {
+        if (!selected) model.pickObject(object);
+      },
+      menuChildren: () => PlatformMenuBar.menuWidgets(
+          menus?.selection() ?? const <PlatformMenuEntry>[]),
+      child: GestureDetector(
+        behavior: GestureHitTestBehavior.opaque,
+        onTap: enabled
+            ? () => model.pickObject(
+                  object,
+                  toggle: model.selection.hasSelection && _shiftHeld(context),
+                )
+            : null,
+        child: SizedBox(
+          height: _rowHeight(theme),
+          child: ColoredBox(
+            color: selected ? theme.selection : const Color(0x00000000),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: <Widget>[
+                const SizedBox(width: 30),
+                // The object's own colour, the closest thing to a thumbnail a
+                // row this small can hold.
+                SizedBox(
+                  width: 12,
+                  height: 12,
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: fill.isNone ? null : fill.color,
+                      border: BoxBorder(
+                        color: object.style.stroke.isNone
+                            ? theme.borderStrong
+                            : object.style.stroke.color,
+                        width: 1,
+                      ),
+                      radius: 2,
                     ),
-                    radius: 2,
                   ),
                 ),
-              ),
-              const SizedBox(width: 6),
-              Icon(icon),
-              const SizedBox(width: 6),
-              Expanded(
-                child: Text(
-                  label,
-                  style: theme.textTheme.bodySmall,
-                  color: enabled ? theme.foreground : theme.disabledForeground,
-                  maxLines: 1,
+                const SizedBox(width: 6),
+                Icon(icon),
+                const SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    label,
+                    style: theme.textTheme.bodySmall,
+                    color:
+                        enabled ? theme.foreground : theme.disabledForeground,
+                    maxLines: 1,
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),

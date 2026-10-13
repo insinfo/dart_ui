@@ -30,12 +30,16 @@ class DocumentTabs extends StatelessWidget {
     required this.activeIndex,
     required this.onSelected,
     required this.onClosed,
+    this.contextMenu,
   });
 
   final List<DocumentSession> documents;
   final int activeIndex;
   final void Function(int index) onSelected;
   final void Function(int index) onClosed;
+
+  /// A tab's right-click menu, built after the tab was made the active one.
+  final List<Widget> Function()? contextMenu;
 
   @override
   Widget build(BuildContext context) {
@@ -51,11 +55,16 @@ class DocumentTabs extends StatelessWidget {
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: <Widget>[
             for (var index = 0; index < documents.length; index++)
-              _DocumentTab(
-                title: documents[index].tabTitle,
-                selected: index == activeIndex,
-                onTap: () => onSelected(index),
-                onClose: () => onClosed(index),
+              ContextMenuArea(
+                enabled: contextMenu != null,
+                onOpen: (_) => onSelected(index),
+                menuChildren: contextMenu ?? () => const <Widget>[],
+                child: _DocumentTab(
+                  title: documents[index].tabTitle,
+                  selected: index == activeIndex,
+                  onTap: () => onSelected(index),
+                  onClose: () => onClosed(index),
+                ),
               ),
           ],
         ),
@@ -92,7 +101,7 @@ class _DocumentTab extends StatelessWidget {
       behavior: GestureHitTestBehavior.opaque,
       onTap: onTap,
       child: SizedBox(
-        width: title.length * _characterWidth +
+        width: title.length * _characterWidth * theme.fontSize / 12 +
             theme.effectiveControlPadding * 2 +
             theme.iconSize +
             theme.effectiveGap,

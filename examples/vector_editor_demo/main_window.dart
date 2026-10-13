@@ -13,6 +13,7 @@ import 'package:dart_ui/dart_ui.dart';
 
 import 'canvas_area.dart';
 import 'commands.dart';
+import 'context_menus.dart';
 import 'context_panel.dart';
 import 'doc_tabs.dart';
 import 'editor_model.dart';
@@ -376,6 +377,7 @@ class MainWindowState extends State<MainWindow> {
     final theme = model.theme;
     final catalog = CommandCatalog(model: model, services: _services);
     model.nativeMenuAvailable = PlatformMenuBar.hasNativeMenuBar(context);
+    final contextMenus = model.contextMenus = EditorContextMenus(catalog);
     final menus = catalog.menus;
 
     // ComboBoxScope has to sit above everything that hosts a combo box, for
@@ -426,6 +428,8 @@ class MainWindowState extends State<MainWindow> {
             activeIndex: model.activeIndex,
             onSelected: model.selectDocument,
             onClosed: (int index) => unawaited(_closeDocument(index)),
+            contextMenu: () =>
+                PlatformMenuBar.menuWidgets(contextMenus.documentTab()),
           ),
           Expanded(
             child: CanvasArea(
