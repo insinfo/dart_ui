@@ -112,14 +112,13 @@ const List<ParityFeature> kParityCatalog = <ParityFeature>[
   ParityFeature(_tools, 'Interactive fill (G)', 'P1'),
   ParityFeature(_tools, 'Mesh fill', 'P2'),
   ParityFeature(_tools, 'Smart fill', 'P2'),
-  ParityFeature(_tools, 'Outline pen (F12)', 'P0',
-      commands: <String>[
-        'panel.fillStroke',
-        'object.outline',
-        'object.outlineWidth',
-        'object.outlineStyle',
-      ],
-      partial: 'no calligraphic pen'),
+  ParityFeature(_tools, 'Outline pen (F12)', 'P0', commands: <String>[
+    'panel.fillStroke',
+    'object.outline',
+    'object.outlineWidth',
+    'object.outlineStyle',
+    'object.calligraphy',
+  ]),
   ParityFeature(_tools, 'Fill (F11)', 'P0',
       commands: <String>[
         'panel.fillStroke',

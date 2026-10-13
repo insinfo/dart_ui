@@ -136,6 +136,34 @@ List<CommandSpec> propertyCommands(EditorContext context) {
     ),
 
     CommandSpec(
+      id: 'object.calligraphy',
+      label: 'Calligraphic pen',
+      description: 'The outline pen\'s nib, as CorelDRAW\'s Outline Pen '
+          'sets it: stretch in percent (100 is a round nib, 10 a flat '
+          'chisel) and the nib\'s angle in degrees.',
+      params: const <CommandParam>[
+        CommandParam('stretch', CommandParamType.number,
+            description: '1 to 100 percent'),
+        CommandParam('angle', CommandParamType.number,
+            description: 'degrees, counterclockwise'),
+      ],
+      when: context.needsSelection,
+      run: (CommandArgs args) {
+        final double? stretch =
+            args.has('stretch') ? args.number('stretch') : null;
+        if (stretch != null && (stretch < 1 || stretch > 100)) {
+          throw const CommandError('`stretch` is 1 to 100 percent');
+        }
+        final double? angle = args.has('angle') ? args.number('angle') : null;
+        model.applyToSelection((VectorStyle style) => style.copyWith(
+            stroke: style.stroke.copyWith(
+                nibStretch: stretch == null ? null : stretch / 100,
+                nibAngle: angle)));
+        return null;
+      },
+    ),
+
+    CommandSpec(
       id: 'object.arrows',
       label: 'Arrowheads',
       description: 'The heads on the open ends of an outline: none, '

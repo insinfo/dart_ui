@@ -20,6 +20,7 @@ export 'src/geometry/transform2d.dart';
 export 'src/graphics/color.dart';
 export 'src/graphics/vector/arrowheads.dart';
 export 'src/graphics/vector/bezier.dart';
+export 'src/graphics/vector/calligraphy.dart';
 export 'src/graphics/vector/constants.dart';
 export 'src/graphics/vector/contour.dart';
 export 'src/graphics/vector/doc_methods.dart';

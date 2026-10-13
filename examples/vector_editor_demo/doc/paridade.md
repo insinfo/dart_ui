@@ -7,22 +7,22 @@
 
 | | feitas | parciais | faltam | total | cobertura |
 |---|---|---|---|---|---|
-| P0 | 61 | 2 | 0 | 63 | 98% |
+| P0 | 62 | 1 | 0 | 63 | 99% |
 | P1 | 7 | 2 | 35 | 44 | 18% |
 | P2 | 1 | 0 | 67 | 68 | 1% |
-| **todas** | 69 | 4 | 102 | 175 | 41% |
+| **todas** | 70 | 3 | 102 | 175 | 41% |
 
 Cobertura = (feitas + metade das parciais) / total.
 
 Menus do editor: 92 de 107 linhas têm comando registrado; as outras aparecem desabilitadas.
 
-Comandos registrados: 133.
+Comandos registrados: 134.
 
 ## Por área
 
 | área | feitas | parciais | faltam | total | cobertura |
 |---|---|---|---|---|---|
-| Caixa de ferramentas | 11 | 2 | 47 | 60 | 20% |
+| Caixa de ferramentas | 12 | 1 | 47 | 60 | 21% |
 | Interações no canvas | 9 | 1 | 3 | 13 | 73% |
 | Barra de propriedades | 7 | 0 | 9 | 16 | 44% |
 | Dockers | 4 | 0 | 11 | 15 | 27% |
@@ -96,7 +96,7 @@ Comandos registrados: 133.
 | ❌ | Interactive fill (G) | P1 |  | tudo |
 | ❌ | Mesh fill | P2 |  | tudo |
 | ❌ | Smart fill | P2 |  | tudo |
-| 🟡 | Outline pen (F12) | P0 | `panel.fillStroke`, `object.outline`, `object.outlineWidth`, `object.outlineStyle` | no calligraphic pen |
+| ✅ | Outline pen (F12) | P0 | `panel.fillStroke`, `object.outline`, `object.outlineWidth`, `object.outlineStyle`, `object.calligraphy` |  |
 | 🟡 | Fill (F11) | P0 | `panel.fillStroke`, `object.fill`, `object.fountainFill` | uniform and fountain (linear, radial); no pattern or texture fills |
 
 ### Interações no canvas

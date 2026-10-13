@@ -215,6 +215,26 @@ Future<void> main(List<String> args) async {
         ..key(logicalKeyArrowRight, modifiers: const {KeyModifier.shift})
         ..key(logicalKeyArrowRight, modifiers: const {KeyModifier.shift});
     }
+  } else if (scenario == 'calligraphy') {
+    // A wave and an ellipse drawn with a flat chisel at 45 degrees: thick
+    // where the line runs across the nib, thin along it.
+    state.registry
+      ..execute('shape.curve', <String, Object?>{
+        'points': <double>[300, 440, 380, 380, 460, 500, 540, 400, 620, 460],
+      })
+      ..execute('object.outlineWidth', <String, Object?>{'width': 12})
+      ..execute(
+          'object.calligraphy', <String, Object?>{'stretch': 15, 'angle': 45})
+      ..execute('shape.ellipse', <String, Object?>{
+        'x': 320,
+        'y': 540,
+        'width': 160,
+        'height': 100,
+      })
+      ..execute('object.fill', <String, Object?>{'color': null})
+      ..execute('object.outlineWidth', <String, Object?>{'width': 14})
+      ..execute(
+          'object.calligraphy', <String, Object?>{'stretch': 10, 'angle': -30});
   } else if (scenario == 'fountain') {
     // A linear fountain on the rectangle, a radial one on the ellipse; the
     // Properties panel on the ellipse shows both colours.

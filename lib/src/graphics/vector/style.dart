@@ -131,6 +131,8 @@ class StrokeDescriptor {
     this.scalableStroke = false,
     this.startArrow,
     this.endArrow,
+    this.nibStretch = 1.0,
+    this.nibAngle = 0.0,
   });
 
   /// No stroke.
@@ -153,7 +155,21 @@ class StrokeDescriptor {
   /// Arrow marker index for the end of open paths.
   final int? endArrow;
 
+  /// CorelDRAW's calligraphic pen: the nib's width across its own axis as a
+  /// fraction of [width] - 1 is a round pen, 0.1 a flat chisel. A stroke
+  /// drawn with a nib this flat is thick where the line runs across the nib
+  /// and thin where it runs along it.
+  final double nibStretch;
+
+  /// The angle of the nib's long axis, degrees counterclockwise from
+  /// horizontal.
+  final double nibAngle;
+
   bool get isNone => width <= 0.0;
+
+  /// Whether this pen has a flattened nib, drawn as a shape rather than as
+  /// a stroke of one width.
+  bool get isCalligraphic => !isNone && nibStretch < 0.999;
 
   StrokeDescriptor copyWith({
     Color? color,
@@ -166,6 +182,8 @@ class StrokeDescriptor {
     bool? scalableStroke,
     int? startArrow,
     int? endArrow,
+    double? nibStretch,
+    double? nibAngle,
   }) =>
       StrokeDescriptor(
         color: color ?? this.color,
@@ -178,6 +196,8 @@ class StrokeDescriptor {
         scalableStroke: scalableStroke ?? this.scalableStroke,
         startArrow: startArrow ?? this.startArrow,
         endArrow: endArrow ?? this.endArrow,
+        nibStretch: nibStretch ?? this.nibStretch,
+        nibAngle: nibAngle ?? this.nibAngle,
       );
 
   @override

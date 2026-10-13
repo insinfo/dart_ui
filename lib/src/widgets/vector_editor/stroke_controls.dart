@@ -61,6 +61,22 @@ class StrokeControls extends StatelessWidget {
             selected: stroke.cap == cap,
             onTap: () => onChanged?.call(stroke.copyWith(cap: cap)),
           ),
+        // The calligraphic nibs CorelDRAW's Outline Pen is most often set
+        // to: a round pen, a chisel at either diagonal, a flat nib.
+        for (final (String label, double stretch, double angle)
+            in <(String, double, double)>[
+          ('Round pen', 1.0, 0.0),
+          ('Chisel 45°', 0.2, 45.0),
+          ('Chisel -45°', 0.2, -45.0),
+          ('Flat', 0.1, 0.0),
+        ])
+          _StyleChip(
+            label: label,
+            selected: (stroke.nibStretch - stretch).abs() < 0.01 &&
+                (stretch >= 1 || (stroke.nibAngle - angle).abs() < 0.5),
+            onTap: () => onChanged
+                ?.call(stroke.copyWith(nibStretch: stretch, nibAngle: angle)),
+          ),
       ],
     );
   }

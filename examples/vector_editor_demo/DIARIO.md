@@ -179,8 +179,13 @@ pela metade e o próximo passo. Ver `AGENTS.md`.
   cor de preenchimento, de contorno e tipo) e `edit.replaceColor` (troca
   uma cor em preenchimentos, contornos ou ambos, dentro de grupos, num passo
   de desfazer); o diálogo ganhou Texto/Cor.
-- P0 em 98% (61 feitas, 2 parciais: pena caligráfica e preenchimentos de
-  padrão e textura).
+- Pena caligráfica (`object.calligraphy`: esticamento da pena em % e
+  ângulo; chips Pena redonda, Cinzel 45°/-45°, Chata no painel Contorno).
+  Framework: `StrokeDescriptor.nibStretch`/`nibAngle` e
+  `calligraphicOutline` - a soma de Minkowski do traço com a pena
+  elíptica, preenchida; o SVG grava `dartui:nib` e outros leitores veem uma
+  pena redonda da mesma largura.
+- P0 em 99% (62 feitas, 1 parcial: preenchimentos de padrão e textura).
 
 **Ficou pela metade**
 - Pena caligráfica, preenchimentos de padrão e textura.

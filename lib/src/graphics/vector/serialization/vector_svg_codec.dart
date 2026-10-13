@@ -287,6 +287,11 @@ final class _SvgWriter {
       out
         ..add('stroke="${_hex(stroke.color)}"')
         ..add('stroke-width="${_n(stroke.width)}"');
+      // SVG has no calligraphic pen: other readers see a round one of the
+      // same width, and this codec reads the nib back.
+      if (stroke.isCalligraphic) {
+        out.add('dartui:nib="${_n(stroke.nibStretch)} ${_n(stroke.nibAngle)}"');
+      }
       if (stroke.color.alpha < 255) {
         out.add('stroke-opacity="${_n(stroke.color.alpha / 255)}"');
       }
@@ -976,6 +981,9 @@ final class _SvgReader {
                 fillArgb ?? 0xFF000000, style.opacity * style.fillOpacity)),
           );
     final int? strokeArgb = style.stroke;
+    // A calligraphic pen this codec wrote: `dartui:nib="stretch angle"`.
+    final List<double>? nib =
+        _numbersOrNull(element.getAttribute('dartui:nib'));
     final StrokeDescriptor stroke = strokeArgb == null
         ? StrokeDescriptor.none
         : StrokeDescriptor(
@@ -989,6 +997,8 @@ final class _SvgReader {
               for (final double d in style.dashes) d * _scaleOf(ctm),
             ],
             dashOffset: style.dashOffset * _scaleOf(ctm),
+            nibStretch: nib != null && nib.length == 2 ? nib[0] : 1.0,
+            nibAngle: nib != null && nib.length == 2 ? nib[1] : 0.0,
           );
     return VectorStyle(
       fill: fill,

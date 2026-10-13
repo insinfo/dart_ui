@@ -25,6 +25,7 @@ import '../../graphics/display_list_opcodes.dart';
 import '../../graphics/gradient.dart';
 import '../../graphics/image/decoded_image.dart';
 import '../../graphics/vector/arrowheads.dart';
+import '../../graphics/vector/calligraphy.dart';
 import '../../graphics/vector/constants.dart';
 import '../../graphics/vector/document.dart';
 import '../../graphics/vector/document_object.dart';
@@ -640,7 +641,14 @@ class VectorRenderer {
 
       // Stroke - a stroke paint, not a fill paint. Drawing an outline with a
       // fill paint reproduces the fill twice and loses the outline entirely.
-      if (!stroke.isNone && stroke.width > 0) {
+      if (stroke.isCalligraphic) {
+        // A flat nib: the stroke is a shape of its own, filled.
+        list.drawPath(
+          list.addPath(calligraphicOutline(paths, obj.trafo, stroke)),
+          list.addPaint(colorArgb: stroke.color.value, antiAlias: true),
+        );
+        _renderArrowheads(obj, paths, list);
+      } else if (!stroke.isNone && stroke.width > 0) {
         final strokePaint = list.addPaint(
           colorArgb: stroke.color.value,
           style: paintStyleStroke,
