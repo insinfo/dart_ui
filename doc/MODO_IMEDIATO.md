@@ -85,4 +85,7 @@ devolve hover, pressão, clique e arraste, `canvas` é a `DisplayList`.
   aparece no quadro seguinte, que eles mesmos pedem.
 - **Janelas flutuantes** (`ui.window`) arrastam pela barra de título, vêm para
   a frente ao serem pressionadas e fecham pelo ×; o que está atrás de uma janela
-  não recebe o clique. Ainda não redimensionam pela borda.
+  não recebe o clique. Redimensionam pela borda direita, pela de baixo e pelo
+  canto (com um piso que nunca as faz crescer no outro eixo); redimensionada,
+  a janela guarda o tamanho e rola com a roda o conteúdo que não cabe. Sem
+  cursor de redimensionar: o modo imediato não troca o cursor.

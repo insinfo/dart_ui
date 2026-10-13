@@ -399,6 +399,104 @@ void main() {
       expect(inside, 0, reason: 'the press was on the title bar');
     });
 
+    test('dragging the corner resizes it; it keeps that size', () {
+      final _Harness h = _Harness();
+      void build(Ui ui) => ui.window('Grande', (Ui w) => w.label('a'),
+          position: const Offset(100, 100), width: 200);
+
+      h.frame(build);
+      h.frame(build);
+      final Rect before = h.memory.windowRects.values.single;
+      final Offset grip = before.bottomRight - const Offset(4, 4);
+      h.press(grip);
+      h.frame(build);
+      h.move(grip + const Offset(60, 80));
+      h.input.down = true;
+      h.frame(build);
+      h.release(grip + const Offset(60, 80));
+      h.frame(build);
+      h.frame(build);
+      final Rect after = h.memory.windowRects.values.single;
+      expect(after.topLeft, before.topLeft, reason: 'resizing is not moving');
+      expect(after.width, closeTo(before.width + 60, 1e-9));
+      expect(after.height, closeTo(before.height + 80, 1e-9));
+    });
+
+    test('the right edge resizes only the width, never below a minimum', () {
+      final _Harness h = _Harness();
+      void build(Ui ui) => ui.window('Estreita', (Ui w) => w.label('a'),
+          position: const Offset(100, 100), width: 300);
+
+      h.frame(build);
+      h.frame(build);
+      final Rect before = h.memory.windowRects.values.single;
+      final Offset edge = Offset(before.right - 2, before.top + 40);
+      h.press(edge);
+      h.frame(build);
+      h.move(edge - const Offset(1000, 0));
+      h.input.down = true;
+      h.frame(build);
+      h.release(edge - const Offset(1000, 0));
+      h.frame(build);
+      final Rect after = h.memory.windowRects.values.single;
+      expect(after.width, lessThan(before.width));
+      expect(after.width, greaterThan(60), reason: 'a floor, not zero');
+      expect(after.height, closeTo(before.height, 1e-9));
+      // Further is no narrower: the floor holds.
+      final Offset again = Offset(after.right - 2, after.top + 40);
+      h.press(again);
+      h.frame(build);
+      h.move(again - const Offset(500, 0));
+      h.input.down = true;
+      h.frame(build);
+      h.release(again - const Offset(500, 0));
+      h.frame(build);
+      expect(h.memory.windowRects.values.single.width, after.width);
+    });
+
+    test('made smaller than its contents, the wheel scrolls them', () {
+      final _Harness h = _Harness();
+      final List<double> tops = <double>[];
+      double lastBottom = 0;
+      void build(Ui ui) => ui.window('Lista', (Ui w) {
+            for (var i = 0; i < 10; i++) {
+              final Rect row = w.allocate(const Size(100, 20));
+              if (i == 0) tops.add(row.top);
+              if (i == 9) lastBottom = row.bottom;
+            }
+          }, position: const Offset(50, 20), width: 200);
+
+      h.frame(build);
+      h.frame(build);
+      final Rect full = h.memory.windowRects.values.single;
+      final Offset grip = full.bottomRight - const Offset(4, 4);
+      h.press(grip);
+      h.frame(build);
+      h.move(grip - const Offset(0, 150));
+      h.input.down = true;
+      h.frame(build);
+      h.release(grip - const Offset(0, 150));
+      h.frame(build);
+      h.frame(build);
+      final Rect small = h.memory.windowRects.values.single;
+      expect(full.bottom, lessThan(400), reason: 'the corner is reachable');
+      expect(small.height, closeTo(full.height - 150, 1e-9));
+      final double unscrolled = tops.last;
+      h.move(small.center);
+      h.input.scroll = const Offset(0, 50);
+      h.frame(build);
+      h.frame(build);
+      expect(tops.last, closeTo(unscrolled - 50, 1e-9));
+      h.input.scroll = const Offset(0, 1000);
+      h.frame(build);
+      h.frame(build);
+      final Rect end = h.memory.windowRects.values.single;
+      expect(lastBottom, lessThanOrEqualTo(end.bottom),
+          reason: 'the last row shows');
+      expect(lastBottom, greaterThan(end.bottom - 40),
+          reason: 'and no further: not past the end');
+    });
+
     test('pressing a lower window brings it to the front', () {
       final _Harness h = _Harness();
       void build(Ui ui) {

@@ -196,6 +196,13 @@ final class _WindowState {
   Offset position;
   Size size = Size.zero;
   bool closeRequested = false;
+
+  /// The size the user dragged an edge to; null while it fits its contents.
+  Size? resized;
+
+  /// How far its contents are scrolled, once resized smaller than they are.
+  double scroll = 0;
+  double contentHeight = 0;
 }
 
 /// One layout region of an immediate-mode frame.
@@ -385,9 +392,11 @@ final class Ui {
     final bool isActive = memory.active == id;
     final bool clicked = isActive && input.released && inside;
     final Offset? last = _frame.lastPointer;
-    final Offset drag = isActive && pointer != null && last != null
-        ? pointer - last
-        : Offset.zero;
+    // Where the pointer came from before the press is no part of the drag.
+    final Offset drag =
+        isActive && !input.pressed && pointer != null && last != null
+            ? pointer - last
+            : Offset.zero;
     if (isActive && (input.released || clicked)) _frame.wantsRepaint = true;
     return Response(
       rect: rect,
@@ -419,7 +428,9 @@ final class Ui {
   ///
   /// Drag it by its title, bring it forward by pressing in it, close it with
   /// its button: [window] then returns false - once - and the caller decides
-  /// whether to keep calling it. Its contents run while it is drawn, at the
+  /// whether to keep calling it. It fits its contents until its right edge,
+  /// bottom edge or corner is dragged; from then on it keeps that size and
+  /// scrolls what does not fit. Its contents run while it is drawn, at the
   /// end of the frame, so they may read state the rest of the frame changed.
   bool window(String title, void Function(Ui ui) contents,
       {double width = 280, Offset? position, Object? key}) {
@@ -479,9 +490,10 @@ final class Ui {
     _frame.currentWindow = request.id;
     final double titleHeight = theme.effectiveControlHeight;
     final double pad = theme.effectiveControlPadding;
-    final Size size = state.size == Size.zero
-        ? Size(request.width, titleHeight + pad * 2)
-        : state.size;
+    final Size size = state.resized ??
+        (state.size == Size.zero
+            ? Size(request.width, titleHeight + pad * 2)
+            : state.size);
     // Keep the title bar on the area, or a window dragged off could never
     // come back.
     final Offset position = Offset(
@@ -553,15 +565,37 @@ final class Ui {
     canvas.drawRectangle(
         Rect.fromLTWH(rect.left, rect.top + titleHeight, rect.width, 1),
         canvas.addPaint(colorArgb: theme.borderSubtle.value));
-    // Contents, clipped to the window.
-    final Rect clip = rect.intersect(_clip);
+    _resizeEdges(chrome, request, state, rect, size, titleHeight, pad);
+    // Contents, clipped to the window below its title bar.
+    final Rect body = Rect.fromLTRB(
+        rect.left, rect.top + titleHeight + 1, rect.right, rect.bottom);
+    final Rect clip = body.intersect(_clip);
+    final bool fixed = state.resized != null;
+    final double room = rect.height - titleHeight - pad * 2;
+    final double overflow =
+        fixed ? math.max(0.0, state.contentHeight - room) : 0.0;
+    if (fixed) {
+      if (pointer != null &&
+          body.contains(pointer) &&
+          !_occluded(pointer) &&
+          input.scroll.dy != 0) {
+        state.scroll += input.scroll.dy;
+        _frame.wantsRepaint = true;
+      }
+      state.scroll = state.scroll.clamp(0.0, overflow);
+    } else {
+      state.scroll = 0;
+    }
     canvas
       ..save()
       ..clipRect(clip.left, clip.top, clip.right, clip.bottom);
     final Ui content = Ui._(
         _frame,
-        Rect.fromLTRB(rect.left + pad, rect.top + titleHeight + pad,
-            rect.right - pad, double.infinity),
+        Rect.fromLTRB(
+            rect.left + pad,
+            rect.top + titleHeight + pad - state.scroll,
+            rect.right - pad - (overflow > 0 ? 8 : 0),
+            double.infinity),
         true,
         Object.hash(request.id, 'content'),
         clip,
@@ -569,13 +603,78 @@ final class Ui {
     request.contents(content);
     canvas.restore();
     final Size used = content.usedSize;
-    final Size wanted = Size(math.max(request.width, used.width + pad * 2),
-        titleHeight + used.height + pad * 2);
-    if (wanted != state.size) {
-      state.size = wanted;
-      _frame.wantsRepaint = true;
+    if (used.height != state.contentHeight) {
+      state.contentHeight = used.height;
+      if (fixed) _frame.wantsRepaint = true;
+    }
+    if (overflow > 0) {
+      final double thumb = math.max(24, room * room / state.contentHeight);
+      final double top = rect.top +
+          titleHeight +
+          pad +
+          (room - thumb) * (state.scroll / overflow);
+      _frame.painter.paintRoundedFill(
+          canvas,
+          Rect.fromLTWH(rect.right - 7, top, 4, thumb),
+          theme.scrollbarTheme.thumbColor ?? theme.borderStrong,
+          2);
+    }
+    if (!fixed) {
+      final Size wanted = Size(math.max(request.width, used.width + pad * 2),
+          titleHeight + used.height + pad * 2);
+      if (wanted != state.size) {
+        state.size = wanted;
+        _frame.wantsRepaint = true;
+      }
     }
     memory.windowRects[request.id] = rect;
+  }
+
+  /// The right edge, the bottom edge and the corner of a window, which
+  /// resize it. They take the press before its contents do.
+  void _resizeEdges(Ui chrome, _WindowRequest request, _WindowState state,
+      Rect rect, Size size, double titleHeight, double pad) {
+    const double edge = 5;
+    const double corner = 14;
+    final Response both = chrome.interact(
+        Rect.fromLTWH(
+            rect.right - corner, rect.bottom - corner, corner, corner),
+        Object.hash(request.id, 'resize'));
+    final Response right = chrome.interact(
+        Rect.fromLTWH(rect.right - edge, rect.top + titleHeight, edge,
+            math.max(0.0, rect.height - titleHeight - corner)),
+        Object.hash(request.id, 'resize-right'));
+    final Response bottom = chrome.interact(
+        Rect.fromLTWH(rect.left, rect.bottom - edge,
+            math.max(0.0, rect.width - corner), edge),
+        Object.hash(request.id, 'resize-bottom'));
+    final Offset delta = both.pressed
+        ? both.dragDelta
+        : right.pressed
+            ? Offset(right.dragDelta.dx, 0)
+            : bottom.pressed
+                ? Offset(0, bottom.dragDelta.dy)
+                : Offset.zero;
+    if (delta != Offset.zero) {
+      // Floors, though never above the size it has: dragging one edge must
+      // not grow the other way.
+      final double minWidth = math.min(titleHeight * 4, size.width);
+      final double minHeight = math.min(titleHeight * 2 + pad * 2, size.height);
+      state.resized = Size(
+        math.max(minWidth, size.width + delta.dx),
+        math.max(minHeight, size.height + delta.dy),
+      );
+      _frame.wantsRepaint = true;
+    }
+    // The grip: two short diagonals in the corner.
+    final Color grip = both.hovered || both.pressed
+        ? theme.foregroundSecondary
+        : theme.borderStrong;
+    final Offset c = rect.bottomRight - const Offset(4, 4);
+    for (final double d in <double>[4, 8]) {
+      paintPolyline(
+          canvas, <Offset>[c - Offset(d, 0), c - Offset(0, d)], 1, grip);
+    }
   }
 
   // -------------------------------------------------------------------------
