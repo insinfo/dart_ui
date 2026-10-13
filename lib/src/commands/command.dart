@@ -1,0 +1,201 @@
+/// Commands: every user-visible action of an application, by id.
+///
+/// A command is what a menu item, a toolbar button, a shortcut, a context
+/// menu row, a command palette entry, a test and an automation client all
+/// reach for. Declaring it once - id, label, shortcut, parameters, whether it
+/// is enabled, what it does - is what keeps those surfaces from disagreeing,
+/// and what lets a program be driven without a mouse.
+library;
+
+import '../widgets/actions.dart' show KeyGesture;
+import '../widgets/icon.dart' show IconData;
+
+/// The JSON type a [CommandParam] takes.
+enum CommandParamType {
+  string,
+
+  /// Any JSON number.
+  number,
+
+  /// A JSON number with no fractional part.
+  integer,
+  boolean,
+  list,
+  object,
+
+  /// Anything, checked by the command itself.
+  any;
+
+  bool accepts(Object? value) => switch (this) {
+        string => value is String,
+        number => value is num && value.isFinite,
+        integer =>
+          value is int || (value is double && value == value.truncate()),
+        boolean => value is bool,
+        list => value is List,
+        object => value is Map,
+        any => true,
+      };
+}
+
+/// One parameter a command takes.
+final class CommandParam {
+  const CommandParam(
+    this.name,
+    this.type, {
+    this.required = false,
+    this.description = '',
+  });
+
+  final String name;
+  final CommandParamType type;
+  final bool required;
+  final String description;
+
+  Map<String, Object?> describe() => <String, Object?>{
+        'name': name,
+        'type': type.name,
+        'required': required,
+        if (description.isNotEmpty) 'description': description,
+      };
+}
+
+/// A command refusing to run, with a message for whoever asked.
+///
+/// Thrown by a command's `run` for a refusal it can explain ("nothing is
+/// selected"), and by [CommandArgs] for a parameter of the wrong type. The
+/// registry turns it, and any other exception, into a failed
+/// [CommandOutcome]: a command never takes the application down.
+final class CommandError implements Exception {
+  const CommandError(this.message);
+
+  final String message;
+
+  @override
+  String toString() => 'CommandError: $message';
+}
+
+/// The parameters a command was run with, already checked against its
+/// [CommandSpec.params].
+final class CommandArgs {
+  const CommandArgs(this.values);
+
+  static const CommandArgs empty = CommandArgs(<String, Object?>{});
+
+  final Map<String, Object?> values;
+
+  bool has(String name) => values.containsKey(name);
+
+  Object? operator [](String name) => values[name];
+
+  double number(String name, [double? fallback]) {
+    final Object? value = values[name];
+    if (value is num) return value.toDouble();
+    if (value == null && fallback != null) return fallback;
+    throw CommandError('`$name` must be a number');
+  }
+
+  int integer(String name, [int? fallback]) {
+    final Object? value = values[name];
+    if (value is int) return value;
+    if (value is double && value == value.truncate()) return value.toInt();
+    if (value == null && fallback != null) return fallback;
+    throw CommandError('`$name` must be a whole number');
+  }
+
+  String string(String name, [String? fallback]) {
+    final Object? value = values[name];
+    if (value is String) return value;
+    if (value == null && fallback != null) return fallback;
+    throw CommandError('`$name` must be a string');
+  }
+
+  bool flag(String name, [bool fallback = false]) {
+    final Object? value = values[name];
+    if (value is bool) return value;
+    if (value == null) return fallback;
+    throw CommandError('`$name` must be true or false');
+  }
+
+  List<Object?> list(String name) {
+    final Object? value = values[name];
+    if (value is List) return value.cast<Object?>();
+    if (value == null) return const <Object?>[];
+    throw CommandError('`$name` must be a list');
+  }
+}
+
+/// One command: what it is called, how it is reached and what it does.
+final class CommandSpec {
+  const CommandSpec({
+    required this.id,
+    required this.label,
+    required this.run,
+    this.description = '',
+    this.icon,
+    this.shortcut,
+    this.alsoShortcuts = const <KeyGesture>[],
+    this.params = const <CommandParam>[],
+    this.enabled,
+    this.disabledReason,
+    this.checked,
+    this.currentLabel,
+  });
+
+  /// Dotted, by area: `file.save`, `object.toCurves`, `view.zoomIn`.
+  final String id;
+
+  /// What a menu shows; [currentLabel] when it depends on the state
+  /// ("Undo Move").
+  final String label;
+  final String Function()? currentLabel;
+
+  /// One sentence for a tooltip, the command palette and automation.
+  final String description;
+  final IconData? icon;
+
+  /// Shown in menus and bound at the window; [alsoShortcuts] are bound only.
+  final KeyGesture? shortcut;
+  final List<KeyGesture> alsoShortcuts;
+
+  final List<CommandParam> params;
+
+  /// Null means always enabled.
+  final bool Function()? enabled;
+
+  /// Why it is disabled now - read only while [enabled] says false.
+  final String Function()? disabledReason;
+
+  /// Non-null for a toggle; the function returns whether it is on.
+  final bool Function()? checked;
+
+  /// Does the work. Returns a JSON-serialisable result or null; throws
+  /// [CommandError] to refuse with a reason.
+  final Object? Function(CommandArgs args) run;
+
+  bool get isEnabled => enabled?.call() ?? true;
+  bool? get isChecked => checked?.call();
+  String get labelNow => currentLabel?.call() ?? label;
+}
+
+/// How a run ended: [ok] with a [result], or not with an [error].
+final class CommandOutcome {
+  const CommandOutcome.success([this.result])
+      : ok = true,
+        error = null;
+
+  const CommandOutcome.failure(String this.error)
+      : ok = false,
+        result = null;
+
+  final bool ok;
+  final Object? result;
+  final String? error;
+
+  Map<String, Object?> toJson() => ok
+      ? <String, Object?>{'ok': true, 'result': result}
+      : <String, Object?>{'ok': false, 'error': error};
+
+  @override
+  String toString() => ok ? 'ok($result)' : 'failed($error)';
+}
