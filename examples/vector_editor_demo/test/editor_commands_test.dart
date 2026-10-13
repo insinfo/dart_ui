@@ -285,4 +285,30 @@ void main() {
     expect(rect.parent, same(layers.first));
     expect(layers.first.children.first, same(rect));
   });
+
+  test('a curve made by command takes arrowheads by name', () {
+    expect(
+        registry.execute('shape.curve', <String, Object?>{
+          'points': <double>[0, 0, 100, 0, 100, 50],
+        }).ok,
+        isTrue);
+    final VectorCurve curve = objects().whereType<VectorCurve>().single;
+    expect(curve.paths.single.points, hasLength(2));
+    registry.execute('object.arrows',
+        <String, Object?>{'start': 'circle', 'end': 'triangle'});
+    expect(ArrowHead.of(curve.style.stroke.startArrow), ArrowHead.circle);
+    expect(ArrowHead.of(curve.style.stroke.endArrow), ArrowHead.triangle);
+    expect(
+        registry['object.arrows']!
+            .isCheckedWith(const CommandArgs(<String, Object?>{'end': 'triangle'})),
+        isTrue);
+    registry.execute('object.arrows', <String, Object?>{'end': 'none'});
+    expect(ArrowHead.of(curve.style.stroke.endArrow), ArrowHead.none);
+    expect(
+        registry.execute('shape.curve', <String, Object?>{
+          'points': <double>[0, 0, 1],
+        }).ok,
+        isFalse,
+        reason: 'an odd list is refused');
+  });
 }

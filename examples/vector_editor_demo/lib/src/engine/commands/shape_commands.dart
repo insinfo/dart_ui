@@ -42,6 +42,40 @@ List<CommandSpec> shapeCommands(EditorContext context) {
 
   return <CommandSpec>[
     CommandSpec(
+      id: 'shape.curve',
+      label: 'Curve',
+      description: 'Straight segments through points given as '
+          '[x1, y1, x2, y2, ...]; closed joins the last to the first.',
+      params: const <CommandParam>[
+        CommandParam('points', CommandParamType.list, required: true),
+        CommandParam('closed', CommandParamType.boolean),
+      ],
+      when: context.needsDocument,
+      run: (CommandArgs args) {
+        final List<Object?> raw = args.list('points');
+        if (raw.length < 4 ||
+            raw.length.isOdd ||
+            raw.any((Object? v) => v is! num || !v.isFinite)) {
+          throw const CommandError(
+              '`points` is an even list of at least four numbers');
+        }
+        final List<double> n = <double>[
+          for (final Object? v in raw) (v! as num).toDouble(),
+        ];
+        return create(methods().createCurve(paths: <VectorPath>[
+          VectorPath(
+            start: Offset(n[0], n[1]),
+            points: <Object>[
+              for (var i = 2; i < n.length; i += 2) Offset(n[i], n[i + 1]),
+            ],
+            closure: args.has('closed') && args['closed'] == true
+                ? PathClosure.closed
+                : PathClosure.opened,
+          ),
+        ]));
+      },
+    ),
+    CommandSpec(
       id: 'shape.rectangle',
       label: 'Rectangle',
       description: 'A rectangle at x, y (top-left), in document units.',

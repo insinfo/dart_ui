@@ -22,6 +22,7 @@ import '../../graphics/display_list.dart';
 import '../../graphics/display_list_geometry.dart';
 import '../../graphics/display_list_opcodes.dart';
 import '../../graphics/gradient.dart';
+import '../../graphics/vector/arrowheads.dart';
 import '../../graphics/vector/constants.dart';
 import '../../graphics/vector/document.dart';
 import '../../graphics/vector/document_object.dart';
@@ -438,8 +439,70 @@ class VectorRenderer {
           dashOffset: stroke.dashOffset,
         );
         list.drawPath(pathId, strokePaint);
+        _renderArrowheads(obj, paths, list);
       }
     }
+  }
+
+  /// The outline's arrowheads, on the open ends of [paths], in the outline's
+  /// colour and sized by its width.
+  static void _renderArrowheads(
+    PrimitiveObject obj,
+    List<VectorPath> paths,
+    DisplayList list,
+  ) {
+    final stroke = obj.style.stroke;
+    final ArrowHead start = ArrowHead.of(stroke.startArrow);
+    final ArrowHead end = ArrowHead.of(stroke.endArrow);
+    if (start == ArrowHead.none && end == ArrowHead.none) return;
+    final int paint = list.addPaint(colorArgb: stroke.color.value);
+    Offset doc(Offset p) => applyTrafoToPoint(p, obj.trafo);
+    for (final vp in paths) {
+      if (vp.isClosed || vp.points.isEmpty) continue;
+      // The first and last segments, as the points that give their
+      // direction: the nearest control point that is not the node itself.
+      final Offset first = doc(vp.start);
+      final Offset? afterFirst = _awayFrom(first, <Offset>[
+        if (vp.points.first case final CurvePoint c) ...<Offset>[
+          doc(c.control1),
+          doc(c.control2),
+          doc(c.endpoint),
+        ] else
+          doc(vp.points.first as Offset),
+      ]);
+      final Object lastPoint = vp.points.last;
+      final Offset last = doc(
+          lastPoint is CurvePoint ? lastPoint.endpoint : lastPoint as Offset);
+      final Offset previous = vp.points.length > 1
+          ? doc(switch (vp.points[vp.points.length - 2]) {
+              final CurvePoint c => c.endpoint,
+              final Object o => o as Offset,
+            })
+          : first;
+      final Offset? beforeLast = _awayFrom(last, <Offset>[
+        if (lastPoint case final CurvePoint c) ...<Offset>[
+          doc(c.control2),
+          doc(c.control1),
+        ],
+        previous,
+      ]);
+      if (afterFirst != null) {
+        final Path? head = start.at(first, first - afterFirst, stroke.width);
+        if (head != null) list.drawPath(list.addPath(head), paint);
+      }
+      if (beforeLast != null) {
+        final Path? head = end.at(last, last - beforeLast, stroke.width);
+        if (head != null) list.drawPath(list.addPath(head), paint);
+      }
+    }
+  }
+
+  /// The first of [candidates] that is not [node] itself.
+  static Offset? _awayFrom(Offset node, List<Offset> candidates) {
+    for (final Offset c in candidates) {
+      if ((c - node).distance > 1e-9) return c;
+    }
+    return null;
   }
 
   /// The fill's gradient in document space.

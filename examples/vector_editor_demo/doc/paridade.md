@@ -7,16 +7,16 @@
 
 | | feitas | parciais | faltam | total | cobertura |
 |---|---|---|---|---|---|
-| P0 | 56 | 7 | 0 | 63 | 94% |
+| P0 | 57 | 6 | 0 | 63 | 95% |
 | P1 | 7 | 2 | 35 | 44 | 18% |
 | P2 | 1 | 0 | 67 | 68 | 1% |
-| **todas** | 64 | 9 | 102 | 175 | 39% |
+| **todas** | 65 | 8 | 102 | 175 | 39% |
 
 Cobertura = (feitas + metade das parciais) / total.
 
 Menus do editor: 90 de 105 linhas têm comando registrado; as outras aparecem desabilitadas.
 
-Comandos registrados: 122.
+Comandos registrados: 124.
 
 ## Por área
 
@@ -24,7 +24,7 @@ Comandos registrados: 122.
 |---|---|---|---|---|---|
 | Caixa de ferramentas | 10 | 3 | 47 | 60 | 19% |
 | Interações no canvas | 9 | 1 | 3 | 13 | 73% |
-| Barra de propriedades | 5 | 2 | 9 | 16 | 38% |
+| Barra de propriedades | 6 | 1 | 9 | 16 | 41% |
 | Dockers | 4 | 0 | 11 | 15 | 27% |
 | Operações de objeto | 11 | 1 | 10 | 22 | 52% |
 | Alinhar e distribuir (teclas) | 5 | 1 | 2 | 8 | 69% |
@@ -96,7 +96,7 @@ Comandos registrados: 122.
 | ❌ | Interactive fill (G) | P1 |  | tudo |
 | ❌ | Mesh fill | P2 |  | tudo |
 | ❌ | Smart fill | P2 |  | tudo |
-| 🟡 | Outline pen (F12) | P0 | `panel.fillStroke`, `object.outline`, `object.outlineWidth`, `object.outlineStyle` | no arrowheads or calligraphic pen |
+| 🟡 | Outline pen (F12) | P0 | `panel.fillStroke`, `object.outline`, `object.outlineWidth`, `object.outlineStyle` | no calligraphic pen |
 | 🟡 | Fill (F11) | P0 | `panel.fillStroke`, `object.fill` | uniform colour; no fountain, pattern or texture fills |
 
 ### Interações no canvas
@@ -127,7 +127,7 @@ Comandos registrados: 122.
 | ✅ | Rectangle: corners | P0 | teste: "a single rectangle brings up the rectangle plugin" |  |
 | ❌ | Ellipse: arc and pie | P1 |  | tudo |
 | ❌ | Polygon / Star: points | P1 |  | corner count only |
-| 🟡 | Freehand, Bézier, Pen | P0 | `tool.freehandSmoothing` | Freehand smoothing; no arrowheads or line style on the bar |
+| ✅ | Freehand, Bézier, Pen | P0 | `tool.freehandSmoothing`, `object.arrows`, `object.outlineStyle` |  |
 | 🟡 | Text: content and size | P0 | `text.content`, `text.size` | content and size; no font, style or alignment |
 | ❌ | Interactive fill | P1 |  | tudo |
 | ❌ | Transparency | P1 |  | tudo |

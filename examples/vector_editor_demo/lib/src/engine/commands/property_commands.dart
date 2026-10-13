@@ -135,6 +135,39 @@ List<CommandSpec> propertyCommands(EditorContext context) {
       },
     ),
 
+    CommandSpec(
+      id: 'object.arrows',
+      label: 'Arrowheads',
+      description: 'The heads on the open ends of an outline: none, '
+          'triangle, open, stealth, circle, square, diamond or bar.',
+      params: const <CommandParam>[
+        CommandParam('start', CommandParamType.string),
+        CommandParam('end', CommandParamType.string),
+      ],
+      when: context.needsSelection,
+      checked: (CommandArgs args) => args.has('start')
+          ? allSay(args['start'],
+              (VectorStyle s) => ArrowHead.of(s.stroke.startArrow).name)
+          : args.has('end') &&
+              allSay(args['end'],
+                  (VectorStyle s) => ArrowHead.of(s.stroke.endArrow).name),
+      run: (CommandArgs args) {
+        final List<String> names = <String>[
+          for (final ArrowHead head in ArrowHead.values) head.name,
+        ];
+        // 0 is none: copyWith cannot clear a field with null.
+        final int? start = args.has('start')
+            ? ArrowHead.values.byName(oneOf(args, 'start', names)).index
+            : null;
+        final int? end = args.has('end')
+            ? ArrowHead.values.byName(oneOf(args, 'end', names)).index
+            : null;
+        model.applyToSelection((VectorStyle style) => style.copyWith(
+            stroke: style.stroke.copyWith(startArrow: start, endArrow: end)));
+        return null;
+      },
+    ),
+
     // --- fill -----------------------------------------------------------------
     CommandSpec(
       id: 'object.fillRule',

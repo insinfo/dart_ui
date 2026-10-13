@@ -32,6 +32,7 @@ enum ContextPlugin {
   nodes,
   freehand,
   zoom,
+  line,
 }
 
 /// Which plugins belong on the bar right now.
@@ -86,6 +87,7 @@ List<ContextPlugin> contextPluginsFor(EditorModel model) {
     VectorPolygon() => ContextPlugin.polygon,
     VectorText() => ContextPlugin.text,
     VectorGroup() => ContextPlugin.group,
+    VectorCurve() => ContextPlugin.line,
     _ => null,
   };
 
@@ -199,6 +201,7 @@ class ContextPanel extends StatelessWidget {
         ContextPlugin.freehand =>
           _FreehandPlugin(model: model, registry: registry),
         ContextPlugin.zoom => _ZoomPlugin(model: model, registry: registry),
+        ContextPlugin.line => _LinePlugin(model: model, registry: registry),
       };
 
   /// A row of command buttons with their own icons and parameters.
@@ -825,6 +828,96 @@ class _ZoomPlugin extends StatelessWidget {
             command: id,
             icon: commandIcon(id) ?? PhosphorIcons.magnifyingGlass,
           ),
+      ],
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Line: arrowheads and line style
+// ---------------------------------------------------------------------------
+
+/// A curve's bar, CorelDRAW's: the start arrowhead, the line style, the end
+/// arrowhead.
+class _LinePlugin extends StatelessWidget {
+  const _LinePlugin({required this.model, required this.registry});
+
+  final EditorModel model;
+  final CommandRegistry registry;
+
+  /// Dashes in widths of the line, so a heavier line gets longer dashes.
+  static const Map<String, List<double>> styles = <String, List<double>>{
+    'Solid': <double>[],
+    'Dash': <double>[4, 2],
+    'Dot': <double>[1, 2],
+    'Dash dot': <double>[4, 2, 1, 2],
+  };
+
+  @override
+  Widget build(BuildContext context) {
+    final ChromeMetrics metrics = ChromeMetrics.of(Theme.of(context));
+    // The selection can change between choosing the plugins and building
+    // them - a tool finishing a curve mid-frame.
+    final SelectableObject? single = model.singleSelection;
+    if (single == null) return const SizedBox();
+    final StrokeDescriptor stroke = single.style.stroke;
+    final double width = stroke.width <= 0 ? 1 : stroke.width;
+    String styleOf(List<double> dashes) {
+      for (final MapEntry<String, List<double>> e in styles.entries) {
+        if (e.value.length == dashes.length &&
+            <bool>[
+              for (var i = 0; i < dashes.length; i++)
+                (e.value[i] * width - dashes[i]).abs() < 1e-6,
+            ].every((bool b) => b)) {
+          return e.key;
+        }
+      }
+      return 'Custom';
+    }
+
+    final String current = styleOf(stroke.dashPattern);
+    Widget arrows(String end, ArrowHead value) => SizedBox(
+          width: metrics.widthFor(84),
+          height: metrics.fieldHeight,
+          child: ComboBox<ArrowHead>(
+            label: end == 'start' ? 'Start arrowhead' : 'End arrowhead',
+            value: value,
+            items: <ComboBoxItem<ArrowHead>>[
+              for (final ArrowHead head in ArrowHead.values)
+                ComboBoxItem<ArrowHead>(value: head, label: head.label),
+            ],
+            onChanged: (ArrowHead head) => registry
+                .execute('object.arrows', <String, Object?>{end: head.name}),
+          ),
+        );
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: <Widget>[
+        arrows('start', ArrowHead.of(stroke.startArrow)),
+        const SizedBox(width: 4),
+        SizedBox(
+          width: metrics.widthFor(84),
+          height: metrics.fieldHeight,
+          child: ComboBox<String>(
+            label: 'Line style',
+            value: current,
+            items: <ComboBoxItem<String>>[
+              if (current == 'Custom')
+                const ComboBoxItem<String>(value: 'Custom', label: 'Custom'),
+              for (final String name in styles.keys)
+                ComboBoxItem<String>(value: name, label: name),
+            ],
+            onChanged: (String name) {
+              final List<double>? pattern = styles[name];
+              if (pattern == null) return;
+              registry.execute('object.outlineStyle', <String, Object?>{
+                'dash': <double>[for (final double d in pattern) d * width],
+              });
+            },
+          ),
+        ),
+        const SizedBox(width: 4),
+        arrows('end', ArrowHead.of(stroke.endArrow)),
       ],
     );
   }

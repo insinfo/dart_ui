@@ -141,6 +141,19 @@ Future<void> main(List<String> args) async {
       ..execute('object.toCurves')
       ..execute('tool.shape')
       ..execute('path.selectAllNodes');
+  } else if (scenario == 'arrows') {
+    // Curves with every arrowhead, and the line bar for the last one.
+    var y = 420.0;
+    for (final ArrowHead head in ArrowHead.values.skip(1)) {
+      state.registry
+        ..execute('shape.curve', <String, Object?>{
+          'points': <double>[60, y, 260, y - 30],
+        })
+        ..execute('object.outlineWidth', <String, Object?>{'width': 2})
+        ..execute('object.arrows',
+            <String, Object?>{'start': head.name, 'end': head.name});
+      y += 50;
+    }
   } else if (scenario == 'find') {
     // Edit > Find and Replace, the editor's first dialog.
     state.registry.execute('edit.findReplace');
