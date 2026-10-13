@@ -326,8 +326,13 @@ class MainWindowState extends State<MainWindow> implements EditorHost {
 
   // -------------------------------------------------------------------------
 
+  /// How many times the window has built - for a test that holds the line
+  /// on what may rebuild it (a pointer move must not).
+  int debugBuildCount = 0;
+
   @override
   Widget build(BuildContext context) {
+    debugBuildCount++;
     // A tab opened or switched to since the last frame is fitted once.
     _fitPending();
     final theme = ui.theme;

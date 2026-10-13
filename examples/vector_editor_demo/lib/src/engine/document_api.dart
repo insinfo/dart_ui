@@ -6,7 +6,7 @@
 /// un-redoable and a reorder un-undoable cannot recur.
 library;
 
-import 'package:dart_ui/dart_ui.dart';
+import 'package:dart_ui/vector.dart';
 
 /// Operations on a [VectorDocument], each recorded in its [history].
 class DocumentApi {

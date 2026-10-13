@@ -3,6 +3,7 @@ library;
 
 import 'package:dart_ui/dart_ui.dart';
 
+import 'command_icons.dart';
 import 'metrics.dart';
 
 /// One row of icon buttons, grouped by separators. Each button is a command:
@@ -47,7 +48,7 @@ class StandardToolbar extends StatelessWidget {
     final String label = item.label ?? command?.labelWith(args) ?? item.command;
     final KeyGesture? shortcut = command?.shortcut;
     return IconButton(
-      icon: Icon(command?.icon ?? PhosphorIcons.circle),
+      icon: Icon(commandIcon(item.command) ?? PhosphorIcons.circle),
       iconSize: chrome.toolbarIconSize,
       padding: const EdgeInsets.all(5),
       constraints: BoxConstraints(minWidth: chrome.control, minHeight: 26),

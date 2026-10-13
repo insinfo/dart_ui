@@ -2,7 +2,7 @@
 /// `document.inspect` and `ui.inspect`.
 library;
 
-import 'package:dart_ui/dart_ui.dart';
+import 'package:dart_ui/vector.dart';
 
 import 'editor_model.dart';
 

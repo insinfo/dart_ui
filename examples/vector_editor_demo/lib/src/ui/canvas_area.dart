@@ -34,7 +34,6 @@ class CanvasArea extends StatelessWidget {
       );
     }
     final session = model.active;
-    final cursor = model.cursor;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -46,15 +45,19 @@ class CanvasArea extends StatelessWidget {
             children: <Widget>[
               _UnitCorner(model: model),
               Expanded(
-                child: RulerWidget(
-                  zoom: session.zoom,
-                  pan: session.pan.dx,
-                  unit: model.units,
-                  rulerThickness:
-                      ChromeMetrics.of(Theme.of(context)).rulerThickness,
-                  cursorPosition: cursor == null
-                      ? null
-                      : session.pan.dx + cursor.dx * session.zoom,
+                child: ValueListenableBuilder<Offset?>(
+                  valueListenable: model.pointer,
+                  builder: (BuildContext context, Offset? cursor, _) =>
+                      RulerWidget(
+                    zoom: session.zoom,
+                    pan: session.pan.dx,
+                    unit: model.units,
+                    rulerThickness:
+                        ChromeMetrics.of(Theme.of(context)).rulerThickness,
+                    cursorPosition: cursor == null
+                        ? null
+                        : session.pan.dx + cursor.dx * session.zoom,
+                  ),
                 ),
               ),
             ],
@@ -64,16 +67,20 @@ class CanvasArea extends StatelessWidget {
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: <Widget>[
-              RulerWidget(
-                isVertical: true,
-                zoom: session.zoom,
-                pan: session.pan.dy,
-                unit: model.units,
-                rulerThickness:
-                    ChromeMetrics.of(Theme.of(context)).rulerThickness,
-                cursorPosition: cursor == null
-                    ? null
-                    : session.pan.dy + cursor.dy * session.zoom,
+              ValueListenableBuilder<Offset?>(
+                valueListenable: model.pointer,
+                builder: (BuildContext context, Offset? cursor, _) =>
+                    RulerWidget(
+                  isVertical: true,
+                  zoom: session.zoom,
+                  pan: session.pan.dy,
+                  unit: model.units,
+                  rulerThickness:
+                      ChromeMetrics.of(Theme.of(context)).rulerThickness,
+                  cursorPosition: cursor == null
+                      ? null
+                      : session.pan.dy + cursor.dy * session.zoom,
+                ),
               ),
               Expanded(
                 child: _MeasuredCanvas(
@@ -175,10 +182,9 @@ class _MeasuredCanvas extends StatelessWidget {
               ..viewTouched = true;
             model.refresh();
           },
-          onCursorMoved: (point) {
-            model.cursor = point;
-            model.refresh();
-          },
+          // Only what shows the pointer listens to it; see
+          // EditorModel.pointer.
+          onCursorMoved: (point) => model.cursor = point,
           onSelectionChanged: (_) => model.refresh(),
           onDocumentChanged: () => model.touch(),
           onObjectCreated: (Object object) {

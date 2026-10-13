@@ -2,7 +2,8 @@
 /// menus and the standard toolbar.
 ///
 /// A row names a command and, when it takes any, its parameters; its label,
-/// icon, shortcut, enabled and checked state all come from the command. A
+/// shortcut, enabled and checked state come from the command, its icon from
+/// [commandIcon]. A
 /// row whose command is not registered yet still shows, disabled - the gap
 /// is visible, and `tool/parity.dart` counts it.
 library;
@@ -10,11 +11,13 @@ library;
 import 'package:dart_ui/dart_ui.dart';
 
 import '../engine/editor_model.dart';
+import 'command_icons.dart';
 import 'editor_ui.dart';
 import 'workspace.dart';
 
 final class EditorMenus {
-  EditorMenus(this.registry, this.ui) : builder = MenuBuilder(registry);
+  EditorMenus(this.registry, this.ui)
+      : builder = MenuBuilder(registry, iconOf: commandIcon);
 
   final CommandRegistry registry;
   final EditorUi ui;
@@ -203,7 +206,7 @@ final class EditorMenus {
         const CommandItem('edit.duplicate'),
         _,
         const CommandItem('object.toCurves'),
-        const SubmenuSpec('Order', _order, icon: PhosphorIcons.stack),
+        const SubmenuSpec('Order', _order, id: 'menu.order'),
         const SubmenuSpec(
           'Transform',
           <MenuSpecEntry>[
@@ -221,7 +224,7 @@ final class EditorMenus {
                 params: <String, Object?>{'direction': 'vertical'},
                 label: 'Flip vertical'),
           ],
-          icon: PhosphorIcons.arrowsOutCardinal,
+          id: 'menu.transform',
         ),
         if (registry.isEnabled('object.group'))
           const CommandItem('object.group'),
@@ -257,7 +260,7 @@ final class EditorMenus {
             MenuSeparator(),
             CommandItem('view.zoomPage'),
           ],
-          icon: PhosphorIcons.magnifyingGlass,
+          id: 'menu.zoom',
         ),
         _,
         CommandItem('view.grid'),

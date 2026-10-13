@@ -2,7 +2,7 @@
 /// size of the view, the window.
 library;
 
-import 'package:dart_ui/dart_ui.dart';
+import 'package:dart_ui/vector.dart';
 
 /// The part of a command that needs a person or a window.
 ///

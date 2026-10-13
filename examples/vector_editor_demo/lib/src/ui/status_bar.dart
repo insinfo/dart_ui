@@ -63,11 +63,15 @@ class EditorStatusBar extends StatelessWidget {
                 width: 150,
                 tooltip: 'Selection',
               ),
-              _Section(
-                icon: PhosphorIcons.cursor,
-                text: _coordinates,
-                width: 140,
-                tooltip: 'Pointer position',
+              ValueListenableBuilder<Offset?>(
+                valueListenable: model.pointer,
+                builder: (BuildContext context, Offset? _, Widget? __) =>
+                    _Section(
+                  icon: PhosphorIcons.cursor,
+                  text: _coordinates,
+                  width: 140,
+                  tooltip: 'Pointer position',
+                ),
               ),
               _Section(
                 icon: PhosphorIcons.magnifyingGlass,

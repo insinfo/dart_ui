@@ -118,7 +118,6 @@ void registerUiCommands(CommandRegistry registry, EditorUi ui) {
         currentLabel: (_) => ui.workspace.isFloating(id)
             ? '${WorkspacePanels.nameOf(id)} (dock again)'
             : WorkspacePanels.nameOf(id),
-        icon: WorkspacePanels.iconOf(id),
         shortcut: WorkspacePanels.shortcutOf(id),
         alsoShortcuts: id == WorkspacePanels.fillStroke
             ? const <KeyGesture>[KeyGesture(logicalKeyF12)]

@@ -51,6 +51,7 @@ const Size kWindowSize = Size(1400, 880);
 void main() {
   _rightClickAndCurveTests();
   _alignKeyTests();
+  _performanceTests();
   setUpAll(() {
     final fonts = FrameworkFonts.install();
     expect(fonts.uiFontLoaded, isTrue);
@@ -1208,6 +1209,23 @@ void main() {
       harness.frame();
       expect(harness.model.selection.selectedObjects.whereType<VectorGroup>(),
           isEmpty);
+      harness.dispose();
+    });
+  });
+}
+
+void _performanceTests() {
+  group('what a pointer move costs', () {
+    test('moving over the canvas updates the rulers, not the window', () {
+      final harness = _Harness();
+      final window = harness.windowState;
+      final before = window.debugBuildCount;
+      for (var i = 0; i < 20; i++) {
+        harness.hoverDocument(Offset(100.0 + i * 5, 200));
+      }
+      expect(window.debugBuildCount, before,
+          reason: 'a pointer move rebuilt the whole window');
+      expect(harness.model.cursor!.dx, closeTo(195, 1));
       harness.dispose();
     });
   });

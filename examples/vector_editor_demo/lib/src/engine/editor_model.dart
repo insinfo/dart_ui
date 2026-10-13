@@ -5,7 +5,8 @@
 /// Keeping it in one object rather than in the widgets is what lets them agree.
 library;
 
-import 'package:dart_ui/dart_ui.dart';
+import 'package:dart_ui/commands.dart';
+import 'package:dart_ui/vector.dart';
 
 import 'document_api.dart';
 import 'zoom.dart';
@@ -134,8 +135,16 @@ class EditorModel {
   /// keeps one setting, which is a simplification worth naming.
   DocUnit units = DocUnit.mm;
 
-  /// The cursor in document coordinates, or null when it is off the canvas.
-  Offset? cursor;
+  /// The pointer in document coordinates, or null when it is off the canvas.
+  ///
+  /// A notifier of its own, not part of [refresh]: it changes on every
+  /// mouse move, and only the rulers and the status bar's coordinates show
+  /// it. Rebuilding the whole window for each move cost a full frame of
+  /// every panel at the pointer's rate.
+  final ValueNotifier<Offset?> pointer = ValueNotifier<Offset?>(null);
+
+  Offset? get cursor => pointer.value;
+  set cursor(Offset? value) => pointer.value = value;
 
   /// Off by default, as in CorelDRAW: the page is for the artwork.
   bool showGrid = false;

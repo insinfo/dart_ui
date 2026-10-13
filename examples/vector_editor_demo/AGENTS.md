@@ -16,16 +16,29 @@ contorno aqui. As regras do repositório (`../../AGENTS.md`) valem antes destas.
 
 ## Regras que não se negociam
 
-- **Tudo é um comando.** Comportamento visível é um `CommandSpec`: comandos de
-  documento em `lib/src/engine/editor_commands.dart`, comandos de janela em
-  `lib/src/ui/editor_ui.dart`. Cada um tem id com ponto (`object.toCurves`),
-  rótulo, parâmetros declarados, `enabled`/`disabledReason` e testes. Menus,
-  barras, atalhos, menus de contexto, testes e o canal de controle chegam a
-  eles pelo mesmo `CommandRegistry`.
+- **Tudo é um comando, em módulos por área.** Comportamento visível é um
+  `CommandSpec`. Os comandos de documento ficam em
+  `lib/src/engine/commands/<área>_commands.dart`: uma função que recebe o
+  `EditorContext` e devolve os comandos da área. Uma área nova é um arquivo
+  novo e uma linha em `kEditorCommandModules`; não cresça um arquivo existente
+  além de algumas centenas de linhas. Os comandos de janela ficam em
+  `lib/src/ui/editor_ui.dart`.
+- Cada comando tem id com ponto (`object.toCurves`), rótulo, parâmetros
+  declarados, `when` (devolve o motivo da recusa ou `null`; use as condições
+  do contexto, como `needsSelection`) e testes. O ícone não fica no comando:
+  vai em `lib/src/ui/command_icons.dart`.
+- Menus, barras, atalhos, menus de contexto, testes, o CLI e o canal de
+  controle chegam aos comandos pelo mesmo `CommandRegistry`.
 - **A interface é fina.** Um widget age por `registry.execute(id, params)`;
   não chama o modelo para mudar o documento.
-- **Camadas.** `lib/src/engine/` não importa nada de `lib/src/ui/`
-  (`test/layers_test.dart` falha se importar). O motor roda sem janela.
+- **Camadas (portas e adaptadores).** `lib/src/engine/` e `lib/src/cli/` só
+  importam `dart:*`, `package:dart_ui/vector.dart` e
+  `package:dart_ui/commands.dart`; nunca `dart_ui.dart` nem `lib/src/ui/`
+  (`test/layers_test.dart` falha). O motor roda sem janela:
+  `dart run bin/vector_cli.dart run script.json --out desenho.svg`.
+- **Desempenho.** O que muda a todo instante (o ponteiro) vive num
+  `ValueNotifier` próprio e só quem o mostra escuta; `model.refresh()`
+  reconstrói a janela e é para mudanças de documento ou de estado.
 - **Nunca derrubar o app.** Um comando recusa com `CommandError` e um motivo;
   o registro transforma qualquer exceção em falha relatada. Entrada de arquivo
   e do canal de controle é sempre não confiável.

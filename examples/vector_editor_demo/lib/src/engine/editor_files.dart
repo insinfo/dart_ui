@@ -5,7 +5,8 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
-import 'package:dart_ui/dart_ui.dart';
+import 'package:dart_ui/commands.dart';
+import 'package:dart_ui/vector.dart';
 
 import 'editor_model.dart';
 
