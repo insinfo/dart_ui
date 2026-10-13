@@ -119,6 +119,7 @@ final class DataGrid extends StatefulWidget {
     this.onRowActivated,
     this.onSecondaryPress,
     this.controller,
+    this.decorated = true,
   });
 
   final List<DataGridColumn> columns;
@@ -163,6 +164,12 @@ final class DataGrid extends StatefulWidget {
   final void Function(int? row)? onSecondaryPress;
 
   final ScrollPosition? controller;
+
+  /// Whether it draws its own surface and outline. False for one placed
+  /// on a pane or a card that already has them - a file manager's
+  /// details list, a grid inside a rounded card - where a second box
+  /// would be a frame inside a frame.
+  final bool decorated;
 
   @override
   State<DataGrid> createState() => _DataGridState();
@@ -435,6 +442,7 @@ final class _DataGridState extends State<DataGrid> {
           child: FocusAttachment(
             node: _focusNode,
             child: _DataGridBodyWidget(
+              decorated: widget.decorated,
               position: _position,
               focusNode: _focusNode,
               theme: theme,
@@ -998,6 +1006,7 @@ final class RenderDataGridRow extends RenderBoxContainer<BoxParentData>
 
 final class _DataGridBodyWidget extends MultiChildRenderObjectWidget {
   const _DataGridBodyWidget({
+    required this.decorated,
     required this.position,
     required this.focusNode,
     required this.theme,
@@ -1011,6 +1020,7 @@ final class _DataGridBodyWidget extends MultiChildRenderObjectWidget {
     required super.children,
   });
 
+  final bool decorated;
   final ScrollPosition position;
   final FocusNode focusNode;
   final ThemeData theme;
@@ -1035,6 +1045,7 @@ final class _DataGridBodyWidget extends MultiChildRenderObjectWidget {
         onRowPressed: onRowPressed,
         onViewportExtent: onViewportExtent,
       )
+        ..decorated = decorated
         ..theme = theme
         ..focusNode = focusNode;
 
@@ -1052,6 +1063,7 @@ final class _DataGridBodyWidget extends MultiChildRenderObjectWidget {
       ..onKeyEvent = onKeyEvent
       ..onRowPressed = onRowPressed
       ..onViewportExtent = onViewportExtent
+      ..decorated = decorated
       ..theme = theme
       ..focusNode = focusNode;
   }
@@ -1146,13 +1158,24 @@ final class RenderDataGridBody extends RenderBoxContainer<BoxParentData>
       size.height,
     );
     final double radius = theme.cornerRadius;
-    paintRoundedFill(list, rect, theme.surfaceAlternate, radius);
+    if (decorated) paintRoundedFill(list, rect, theme.surfaceAlternate, radius);
     list.save();
     list.clipRect(rect.left, rect.top, rect.right, rect.bottom);
     super.paint(list, offset);
     list.restore();
+    if (!decorated) return;
     paintRoundedBorder(list, rect, theme.border, radius);
     paintFocusRing(list, rect, radius: radius);
+  }
+
+  /// See [DataGrid.decorated].
+  bool get decorated => _decorated;
+  bool _decorated = true;
+
+  set decorated(bool value) {
+    if (value == _decorated) return;
+    _decorated = value;
+    markNeedsPaint();
   }
 
   @override

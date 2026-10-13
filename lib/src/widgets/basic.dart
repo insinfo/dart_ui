@@ -545,6 +545,7 @@ final class Text extends RenderObjectWidget {
     this.maxLines,
     this.ellipsis,
     this.textAlign = paragraph.TextAlign.start,
+    this.breakWords = false,
   })  : assert(maxLines == null || maxLines > 0),
         assert(ellipsis == null || maxLines != null);
 
@@ -576,6 +577,10 @@ final class Text extends RenderObjectWidget {
   /// say. Matters once there are lines of different lengths.
   final paragraph.TextAlign textAlign;
 
+  /// Whether a word too wide for the line is cut between characters - a
+  /// file name with no space in it, under an icon.
+  final bool breakWords;
+
   @override
   RenderObjectElement createElement() => RenderObjectElement(this);
 
@@ -593,6 +598,7 @@ final class Text extends RenderObjectWidget {
       maxLines: maxLines,
       ellipsis: ellipsis,
       textAlign: textAlign,
+      breakWords: breakWords,
     );
   }
 
@@ -612,7 +618,8 @@ final class Text extends RenderObjectWidget {
       ..softWrap = softWrap
       ..maxLines = maxLines
       ..ellipsis = ellipsis
-      ..textAlign = textAlign;
+      ..textAlign = textAlign
+      ..breakWords = breakWords;
   }
 
   /// Resolves and subscribes to the ambient styles. Render-object elements
@@ -649,6 +656,7 @@ final class RenderText extends RenderBox {
     int? maxLines,
     String? ellipsis,
     paragraph.TextAlign textAlign = paragraph.TextAlign.start,
+    bool breakWords = false,
   })  : _text = text,
         _color = color,
         _fontSize = fontSize,
@@ -658,7 +666,8 @@ final class RenderText extends RenderBox {
         _softWrap = softWrap,
         _maxLines = maxLines,
         _ellipsis = ellipsis,
-        _textAlign = textAlign;
+        _textAlign = textAlign,
+        _breakWords = breakWords;
 
   String _text;
   Color _color;
@@ -671,6 +680,17 @@ final class RenderText extends RenderBox {
   String? _ellipsis;
   paragraph.TextAlign _textAlign;
   paragraph.Paragraph? _paragraph;
+
+  bool _breakWords;
+
+  bool get breakWords => _breakWords;
+
+  set breakWords(bool value) {
+    if (value == _breakWords) return;
+    _breakWords = value;
+    _paragraph = null;
+    markNeedsLayout();
+  }
 
   paragraph.TextAlign get textAlign => _textAlign;
 
@@ -712,16 +732,23 @@ final class RenderText extends RenderBox {
   /// the single-line path only shapes. An [_ellipsis] therefore takes the
   /// paragraph path too: a label that does not fit its box ends in "…"
   /// instead of being cut through a letter.
-  bool get _usesParagraph => _softWrap || _hasHardBreak || _ellipsis != null;
+  bool get _usesParagraph =>
+      _softWrap || _hasHardBreak || _ellipsis != null || _alignsAcross;
 
   /// The width paragraph layout may use: the constraint when soft wrapping,
   /// otherwise none, so that only mandatory breaks end a line.
   /// The width lines break at: the box's when the text wraps, or when it
   /// is cut with an ellipsis - which needs a width to cut at.
   double _layoutWidth(double available) =>
-      (_softWrap || _ellipsis != null) && available.isFinite
+      (_softWrap || _ellipsis != null || _alignsAcross) && available.isFinite
           ? available
           : double.infinity;
+
+  /// Whether the lines are placed across the width - centred, or against
+  /// the far edge - rather than from the start, which needs the width.
+  bool get _alignsAcross =>
+      _textAlign != paragraph.TextAlign.start &&
+      _textAlign != paragraph.TextAlign.left;
 
   Color get color => _color;
 
@@ -839,12 +866,19 @@ final class RenderText extends RenderBox {
           constraints.hasBoundedWidth ? constraints.maxWidth : double.infinity),
       style: paragraph.ParagraphStyle(
         align: _textAlign,
+        breakWords: _breakWords,
         maxLines: _maxLines,
         ellipsis: _ellipsis,
         heightMultiplier: _lineHeight ?? 1.0,
       ),
     );
-    size = constraints.constrain(_paragraph!.size);
+    // Lines centred or right-aligned were placed across the layout width,
+    // so the box is that wide: shrunk to the longest line, the offset would
+    // count twice - once in the line, once more where a parent centres the
+    // box.
+    size = constraints.constrain(_alignsAcross && constraints.hasBoundedWidth
+        ? Size(constraints.maxWidth, _paragraph!.size.height)
+        : _paragraph!.size);
   }
 
   // --- intrinsics ---------------------------------------------------------
@@ -864,6 +898,7 @@ final class RenderText extends RenderBox {
           maxWidth: _layoutWidth(0),
           style: paragraph.ParagraphStyle(
             align: _textAlign,
+            breakWords: _breakWords,
             maxLines: _maxLines,
             ellipsis: _ellipsis,
             heightMultiplier: _lineHeight ?? 1.0,
@@ -885,6 +920,7 @@ final class RenderText extends RenderBox {
           maxWidth: double.infinity,
           style: paragraph.ParagraphStyle(
             align: _textAlign,
+            breakWords: _breakWords,
             maxLines: _maxLines,
             ellipsis: _ellipsis,
             heightMultiplier: _lineHeight ?? 1.0,
@@ -910,6 +946,7 @@ final class RenderText extends RenderBox {
           maxWidth: _layoutWidth(width),
           style: paragraph.ParagraphStyle(
             align: _textAlign,
+            breakWords: _breakWords,
             maxLines: _maxLines,
             ellipsis: _ellipsis,
             heightMultiplier: _lineHeight ?? 1.0,

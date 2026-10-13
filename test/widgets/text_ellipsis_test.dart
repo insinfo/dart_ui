@@ -45,4 +45,23 @@ void main() {
     expect(caption.size.height, greaterThan(20), reason: 'it wrapped');
     expect(caption.size.width, lessThanOrEqualTo(110));
   });
+
+  test('a word with no break in it is cut where the width runs out', () {
+    const String name = 'IMG_2022_06_01_holiday_photo.jpg';
+    final RenderText overflowing =
+        _laid(const Text(name, softWrap: true, maxLines: 3), 90);
+    final RenderText broken = _laid(
+        const Text(name, softWrap: true, maxLines: 3, breakWords: true), 90);
+    expect(broken.size.width, lessThanOrEqualTo(90));
+    expect(broken.size.height, greaterThan(overflowing.size.height),
+        reason: 'it wrapped onto more lines instead of running past');
+  });
+
+  test(
+      'a centred caption fills its width, so a parent centring it does '
+      'not shift it twice', () {
+    final RenderText caption = _laid(
+        const Text('Adobe', maxLines: 2, textAlign: TextAlign.center), 120);
+    expect(caption.size.width, 120);
+  });
 }

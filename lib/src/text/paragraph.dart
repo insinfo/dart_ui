@@ -66,10 +66,10 @@
 ///    Half of an "fi" ligature, or the low half of a surrogate pair, has zero
 ///    width. Splitting a ligature proportionally is the alternative and it is a
 ///    lie of a different shape.
-///  * **No emergency breaking.** A word longer than `maxWidth` with no UAX #14
-///    opportunity inside it overflows the line rather than being cut. CSS calls
-///    the alternative `overflow-wrap: break-word`; it is a tailoring, and it is
-///    not here.
+///  * **Emergency breaking is opt-in.** A word longer than `maxWidth` with no
+///    UAX #14 opportunity inside it overflows the line, unless
+///    [ParagraphStyle.breakWords] asks for CSS's `overflow-wrap: break-word`:
+///    then it is cut between characters where the width runs out.
 ///  * **Justification expands U+0020 only.** No kashida, no letter-spacing, no
 ///    shrinking. A line with no spaces cannot be justified and is left aligned
 ///    to the paragraph's start edge.
@@ -287,9 +287,16 @@ final class ParagraphStyle {
     this.ellipsis,
     this.tabStopWidth,
     this.heightMultiplier = 1.0,
+    this.breakWords = false,
   });
 
   final TextAlign align;
+
+  /// Whether a word wider than the line is cut between characters rather
+  /// than overflowing - CSS's `overflow-wrap: break-word`. A file name like
+  /// `IMG_2022_06_01.jpg` under an icon has no break opportunity in it, and
+  /// File Explorer breaks it wherever the width runs out.
+  final bool breakWords;
 
   /// Forces the paragraph's base direction. Null applies UAX #9 P2/P3, which
   /// takes the direction of the first strong character and defaults to
@@ -337,7 +344,8 @@ final class ParagraphStyle {
           other.maxLines == maxLines &&
           other.ellipsis == ellipsis &&
           other.tabStopWidth == tabStopWidth &&
-          other.heightMultiplier == heightMultiplier;
+          other.heightMultiplier == heightMultiplier &&
+          other.breakWords == breakWords;
 
   @override
   int get hashCode => Object.hash(
@@ -347,6 +355,7 @@ final class ParagraphStyle {
         ellipsis,
         tabStopWidth,
         heightMultiplier,
+        breakWords,
       );
 }
 
@@ -1481,6 +1490,31 @@ final class _ParagraphBuilder {
         measured = p;
         width = widthAt(p);
         candidate = -1;
+      }
+      // What is left of the line is one word too wide: with breakWords it is
+      // cut where the width runs out, never inside a surrogate pair.
+      while (style.breakWords && width > maxWidth && p - lineStart > 1) {
+        int cut = -1;
+        for (int k = lineStart + 1; k < p; k++) {
+          final int unit = text.codeUnitAt(k);
+          if (unit >= 0xDC00 && unit <= 0xDFFF) continue;
+          if (_advance(0, lineStart, k) > maxWidth) break;
+          cut = k;
+        }
+        if (cut < 0) {
+          // Not even one character fits: take one, or nothing would ever end.
+          cut = lineStart + 1;
+          if (cut < p) {
+            final int unit = text.codeUnitAt(cut);
+            if (unit >= 0xDC00 && unit <= 0xDFFF) cut++;
+          }
+        }
+        if (cut >= p) break;
+        ranges.add(_LineRange(lineStart, cut, false));
+        lineStart = cut;
+        pen = _advance(0, lineStart, p);
+        measured = p;
+        width = widthAt(p);
       }
       candidate = p;
 

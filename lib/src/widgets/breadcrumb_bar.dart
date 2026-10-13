@@ -36,6 +36,16 @@ final class BreadcrumbItem {
   final Object? id;
 }
 
+/// Lets the window put a [BreadcrumbBar] into typing mode - Ctrl+L, Alt+D.
+final class BreadcrumbController {
+  _BreadcrumbBarState? _state;
+
+  /// Shows the address as text, selected, with the keyboard in it.
+  void edit() => _state?._beginEdit();
+
+  bool get isEditing => _state?._editing ?? false;
+}
+
 /// The address bar. Controlled: it shows [items], root first, and reports
 /// a step chosen, a chevron opened and an address typed.
 final class BreadcrumbBar extends StatefulWidget {
@@ -48,9 +58,12 @@ final class BreadcrumbBar extends StatefulWidget {
     this.onSubmitted,
     this.leading,
     this.height,
+    this.controller,
   });
 
   final List<BreadcrumbItem> items;
+
+  final BreadcrumbController? controller;
 
   /// A step was clicked: go there.
   final void Function(int index)? onSelected;
@@ -90,6 +103,7 @@ final class _BreadcrumbBarState extends State<BreadcrumbBar> {
   @override
   void initState() {
     super.initState();
+    widget.controller?._state = this;
     // Clicking away from the field leaves the address as it was.
     _field.addListener(_onFocus);
   }
@@ -99,7 +113,21 @@ final class _BreadcrumbBarState extends State<BreadcrumbBar> {
   }
 
   @override
+  void didUpdateWidget(BreadcrumbBar oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.controller, widget.controller)) {
+      if (identical(oldWidget.controller?._state, this)) {
+        oldWidget.controller?._state = null;
+      }
+      widget.controller?._state = this;
+    }
+  }
+
+  @override
   void dispose() {
+    if (identical(widget.controller?._state, this)) {
+      widget.controller?._state = null;
+    }
     _field
       ..removeListener(_onFocus)
       ..dispose();
