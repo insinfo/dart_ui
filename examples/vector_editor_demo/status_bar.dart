@@ -164,8 +164,8 @@ class _ColorMonitor extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
-    final fill = model.currentFill;
-    final stroke = model.currentStroke;
+    final fill = model.shownFill;
+    final stroke = model.shownStroke;
     return Row(
       crossAxisAlignment: CrossAxisAlignment.center,
       children: <Widget>[

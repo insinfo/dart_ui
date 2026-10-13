@@ -329,7 +329,8 @@ class SelectionManager {
     _resetFrame();
     _selectedObjects.clear();
     for (final layer in page.children.whereType<VectorLayer>()) {
-      if (layer.isEditable) {
+      // The hit test's rule: only what can be seen and edited.
+      if (layer.isEditable && layer.isVisible) {
         for (final child in layer.children.whereType<SelectableObject>()) {
           _selectedObjects.add(child);
         }

@@ -1,216 +1,110 @@
-/// Transactional document editing API with Undo/Redo history stack.
+/// The editing operations of one document, every one of them undoable.
+///
+/// Undo is [DocumentHistory]'s: each operation is the document before and
+/// after, so a change that touches many objects is one step, and nothing here
+/// has to know how to reverse itself - the bug class that once left a group
+/// un-redoable and a reorder un-undoable cannot recur.
 library;
 
 import 'package:dart_ui/dart_ui.dart';
 
-/// An undoable/redoable document mutation action.
-abstract class DocumentAction {
-  String get description;
-  void execute();
-  void undo();
-}
-
-/// Generic action wrapping an execute callback and an undo callback.
-class GenericAction extends DocumentAction {
-  GenericAction({
-    required this.description,
-    required this.onExecute,
-    required this.onUndo,
-  });
-
-  @override
-  final String description;
-  final void Function() onExecute;
-  final void Function() onUndo;
-
-  @override
-  void execute() => onExecute();
-
-  @override
-  void undo() => onUndo();
-}
-
-/// Transactional API and command history manager for [VectorDocument].
+/// Operations on a [VectorDocument], each recorded in its [history].
 class DocumentApi {
-  DocumentApi(this.doc) : methods = DocumentMethods(doc);
+  DocumentApi(this.doc)
+      : methods = DocumentMethods(doc),
+        history = DocumentHistory(doc);
 
   final VectorDocument doc;
   final DocumentMethods methods;
+  final DocumentHistory history;
 
-  final List<DocumentAction> _undoStack = [];
-  final List<DocumentAction> _redoStack = [];
-  static const int maxHistory = 100;
+  bool get canUndo => history.canUndo;
+  bool get canRedo => history.canRedo;
+  String? get undoDescription => history.undoLabel;
+  String? get redoDescription => history.redoLabel;
 
-  bool get canUndo => _undoStack.isNotEmpty;
-  bool get canRedo => _redoStack.isNotEmpty;
+  void undo() => history.undo();
+  void redo() => history.redo();
 
-  String? get undoDescription =>
-      _undoStack.isNotEmpty ? _undoStack.last.description : null;
-  String? get redoDescription =>
-      _redoStack.isNotEmpty ? _redoStack.last.description : null;
+  /// Runs [change] as one undoable step.
+  T record<T>(String description, T Function() change, {Object? coalesce}) =>
+      history.record(description, change, coalesce: coalesce);
 
-  /// Applies and records an action.
-  void apply(DocumentAction action) {
-    action.execute();
-    _undoStack.add(action);
-    _redoStack.clear();
-    if (_undoStack.length > maxHistory) {
-      _undoStack.removeAt(0);
-    }
+  /// Records a change something else already made - a drag the canvas
+  /// applied live, an object a tool created, a text edited in place.
+  void commit(String description) => history.commit(description);
+
+  // --- Named operations ---
+
+  /// Adds [obj] to [layer] (at [index], or on top).
+  void addObject(VectorLayer layer, DocumentObject obj, [int index = -1]) =>
+      record('Add ${_name(obj)}', () => methods.addObject(layer, obj, index));
+
+  /// Removes [objects] from wherever they are.
+  void removeObjects(Iterable<DocumentObject> objects) {
+    final List<DocumentObject> list = objects.toList();
+    if (list.isEmpty) return;
+    record(list.length == 1 ? 'Delete ${_name(list.first)}' : 'Delete',
+        () => list.forEach(methods.removeObject));
   }
 
-  /// Undoes the last action.
-  void undo() {
-    if (!canUndo) return;
-    final action = _undoStack.removeLast();
-    action.undo();
-    _redoStack.add(action);
+  void removeObject(DocumentObject obj) => removeObjects(<DocumentObject>[obj]);
+
+  /// Gives every object in [objects] the style [restyle] returns for it.
+  void restyle(Iterable<SelectableObject> objects,
+      VectorStyle Function(VectorStyle style) restyle) {
+    record('Change style', () {
+      for (final SelectableObject object in objects) {
+        object.style = restyle(object.style);
+        object.update();
+      }
+    });
   }
 
-  /// Redoes the previously undone action.
-  void redo() {
-    if (!canRedo) return;
-    final action = _redoStack.removeLast();
-    action.execute();
-    _undoStack.add(action);
+  void setObjectStyle(SelectableObject obj, VectorStyle newStyle) =>
+      restyle(<SelectableObject>[obj], (_) => newStyle);
+
+  /// Groups [objects], returning the new group.
+  VectorGroup groupObjects(List<SelectableObject> objects) => record(
+      'Group ${objects.length} objects', () => methods.groupObjects(objects));
+
+  void ungroupObjects(VectorGroup group) =>
+      record('Ungroup', () => methods.ungroupObjects(group));
+
+  /// Applies [trafo] (document space) to each of [objects], as one step.
+  void transform(Iterable<SelectableObject> objects, List<double> trafo,
+      [String description = 'Transform']) {
+    record(description, () {
+      for (final SelectableObject object in objects) {
+        object.applyTrafo(trafo);
+      }
+    });
   }
 
-  // --- High-level transactional commands ---
+  void transformObject(SelectableObject obj, List<double> trafo) =>
+      transform(<SelectableObject>[obj], trafo);
 
-  /// Adds an object to the active layer with undo support.
-  void addObject(VectorLayer layer, DocumentObject obj) {
-    apply(GenericAction(
-      description: 'Add ${obj.runtimeType}',
-      onExecute: () => methods.addObject(layer, obj),
-      onUndo: () => methods.removeObject(obj),
-    ));
-  }
+  /// Records an interactive move or resize that has already happened.
+  void applySelectionEdit(SelectionEdit edit) => commit('Transform');
 
-  /// Removes an object with undo support.
-  void removeObject(DocumentObject obj) {
-    final parent = obj.parent;
-    if (parent is! VectorLayer) return;
-    final index = parent.children.indexOf(obj);
-
-    apply(GenericAction(
-      description: 'Delete ${obj.runtimeType}',
-      onExecute: () => methods.removeObject(obj),
-      onUndo: () => methods.addObject(parent, obj, index),
-    ));
-  }
-
-  /// Changes the style of an object with undo support.
-  void setObjectStyle(SelectableObject obj, VectorStyle newStyle) {
-    final oldStyle = obj.style;
-    apply(GenericAction(
-      description: 'Change style',
-      onExecute: () => methods.setObjectStyle(obj, newStyle),
-      onUndo: () => methods.setObjectStyle(obj, oldStyle),
-    ));
-  }
-
-  /// Groups [objects] with undo support, and returns the new group.
-  VectorGroup groupObjects(List<SelectableObject> objects) {
-    final members = List<DocumentObject>.of(objects);
-    final parent = members.first.parent;
-    final group = methods.groupObjects(objects);
-    final index = parent?.children.indexOf(group) ?? -1;
-    apply(GenericAction(
-      description: 'Group ${members.length} objects',
-      // The first `execute` finds the group already built; a redo rebuilds
-      // it from the same members, where the undo scattered them.
-      onExecute: () {
-        if (parent is VectorLayer && !parent.children.contains(group)) {
-          _regroup(group, members, parent, index);
-        }
-      },
-      onUndo: () => methods.ungroupObjects(group),
-    ));
-    return group;
-  }
-
-  /// Ungroups [group] with undo support.
-  void ungroupObjects(VectorGroup group) {
-    final parent = group.parent;
-    final index = parent?.children.indexOf(group) ?? -1;
-    final members = List<DocumentObject>.of(group.children);
-    methods.ungroupObjects(group);
-    apply(GenericAction(
-      description: 'Ungroup',
-      // Already ungrouped the first time; a redo does it again.
-      onExecute: () {
-        if (parent != null && parent.children.contains(group)) {
-          methods.ungroupObjects(group);
-        }
-      },
-      onUndo: () {
-        if (parent is VectorLayer) _regroup(group, members, parent, index);
-      },
-    ));
-  }
-
-  /// Puts [members] back into [group] and the group back at [index].
-  ///
-  /// `DocumentMethods.ungroupObjects` leaves the group's `parent` pointing at
-  /// the layer it left, so whether a group is in the document is asked of
-  /// the layer's children, never of `group.parent`.
-  void _regroup(
-    VectorGroup group,
-    List<DocumentObject> members,
-    VectorLayer parent,
-    int index,
-  ) {
-    for (final member in members) {
-      methods.removeObject(member);
-    }
-    group.children
-      ..clear()
-      ..addAll(members);
-    for (final member in members) {
-      member.parent = group;
-    }
-    methods.addObject(parent, group, index);
-    group.update();
-  }
-
-  /// Records an interactive move or resize that has *already happened*.
-  ///
-  /// The canvas applies a drag live, because the user has to see the shape
-  /// follow the pointer; what the history needs is not the operation but its
-  /// two ends. [SelectionEdit] carries both, so one drag - however many pointer
-  /// events it took - is one entry, and the first `execute` is a no-op replay
-  /// of the state the document is already in.
-  void applySelectionEdit(SelectionEdit edit) {
-    apply(GenericAction(
-      description: 'Transform',
-      onExecute: edit.redo,
-      onUndo: edit.undo,
-    ));
-  }
-
-  /// Records an in-canvas text edit as one undoable step.
+  /// Records an in-canvas text edit that has already happened.
   void setTextContent(VectorText object, String before, String after) {
-    apply(GenericAction(
-      description: 'Edit text',
-      onExecute: () => object
+    if (before == after) return;
+    if (object.textContent != after) {
+      object
         ..textContent = after
-        ..update(),
-      onUndo: () => object
-        ..textContent = before
-        ..update(),
-    ));
+        ..update();
+    }
+    commit('Edit text');
   }
 
-  /// Transforms an object with undo support.
-  void transformObject(SelectableObject obj, List<double> trafo) {
-    final oldTrafo = List<double>.from(obj.trafo);
-    apply(GenericAction(
-      description: 'Transform',
-      onExecute: () => obj.applyTrafo(trafo),
-      onUndo: () {
-        obj.trafo = List.from(oldTrafo);
-        obj.update();
-      },
-    ));
-  }
+  static String _name(DocumentObject obj) => switch (obj) {
+        VectorRectangle() => 'rectangle',
+        VectorCircle() => 'ellipse',
+        VectorPolygon() => 'polygon',
+        VectorCurve() => 'curve',
+        VectorText() => 'text',
+        VectorGroup() => 'group',
+        _ => 'object',
+      };
 }

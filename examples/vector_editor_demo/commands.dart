@@ -58,6 +58,7 @@ class EditorCommand {
     required this.label,
     required this.onInvoke,
     this.shortcut,
+    this.alsoShortcuts = const <KeyGesture>[],
     this.icon,
     this.enabled = true,
     this.disabledReason,
@@ -68,6 +69,9 @@ class EditorCommand {
   final String label;
   final void Function() onInvoke;
   final KeyGesture? shortcut;
+
+  /// Keys that also run this command without being shown in the menu.
+  final List<KeyGesture> alsoShortcuts;
   final IconData? icon;
   final bool enabled;
 
@@ -266,10 +270,7 @@ class CommandCatalog {
   EditorCommand get cut => _needsSelection(
         'cut',
         'Cut',
-        () {
-          model.deleteSelection();
-          model.refresh('Cut');
-        },
+        model.cutSelection,
         shortcut: const KeyGesture(logicalKeyX, command: true),
         icon: PhosphorIcons.scissors,
       );
@@ -277,26 +278,50 @@ class CommandCatalog {
   EditorCommand get copy => _needsSelection(
         'copy',
         'Copy',
-        () => model.refresh('Copied ${model.selection.count} object(s)'),
+        model.copySelection,
         shortcut: const KeyGesture(logicalKeyC, command: true),
         icon: PhosphorIcons.copy,
       );
 
-  EditorCommand get paste => _todo('paste', 'Paste',
-      shortcut: const KeyGesture(logicalKeyV, command: true));
-
-  EditorCommand get delete => _needsSelection(
-        'delete',
-        'Delete',
-        model.deleteSelection,
-        shortcut: const KeyGesture(logicalKeyDelete),
-        icon: PhosphorIcons.trash,
+  EditorCommand get paste => EditorCommand(
+        id: 'paste',
+        label: 'Paste',
+        shortcut: const KeyGesture(logicalKeyV, command: true),
+        icon: PhosphorIcons.clipboardText,
+        enabled: model.canPaste,
+        disabledReason: model.canPaste ? null : 'nothing has been copied',
+        onInvoke: model.paste,
       );
+
+  EditorCommand get delete {
+    final command = _needsSelection(
+      'delete',
+      'Delete',
+      model.deleteSelection,
+      // The Mac's "delete" key is Backspace; its forward delete also works.
+      shortcut: _mac
+          ? const KeyGesture(logicalKeyBackspace)
+          : const KeyGesture(logicalKeyDelete),
+      icon: PhosphorIcons.trash,
+    );
+    return EditorCommand(
+      id: command.id,
+      label: command.label,
+      onInvoke: command.onInvoke,
+      shortcut: command.shortcut,
+      alsoShortcuts: _mac
+          ? const <KeyGesture>[KeyGesture(logicalKeyDelete)]
+          : const <KeyGesture>[],
+      icon: command.icon,
+      enabled: command.enabled,
+      disabledReason: command.disabledReason,
+    );
+  }
 
   EditorCommand get duplicate => _needsSelection(
         'duplicate',
         'Duplicate',
-        () => model.moveSelectionBy(10, 10),
+        model.duplicateSelection,
         shortcut: const KeyGesture(logicalKeyD, command: true),
       );
 
@@ -510,12 +535,16 @@ class CommandCatalog {
         <KeyGesture, void Function()?>{};
     for (final EditorMenu menu in menus) {
       for (final EditorCommand? command in menu.items) {
-        final KeyGesture? gesture = command?.shortcut;
-        if (command == null || gesture == null) continue;
-        // Two items may share a chord (F8 is a tool and a todo); the one that
-        // can run wins.
-        if (bindings[gesture] != null) continue;
-        bindings[gesture] = command.enabled ? command.onInvoke : null;
+        if (command == null) continue;
+        for (final KeyGesture gesture in <KeyGesture>[
+          if (command.shortcut != null) command.shortcut!,
+          ...command.alsoShortcuts,
+        ]) {
+          // Two items may share a chord (F8 is a tool and a todo); the one
+          // that can run wins.
+          if (bindings[gesture] != null) continue;
+          bindings[gesture] = command.enabled ? command.onInvoke : null;
+        }
       }
     }
     return bindings;

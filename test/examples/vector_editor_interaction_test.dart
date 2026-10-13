@@ -994,6 +994,218 @@ void main() {
       harness.dispose();
     });
   });
+
+  // -------------------------------------------------------------------------
+  // The audit's bugs - each fails on the code before the fix
+  // -------------------------------------------------------------------------
+
+  group('creation tools put shapes where they were drawn', () {
+    test('an ellipse fills the box it was dragged over', () {
+      final harness = _Harness()..withoutSnapping();
+      harness.useTool(ToolMode.circle);
+      final before = harness.objects.length;
+      harness.dragDocument(const Offset(100, 500), const Offset(200, 550));
+      expect(harness.objects, hasLength(before + 1));
+      final ellipse = harness.objects.last as VectorCircle;
+      final stroke = ellipse.style.stroke.width / 2;
+      expect(ellipse.cacheBbox.left, closeTo(100 - stroke, 1));
+      expect(ellipse.cacheBbox.top, closeTo(500 - stroke, 1));
+      expect(ellipse.cacheBbox.width, closeTo(100 + 2 * stroke, 1));
+      expect(ellipse.cacheBbox.height, closeTo(50 + 2 * stroke, 1));
+      harness.dispose();
+    });
+
+    test('Ctrl draws a circle, Shift grows it from the press point', () {
+      final harness = _Harness()..withoutSnapping();
+      harness.useTool(ToolMode.rectangle);
+      harness.dragDocument(const Offset(300, 500), const Offset(340, 520),
+          modifiers: const <KeyModifier>{
+            KeyModifier.control,
+            KeyModifier.shift
+          });
+      final rect = harness.objects.last as VectorRectangle;
+      expect(rect.rectWidth, closeTo(80, 1));
+      expect(rect.rectHeight, closeTo(80, 1));
+      expect(rect.startX, closeTo(260, 1));
+      expect(rect.startY, closeTo(460, 1));
+      harness.dispose();
+    });
+
+    test('a polygon is centred on the press point', () {
+      final harness = _Harness()..withoutSnapping();
+      harness.useTool(ToolMode.polygon);
+      harness.dragDocument(const Offset(300, 600), const Offset(350, 600));
+      final polygon = harness.objects.last as VectorPolygon;
+      expect(polygon.cacheBbox.center.dx, closeTo(300, 3));
+      expect(polygon.cacheBbox.center.dy, closeTo(600, 6));
+      harness.dispose();
+    });
+
+    test('a drawn shape is one undo step, and takes the current fill', () {
+      final harness = _Harness()..withoutSnapping();
+      harness.model.deselect();
+      harness.model.setFill(const Color(0xFF00FF00));
+      harness.useTool(ToolMode.rectangle);
+      final before = harness.objects.length;
+      harness.dragDocument(const Offset(100, 600), const Offset(150, 650));
+      final rect = harness.objects.last as VectorRectangle;
+      expect(rect.style.fill.color, const Color(0xFF00FF00));
+      harness.model.undo();
+      harness.frame();
+      expect(harness.objects, hasLength(before));
+      harness.model.redo();
+      harness.frame();
+      expect(harness.objects, hasLength(before + 1));
+      harness.dispose();
+    });
+  });
+
+  group('the pen draws Bezier paths and finishes them', () {
+    test('clicks place corners, Enter finishes, one undo removes it', () {
+      final harness = _Harness()..withoutSnapping();
+      harness.useTool(ToolMode.curve);
+      final before = harness.objects.length;
+      harness.tapDocument(const Offset(100, 500));
+      harness.hoverDocument(const Offset(150, 520));
+      harness.tapDocument(const Offset(200, 500));
+      harness.tapDocument(const Offset(200, 600));
+      harness.key(logicalKeyEnter);
+      final curve = harness.objects.last as VectorCurve;
+      expect(harness.objects, hasLength(before + 1));
+      expect(curve.paths.single.points, hasLength(2),
+          reason: 'the rubber segment is not part of the finished path');
+      expect(curve.isClosed, isFalse);
+      expect(curve.style.fill.isNone, isTrue, reason: 'an open path');
+      harness.model.undo();
+      harness.frame();
+      expect(harness.objects, hasLength(before));
+      harness.dispose();
+    });
+
+    test('dragging makes a smooth node; clicking the start closes', () {
+      final harness = _Harness()..withoutSnapping();
+      harness.useTool(ToolMode.curve);
+      harness.tapDocument(const Offset(100, 500));
+      harness.dragDocument(const Offset(200, 500), const Offset(250, 550));
+      harness.tapDocument(const Offset(150, 650));
+      harness.tapDocument(const Offset(100.5, 500.5));
+      final curve = harness.objects.last as VectorCurve;
+      expect(curve.isClosed, isTrue);
+      expect(curve.paths.single.points.whereType<CurvePoint>(), isNotEmpty);
+      harness.dispose();
+    });
+
+    test('Escape abandons the path', () {
+      final harness = _Harness()..withoutSnapping();
+      harness.useTool(ToolMode.curve);
+      final before = harness.objects.length;
+      harness.tapDocument(const Offset(100, 500));
+      harness.tapDocument(const Offset(200, 500));
+      harness.key(logicalKeyEscape);
+      expect(harness.objects, hasLength(before));
+      harness.dispose();
+    });
+  });
+
+  group('edit commands do what they say', () {
+    test('Duplicate copies and keeps the original where it was', () {
+      final harness = _Harness();
+      final rect = harness.rectangle;
+      final box = rect.cacheBbox;
+      harness.model.selection.select(rect);
+      harness.model.duplicateSelection();
+      harness.frame();
+      expect(rect.cacheBbox, box);
+      final copy = harness.model.selection.selectedObjects.single;
+      expect(copy, isNot(same(rect)));
+      expect(copy.cacheBbox.left, closeTo(box.left + 10, 0.01));
+      harness.model.undo();
+      harness.frame();
+      expect(harness.layer.children, isNot(contains(copy)));
+      harness.dispose();
+    });
+
+    test('Copy and Paste add a copy; Cut and Paste put it back', () {
+      final harness = _Harness();
+      final count = harness.objects.length;
+      harness.model.selection.select(harness.circle);
+      harness.model.copySelection();
+      harness.model.paste();
+      harness.frame();
+      expect(harness.objects, hasLength(count + 1));
+
+      harness.model.selection.select(harness.star);
+      final box = harness.star.cacheBbox;
+      harness.model.cutSelection();
+      expect(harness.objects, hasLength(count));
+      harness.model.paste();
+      harness.frame();
+      final pasted = harness.model.selection.selectedObjects.single;
+      expect(pasted.cacheBbox.left, closeTo(box.left, 0.01),
+          reason: 'a cut pastes back in place');
+      harness.dispose();
+    });
+
+    test('moving a group from the panel is undone', () {
+      final harness = _Harness();
+      harness.model
+        ..selectAll()
+        ..group();
+      final group = harness.model.singleSelection!;
+      final box = group.cacheBbox;
+      harness.model.moveSelectionBy(50, 0);
+      expect(group.cacheBbox.left, closeTo(box.left + 50, 0.01));
+      harness.model.undo();
+      harness.frame();
+      expect(group.cacheBbox.left, closeTo(box.left, 0.01));
+      harness.dispose();
+    });
+
+    test('deleting several objects is one undo step', () {
+      final harness = _Harness();
+      final count = harness.objects.length;
+      harness.model.selectAll();
+      harness.model.deleteSelection();
+      expect(harness.objects, isEmpty);
+      harness.model.undo();
+      harness.frame();
+      expect(harness.objects, hasLength(count));
+      harness.dispose();
+    });
+
+    test('Bring forward moves a block of objects together, undoably', () {
+      final harness = _Harness();
+      final order = List<DocumentObject>.of(harness.layer.children);
+      harness.model.selection.setSelection(<SelectableObject>[
+        order[0] as SelectableObject,
+        order[1] as SelectableObject,
+      ]);
+      harness.model.reorder(up: true, toEnd: false);
+      expect(harness.layer.children,
+          <Object>[order[2], order[0], order[1], order[3]]);
+      harness.model.reorder(up: true, toEnd: true);
+      expect(harness.layer.children,
+          <Object>[order[2], order[3], order[0], order[1]]);
+      harness.model.undo();
+      harness.model.undo();
+      harness.frame();
+      expect(harness.layer.children, order);
+      harness.dispose();
+    });
+
+    test('undo drops a selection the undo took out of the document', () {
+      final harness = _Harness();
+      harness.model
+        ..selectAll()
+        ..group();
+      expect(harness.model.singleSelection, isA<VectorGroup>());
+      harness.model.undo();
+      harness.frame();
+      expect(harness.model.selection.selectedObjects.whereType<VectorGroup>(),
+          isEmpty);
+      harness.dispose();
+    });
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1230,6 +1442,19 @@ final class _Harness {
   }) =>
       dragGlobal(_toGlobal(from), _toGlobal(to),
           steps: steps, modifiers: modifiers);
+
+  /// Moves the pointer with no button held - what the pen's rubber
+  /// segment follows.
+  void hoverDocument(Offset document) {
+    _move(_toGlobal(document));
+    frame();
+  }
+
+  void useTool(ToolMode tool) {
+    model.tool = tool;
+    model.refresh();
+    frame();
+  }
 
   void pressDocument(Offset document) {
     _down(_toGlobal(document), PointerButton.primary);

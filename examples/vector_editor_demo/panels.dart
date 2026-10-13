@@ -549,15 +549,15 @@ class FillStrokePanel extends StatelessWidget {
               caption: 'Fill',
               children: <Widget>[
                 FillControls(
-                  fill: model.currentFill,
+                  fill: model.shownFill,
                   onChanged: (FillDescriptor fill) {
-                    model.currentFill = fill;
                     if (model.hasSelection) {
                       model.applyToSelection(
                         (style) => style.copyWith(fill: fill),
                       );
                     } else {
-                      model.refresh('Default fill changed');
+                      model.currentFill = fill;
+                      model.refresh('New objects will use this fill');
                     }
                   },
                 ),
@@ -567,15 +567,15 @@ class FillStrokePanel extends StatelessWidget {
               caption: 'Outline',
               children: <Widget>[
                 StrokeControls(
-                  stroke: model.currentStroke,
+                  stroke: model.shownStroke,
                   onChanged: (StrokeDescriptor stroke) {
-                    model.currentStroke = stroke;
                     if (model.hasSelection) {
                       model.applyToSelection(
                         (style) => style.copyWith(stroke: stroke),
                       );
                     } else {
-                      model.refresh('Default outline changed');
+                      model.currentStroke = stroke;
+                      model.refresh('New objects will use this outline');
                     }
                   },
                 ),

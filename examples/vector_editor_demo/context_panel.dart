@@ -226,6 +226,17 @@ class _PagePlugin extends StatelessWidget {
 
   static const String _custom = 'Custom';
 
+  /// Typing a size makes the page a custom one, in the orientation it shows.
+  void _setSize({required double width, required double height}) {
+    if (width <= 0 || height <= 0) return;
+    final page = model.active.page;
+    model.edit(
+        'Page size',
+        () => page.pageFormat = PageFormat(
+              size: PageSize(_custom, width, height),
+            ));
+  }
+
   @override
   Widget build(BuildContext context) {
     final page = model.active.page;
@@ -246,10 +257,12 @@ class _PagePlugin extends StatelessWidget {
                 ComboBoxItem<String>(value: size.name, label: size.name),
             ],
             onChanged: (String name) {
-              final size = PageFormats.byName(name);
+              final size = name == _custom
+                  ? PageSize(_custom, format.size.width, format.size.height)
+                  : PageFormats.byName(name);
               if (size == null) return;
-              page.pageFormat = format.copyWith(size: size);
-              model.touch('Page format $name');
+              model.edit('Page format $name',
+                  () => page.pageFormat = format.copyWith(size: size));
             },
           ),
         ),
@@ -258,8 +271,9 @@ class _PagePlugin extends StatelessWidget {
           value: fromPoints(format.width, unit),
           decimals: 1,
           min: 1,
-          onChanged: (_) => model.refresh(
-            'Page size follows the chosen format; pick Custom to type one',
+          onChanged: (value) => _setSize(
+            width: toPoints(value, unit),
+            height: format.height,
           ),
         ),
         const _Label('x'),
@@ -267,8 +281,9 @@ class _PagePlugin extends StatelessWidget {
           value: fromPoints(format.height, unit),
           decimals: 1,
           min: 1,
-          onChanged: (_) => model.refresh(
-            'Page size follows the chosen format; pick Custom to type one',
+          onChanged: (value) => _setSize(
+            width: format.width,
+            height: toPoints(value, unit),
           ),
         ),
         const SizedBox(width: 4),
@@ -276,21 +291,19 @@ class _PagePlugin extends StatelessWidget {
           icon: PhosphorIcons.rows,
           tooltip: 'Portrait',
           selected: format.orientation == PageOrientation.portrait,
-          onTap: () {
-            page.pageFormat =
-                format.copyWith(orientation: PageOrientation.portrait);
-            model.touch('Portrait');
-          },
+          onTap: () => model.edit(
+              'Portrait',
+              () => page.pageFormat =
+                  format.copyWith(orientation: PageOrientation.portrait)),
         ),
         _BarButton(
           icon: PhosphorIcons.columns,
           tooltip: 'Landscape',
           selected: format.orientation == PageOrientation.landscape,
-          onTap: () {
-            page.pageFormat =
-                format.copyWith(orientation: PageOrientation.landscape);
-            model.touch('Landscape');
-          },
+          onTap: () => model.edit(
+              'Landscape',
+              () => page.pageFormat =
+                  format.copyWith(orientation: PageOrientation.landscape)),
         ),
       ],
     );
@@ -513,9 +526,9 @@ class _RectanglePlugin extends StatelessWidget {
           max: 100,
           onChanged: (value) {
             final corner = (value / 100).clamp(0.0, 1.0);
-            rectangle.corners = <double>[corner, corner, corner, corner];
-            rectangle.update();
-            model.touch('Corner radius ${value.round()}%');
+            model.edit('Corner radius ${value.round()}%', () {
+              rectangle.corners = <double>[corner, corner, corner, corner];
+            });
           },
         ),
         const _Label('%'),
@@ -549,11 +562,8 @@ class _CirclePlugin extends StatelessWidget {
               ArcType.pieslice => 'Pie slice',
             },
             selected: circle.arcType == type,
-            onTap: () {
-              circle.arcType = type;
-              circle.update();
-              model.touch('Ellipse: ${type.name}');
-            },
+            onTap: () => model.edit(
+                'Ellipse: ${type.name}', () => circle.arcType = type),
           ),
       ],
     );
@@ -580,11 +590,8 @@ class _PolygonPlugin extends StatelessWidget {
           decimals: 0,
           min: 3,
           max: 1000,
-          onChanged: (value) {
-            polygon.cornersNum = value.round().clamp(3, 1000);
-            polygon.update();
-            model.touch('${polygon.cornersNum} corners');
-          },
+          onChanged: (value) => model.edit('${value.round()} corners',
+              () => polygon.cornersNum = value.round().clamp(3, 1000)),
         ),
       ],
     );
@@ -644,9 +651,8 @@ class _TextPluginState extends State<_TextPlugin> {
     final object = widget.model.singleSelection;
     if (object is! VectorText) return;
     if (object.textContent == _controller.value) return;
-    object.textContent = _controller.value;
-    object.update();
-    widget.model.touch('Text changed');
+    widget.model.edit('Edit text', () => object.textContent = _controller.value,
+        coalesce: object);
   }
 
   @override

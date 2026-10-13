@@ -351,7 +351,10 @@ class VectorCircle extends PrimitiveObject {
   @override
   bool get isClosed => arcType != ArcType.arc;
 
-  /// Creates from a bounding rect `[cx, cy, w, h]`.
+  /// Creates the ellipse inscribed in the rect `[left, top, width, height]`.
+  ///
+  /// The unit circle spans (0,0)-(1,1), so the transform is the rect's size
+  /// and its top-left corner - not its centre.
   factory VectorCircle.fromRect(
     List<double> rect, {
     double angle1 = 0.0,

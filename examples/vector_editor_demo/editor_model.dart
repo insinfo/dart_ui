@@ -226,6 +226,12 @@ class EditorModel {
     refresh();
   }
 
+  /// Sets [zoom] keeping the centre of a canvas [viewportSize] still.
+  void zoomAbout(double zoom, Size viewportSize) {
+    if (!hasDocument) return;
+    zoomBy(zoom / active.zoom, viewportSize);
+  }
+
   /// Zooms about the centre of a canvas [viewportSize].
   void zoomBy(double factor, Size viewportSize) {
     if (!hasDocument) return;
@@ -240,12 +246,18 @@ class EditorModel {
 
   /// Fits [rect] (document units) into [viewportSize].
   void zoomToRect(Rect rect, Size viewportSize) {
-    if (!hasDocument || rect.width <= 0 || rect.height <= 0) return;
+    if (!fitRect(rect, viewportSize)) return;
+    refresh('Zoom ${(active.zoom * 100).round()}%');
+  }
+
+  /// [zoomToRect] without the rebuild, for callers already building.
+  bool fitRect(Rect rect, Size viewportSize) {
+    if (!hasDocument || rect.width <= 0 || rect.height <= 0) return false;
     final available = Size(
       viewportSize.width - ZoomMetrics.fitMargin * 2,
       viewportSize.height - ZoomMetrics.fitMargin * 2,
     );
-    if (available.width <= 0 || available.height <= 0) return;
+    if (available.width <= 0 || available.height <= 0) return false;
     final scale =
         (available.width / rect.width) < (available.height / rect.height)
             ? available.width / rect.width
@@ -256,19 +268,17 @@ class EditorModel {
       (viewportSize.width - rect.width * zoom) / 2 - rect.left * zoom,
       (viewportSize.height - rect.height * zoom) / 2 - rect.top * zoom,
     );
-    refresh('Zoom ${(zoom * 100).round()}%');
+    return true;
   }
 
   // -------------------------------------------------------------------------
   // Editing
   // -------------------------------------------------------------------------
 
-  /// Applies [style] to every selected object, as one undoable step each.
+  /// Applies [style] to every selected object, as one undoable step.
   void applyToSelection(VectorStyle Function(VectorStyle style) transform) {
     if (!hasSelection) return;
-    for (final object in selection.selectedObjects) {
-      active.api.setObjectStyle(object, transform(object.style));
-    }
+    active.api.restyle(selection.selectedObjects, transform);
     touch('Style applied to ${selection.count} object(s)');
   }
 
@@ -276,7 +286,9 @@ class EditorModel {
     currentFill =
         color == null ? FillDescriptor.none : FillDescriptor.solid(color);
     if (!hasSelection) {
-      refresh(color == null ? 'Default fill cleared' : 'Default fill set');
+      refresh(color == null
+          ? 'New objects will have no fill'
+          : 'New objects will use this fill');
       return;
     }
     applyToSelection((style) => style.copyWith(fill: currentFill));
@@ -289,21 +301,156 @@ class EditorModel {
             color: color,
             width: currentStroke.width <= 0 ? 1 : currentStroke.width);
     if (!hasSelection) {
-      refresh(
-          color == null ? 'Default outline cleared' : 'Default outline set');
+      refresh(color == null
+          ? 'New objects will have no outline'
+          : 'New objects will use this outline');
       return;
     }
     applyToSelection((style) => style.copyWith(stroke: currentStroke));
   }
 
+  /// Runs [change] on the active document as one undoable step, then
+  /// rebuilds. [coalesce] merges consecutive edits of the same thing.
+  void edit(String description, void Function() change, {Object? coalesce}) {
+    if (!hasDocument) return;
+    active.api.record(description, () {
+      change();
+      active.document.update();
+    }, coalesce: coalesce);
+    touch(description);
+  }
+
+  /// The fill the panels and the palette show: the selection's when there
+  /// is one (its first object's), the one new objects get otherwise.
+  FillDescriptor get shownFill =>
+      hasSelection ? selection.selectedObjects.first.style.fill : currentFill;
+
+  /// The outline shown, by the same rule as [shownFill].
+  StrokeDescriptor get shownStroke => hasSelection
+      ? selection.selectedObjects.first.style.stroke
+      : currentStroke;
+
+  /// The style a new object gets: the fill and outline last picked.
+  VectorStyle get newObjectStyle =>
+      VectorStyle(fill: currentFill, stroke: currentStroke);
+
+  /// Records an object a canvas tool just added, giving it the current
+  /// fill and outline - the style the palette shows.
+  void objectCreated(SelectableObject object) {
+    if (!hasDocument) return;
+    if (object is! VectorText) {
+      // An open path has no inside: fill it and the pen would draw a wedge.
+      final open = object is VectorCurve && !object.isClosed;
+      object
+        ..style = object.style.copyWith(
+          fill: open ? FillDescriptor.none : currentFill,
+          stroke: open && currentStroke.width <= 0
+              ? const StrokeDescriptor(color: Color(0xFF1A1A1A), width: 1)
+              : currentStroke,
+        )
+        ..update();
+    }
+    active.api.commit('Create ${_kind(object)}');
+    touch('Created ${_kind(object)}');
+  }
+
+  static String _kind(SelectableObject object) => switch (object) {
+        VectorRectangle() => 'rectangle',
+        VectorCircle() => 'ellipse',
+        VectorPolygon() => 'polygon',
+        VectorCurve() => 'curve',
+        VectorText() => 'text',
+        _ => 'object',
+      };
+
   void deleteSelection() {
     if (!hasSelection) return;
     final count = selection.count;
-    for (final object in List<SelectableObject>.of(selection.selectedObjects)) {
-      active.api.removeObject(object);
-    }
+    active.api.removeObjects(selection.selectedObjects);
     selection.deselectAll();
     touch('Deleted $count object(s)');
+  }
+
+  // --- Clipboard ---------------------------------------------------------
+
+  /// Copies of what Copy or Cut took, shared by every open document the way
+  /// a clipboard is.
+  List<SelectableObject> _clipboard = const <SelectableObject>[];
+
+  /// How many times the clipboard has been pasted since it was filled, so
+  /// each paste lands a step further from the original.
+  int _pasteCount = 0;
+
+  bool get canPaste => hasDocument && _clipboard.isNotEmpty;
+
+  void copySelection() {
+    if (!hasSelection) return;
+    _clipboard = <SelectableObject>[
+      for (final object in _inDocumentOrder(selection.selectedObjects))
+        object.copy() as SelectableObject,
+    ];
+    _pasteCount = 0;
+    refresh('Copied ${_clipboard.length} object(s)');
+  }
+
+  void cutSelection() {
+    if (!hasSelection) return;
+    copySelection();
+    final count = selection.count;
+    active.api.removeObjects(selection.selectedObjects);
+    selection.deselectAll();
+    _pasteCount = -1; // a cut pastes back in place first
+    touch('Cut $count object(s)');
+  }
+
+  void paste() {
+    if (!canPaste) return;
+    _pasteCount++;
+    final offset = 10.0 * _pasteCount;
+    final layer = active.layer;
+    final pasted = active.api.record('Paste', () {
+      final copies = <SelectableObject>[];
+      for (final object in _clipboard) {
+        final copy = object.copy() as SelectableObject;
+        if (offset != 0) copy.applyTrafo(<double>[1, 0, 0, 1, offset, offset]);
+        active.api.methods.addObject(layer, copy);
+        copies.add(copy);
+      }
+      return copies;
+    });
+    selection.setSelection(pasted);
+    touch('Pasted ${pasted.length} object(s)');
+  }
+
+  /// Copies the selection in place, a step down and right, and selects the
+  /// copies - CorelDRAW's Ctrl+D.
+  void duplicateSelection() {
+    if (!hasSelection) return;
+    final originals = _inDocumentOrder(selection.selectedObjects);
+    final copies = active.api.record('Duplicate', () {
+      final copies = <SelectableObject>[];
+      for (final original in originals) {
+        final parent = original.parent;
+        if (parent is! VectorLayer) continue;
+        final copy = original.copy() as SelectableObject
+          ..applyTrafo(const <double>[1, 0, 0, 1, 10, 10]);
+        active.api.methods
+            .addObject(parent, copy, parent.children.indexOf(original) + 1);
+        copies.add(copy);
+      }
+      return copies;
+    });
+    selection.setSelection(copies);
+    touch('Duplicated ${copies.length} object(s)');
+  }
+
+  /// [objects] sorted bottom to top, so copies keep the stacking order.
+  List<SelectableObject> _inDocumentOrder(List<SelectableObject> objects) {
+    final order = <DocumentObject, int>{};
+    var index = 0;
+    active.document.visitAll((node) => order[node] = index++);
+    return List<SelectableObject>.of(objects)
+      ..sort((a, b) => (order[a] ?? 0).compareTo(order[b] ?? 0));
   }
 
   void selectAll() {
@@ -338,7 +485,7 @@ class EditorModel {
     if (!hasDocument || !active.api.canUndo) return;
     final description = active.api.undoDescription;
     active.api.undo();
-    active.document.update();
+    _pruneSelection();
     touch('Undid $description');
   }
 
@@ -346,8 +493,34 @@ class EditorModel {
     if (!hasDocument || !active.api.canRedo) return;
     final description = active.api.redoDescription;
     active.api.redo();
-    active.document.update();
+    _pruneSelection();
     touch('Redid $description');
+  }
+
+  /// Drops objects an undo or redo took out of the document, so the
+  /// selection never holds something that is not on the page.
+  void _pruneSelection() {
+    final live = selection.selectedObjects
+        .where((object) => _isInDocument(object))
+        .toList();
+    if (live.length == selection.count) {
+      return;
+    }
+    selection.deselectAll();
+    for (final object in live) {
+      selection.toggle(object);
+    }
+  }
+
+  bool _isInDocument(DocumentObject object) {
+    DocumentObject? node = object;
+    while (node != null) {
+      final parent = node.parent;
+      if (parent == null) return identical(node, active.document);
+      if (!parent.children.contains(node)) return false;
+      node = parent;
+    }
+    return false;
   }
 
   void group() {
@@ -360,39 +533,64 @@ class EditorModel {
   void ungroup() {
     final single = singleSelection;
     if (single is! VectorGroup) return;
+    final members = List<DocumentObject>.of(single.children);
     active.api.ungroupObjects(single);
-    selection.deselectAll();
+    selection.setSelection(members.whereType<SelectableObject>());
     touch('Ungrouped');
   }
 
-  /// Moves the selection one step, or all the way, in the z order.
+  /// Moves the selection one step, or all the way, in the z order of each
+  /// object's own parent, keeping the selected objects' order among
+  /// themselves.
   void reorder({required bool up, required bool toEnd}) {
     if (!hasSelection) return;
-    final layerChildren = active.layer.children;
-    for (final object in selection.selectedObjects) {
-      final index = layerChildren.indexOf(object);
-      if (index < 0) continue;
-      final target = toEnd
-          ? (up ? layerChildren.length - 1 : 0)
-          : (up ? index + 1 : index - 1);
-      if (target < 0 || target >= layerChildren.length || target == index) {
-        continue;
+    final selected = selection.selectedObjects.toSet();
+    var changed = false;
+    active.api.record(up ? 'Bring forward' : 'Send backward', () {
+      final parents = <DocumentObject>{
+        for (final object in selected)
+          if (object.parent != null) object.parent!,
+      };
+      for (final parent in parents) {
+        final list = parent.children;
+        final before = List<DocumentObject>.of(list);
+        if (toEnd) {
+          final moving = list.where(selected.contains).toList();
+          list.removeWhere(selected.contains);
+          if (up) {
+            list.addAll(moving);
+          } else {
+            list.insertAll(0, moving);
+          }
+        } else if (up) {
+          // Walk from the top so a block of selected objects moves as one.
+          for (var i = list.length - 2; i >= 0; i--) {
+            if (selected.contains(list[i]) && !selected.contains(list[i + 1])) {
+              final object = list.removeAt(i);
+              list.insert(i + 1, object);
+            }
+          }
+        } else {
+          for (var i = 1; i < list.length; i++) {
+            if (selected.contains(list[i]) && !selected.contains(list[i - 1])) {
+              final object = list.removeAt(i);
+              list.insert(i - 1, object);
+            }
+          }
+        }
+        for (var i = 0; i < list.length; i++) {
+          if (!identical(list[i], before[i])) changed = true;
+        }
       }
-      layerChildren
-        ..removeAt(index)
-        ..insert(target, object);
-    }
-    active.document.update();
-    touch('Order changed');
+    });
+    touch(changed ? 'Order changed' : 'Already there');
   }
 
   /// Moves the selection by a document-space delta, undoably.
   void moveSelectionBy(double dx, double dy) {
     if (!hasSelection) return;
-    for (final object in selection.selectedObjects) {
-      active.api.transformObject(object, <double>[1, 0, 0, 1, dx, dy]);
-    }
-    active.document.update();
+    active.api.transform(
+        selection.selectedObjects, <double>[1, 0, 0, 1, dx, dy], 'Move');
     touch('Moved');
   }
 
@@ -404,17 +602,17 @@ class EditorModel {
     final scaleX = width == null || width <= 0 ? 1.0 : width / bounds.width;
     final scaleY = height == null || height <= 0 ? 1.0 : height / bounds.height;
     if (scaleX == 1 && scaleY == 1) return;
-    for (final object in selection.selectedObjects) {
-      active.api.transformObject(object, <double>[
-        scaleX,
-        0,
-        0,
-        scaleY,
-        bounds.left - bounds.left * scaleX,
-        bounds.top - bounds.top * scaleY,
-      ]);
-    }
-    active.document.update();
+    active.api.transform(
+        selection.selectedObjects,
+        <double>[
+          scaleX,
+          0,
+          0,
+          scaleY,
+          bounds.left - bounds.left * scaleX,
+          bounds.top - bounds.top * scaleY,
+        ],
+        'Resize');
     touch('Resized');
   }
 
@@ -427,17 +625,17 @@ class EditorModel {
     final sine = _sin(radians);
     final cx = bounds.center.dx;
     final cy = bounds.center.dy;
-    for (final object in selection.selectedObjects) {
-      active.api.transformObject(object, <double>[
-        cosine,
-        sine,
-        -sine,
-        cosine,
-        cx - cx * cosine + cy * sine,
-        cy - cx * sine - cy * cosine,
-      ]);
-    }
-    active.document.update();
+    active.api.transform(
+        selection.selectedObjects,
+        <double>[
+          cosine,
+          sine,
+          -sine,
+          cosine,
+          cx - cx * cosine + cy * sine,
+          cy - cx * sine - cy * cosine,
+        ],
+        'Rotate');
     touch('Rotated ${degrees.toStringAsFixed(1)} degrees');
   }
 
@@ -449,17 +647,10 @@ class EditorModel {
     final scaleY = horizontal ? 1.0 : -1.0;
     final cx = bounds.center.dx;
     final cy = bounds.center.dy;
-    for (final object in selection.selectedObjects) {
-      active.api.transformObject(object, <double>[
-        scaleX,
-        0,
-        0,
-        scaleY,
-        cx - cx * scaleX,
-        cy - cy * scaleY,
-      ]);
-    }
-    active.document.update();
+    active.api.transform(
+        selection.selectedObjects,
+        <double>[scaleX, 0, 0, scaleY, cx - cx * scaleX, cy - cy * scaleY],
+        horizontal ? 'Flip horizontally' : 'Flip vertically');
     touch(horizontal ? 'Flipped horizontally' : 'Flipped vertically');
   }
 
@@ -497,20 +688,21 @@ class EditorModel {
       if (dx != 0 || dy != 0) move(dx, dy);
     }
 
-    if (asGroup) {
-      alignOne(selection.selectionBounds, (dx, dy) {
-        for (final object in objects) {
-          active.api.transformObject(object, <double>[1, 0, 0, 1, dx, dy]);
-        }
-      });
-    } else {
-      for (final object in objects) {
-        alignOne(object.cacheBbox, (dx, dy) {
-          active.api.transformObject(object, <double>[1, 0, 0, 1, dx, dy]);
+    active.api.record('Align', () {
+      if (asGroup) {
+        alignOne(selection.selectionBounds, (dx, dy) {
+          for (final object in objects) {
+            object.applyTrafo(<double>[1, 0, 0, 1, dx, dy]);
+          }
         });
+      } else {
+        for (final object in objects) {
+          alignOne(object.cacheBbox, (dx, dy) {
+            object.applyTrafo(<double>[1, 0, 0, 1, dx, dy]);
+          });
+        }
       }
-    }
-    active.document.update();
+    });
     touch('Aligned ${objects.length} object(s)');
   }
 
@@ -526,20 +718,21 @@ class EditorModel {
     final last = objects.last.cacheBbox.center;
     final span = horizontal ? last.dx - first.dx : last.dy - first.dy;
     final step = span / (objects.length - 1);
-    for (var i = 1; i < objects.length - 1; i++) {
-      final centre = objects[i].cacheBbox.center;
-      final target = (horizontal ? first.dx : first.dy) + step * i;
-      final delta = target - (horizontal ? centre.dx : centre.dy);
-      active.api.transformObject(objects[i], <double>[
-        1,
-        0,
-        0,
-        1,
-        horizontal ? delta : 0,
-        horizontal ? 0 : delta,
-      ]);
-    }
-    active.document.update();
+    active.api.record('Distribute', () {
+      for (var i = 1; i < objects.length - 1; i++) {
+        final centre = objects[i].cacheBbox.center;
+        final target = (horizontal ? first.dx : first.dy) + step * i;
+        final delta = target - (horizontal ? centre.dx : centre.dy);
+        objects[i].applyTrafo(<double>[
+          1,
+          0,
+          0,
+          1,
+          horizontal ? delta : 0,
+          horizontal ? 0 : delta,
+        ]);
+      }
+    });
     touch('Distributed ${objects.length} objects');
   }
 

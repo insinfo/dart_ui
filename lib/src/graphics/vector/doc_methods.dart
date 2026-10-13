@@ -267,8 +267,9 @@ class DocumentMethods {
     double angle2 = 0,
     ArcType arcType = ArcType.chord,
   }) {
+    // Centre and radii in, the unit circle's top-left corner and size out.
     return VectorCircle.fromRect(
-      [cx, cy, rx * 2, ry * 2],
+      [cx - rx, cy - ry, rx * 2, ry * 2],
       angle1: angle1,
       angle2: angle2,
       arcType: arcType,
@@ -290,7 +291,8 @@ class DocumentMethods {
       cornersNum: cornersNum,
       coef1: coef1,
       coef2: coef2,
-      trafo: [radius * 2, 0.0, 0.0, radius * 2, cx, cy],
+      // The unit polygon is centred on (0.5, 0.5).
+      trafo: [radius * 2, 0.0, 0.0, radius * 2, cx - radius, cy - radius],
       style: style ?? doc.defaultStyle,
     );
     polygon.initialTrafo = List.of(polygon.trafo);

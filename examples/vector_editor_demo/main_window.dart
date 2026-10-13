@@ -84,10 +84,10 @@ class MainWindowState extends State<MainWindow> {
     saveDocumentAs: () => _saveAs('svg'),
     exportDocument: _saveAs,
     printDocument: () => _saveAs('pdf'),
-    closeDocument: () => model.closeDocument(model.activeIndex),
+    closeDocument: () => _closeDocument(model.activeIndex),
     zoomIn: () => model.zoomBy(ZoomMetrics.step, _viewport),
     zoomOut: () => model.zoomBy(1 / ZoomMetrics.step, _viewport),
-    zoomActual: () => model.setZoom(1.0),
+    zoomActual: () => model.zoomAbout(1.0, _viewport),
     zoomToPage: () => model.zoomToRect(model.active.page.rect, _viewport),
     zoomToSelection: () =>
         model.zoomToRect(model.selection.selectionBounds, _viewport),
@@ -96,7 +96,7 @@ class MainWindowState extends State<MainWindow> {
       model.activePanel = id;
       model.refresh('${PanelIds.names[id]} shown');
     },
-    quit: () => model.refresh('Close the window to exit'),
+    quit: () => unawaited(_quit()),
   );
 
   /// The file types this editor can read, in the order the dialog lists them.
@@ -182,13 +182,23 @@ class MainWindowState extends State<MainWindow> {
   }
 
   /// Save: writes over the file this document came from, or asks for one.
+  ///
+  /// Only an SVG is written over. A drawing opened from a `.cdr` is saved as
+  /// SVG under a new name: the CDR writer produces a minimal CDR6 that keeps
+  /// neither colours nor text, and writing it over the original would destroy
+  /// the user's file.
   void _save() {
-    final String? existing = model.hasDocument ? model.active.filePath : null;
-    if (existing == null) {
+    if (!model.hasDocument) return;
+    final String? existing = model.active.filePath;
+    if (existing == null || _formatOf(existing) != 'svg') {
+      if (existing != null) {
+        model.refresh('${_basename(existing)} is not SVG - choose where to '
+            'save the drawing as SVG');
+      }
       _saveAs('svg');
       return;
     }
-    _writeTo(existing, _formatOf(existing));
+    _writeTo(model.active, existing, 'svg');
   }
 
   /// Save As / Export: always asks, then writes.
@@ -222,7 +232,10 @@ class MainWindowState extends State<MainWindow> {
       model.refresh('Save cancelled');
       return;
     }
-    _writeTo(target, format);
+    // The tab that asked, even if another one became current while the
+    // dialog was open.
+    if (!model.documents.contains(session)) return;
+    _writeTo(session, target, format);
   }
 
   static String _formatOf(String path) {
@@ -231,9 +244,7 @@ class MainWindowState extends State<MainWindow> {
     return path.substring(dot + 1).toLowerCase();
   }
 
-  void _writeTo(String target, String format) {
-    if (!model.hasDocument) return;
-    final DocumentSession session = model.active;
+  void _writeTo(DocumentSession session, String target, String format) {
     try {
       switch (format) {
         case 'svg':
@@ -251,9 +262,9 @@ class MainWindowState extends State<MainWindow> {
           model.refresh('Unknown export format $format');
           return;
       }
-      // Only a format the editor can read back counts as "this document now
-      // lives here"; exporting a PDF does not make the PDF the document.
-      if (format == 'svg' || format == 'cdr') {
+      // Only the format the editor saves in counts as "this document now
+      // lives here"; exporting a PDF or a CDR does not make that the document.
+      if (format == 'svg') {
         session
           ..filePath = target
           ..name = _basename(target)
@@ -273,16 +284,71 @@ class MainWindowState extends State<MainWindow> {
   /// Learns the canvas box, and fits the page into it the first time.
   void _onViewportResized(Size size) {
     _viewport = size;
-    if (!model.hasDocument || model.active.fittedOnce) return;
-    if (size.width < 40 || size.height < 40) return;
+    if (_fitPending()) model.refresh();
+  }
+
+  /// Fits the current document's page once, as soon as the canvas size is
+  /// known - for the first document, and for every tab opened afterwards.
+  /// Sets the viewport without rebuilding; returns whether it changed it.
+  bool _fitPending() {
+    if (!model.hasDocument || model.active.fittedOnce) return false;
+    if (_viewport.width < 40 || _viewport.height < 40) return false;
     model.active.fittedOnce = true;
-    model.zoomToRect(model.active.page.rect, size);
+    model.fitRect(model.active.page.rect, _viewport);
+    return true;
+  }
+
+  /// Closes tab [index], asking first when it has unsaved changes.
+  Future<void> _closeDocument(int index) async {
+    if (index < 0 || index >= model.documents.length) return;
+    final DocumentSession session = model.documents[index];
+    if (session.modified &&
+        !await _confirmDiscard(<DocumentSession>[session])) {
+      return;
+    }
+    final int now = model.documents.indexOf(session);
+    if (now >= 0) model.closeDocument(now);
+  }
+
+  /// Exit: the same as the window's close button, after the same question.
+  Future<void> _quit() async {
+    final List<DocumentSession> unsaved =
+        model.documents.where((d) => d.modified).toList();
+    if (unsaved.isNotEmpty && !await _confirmDiscard(unsaved)) return;
+    if (!mounted) return;
+    final WindowController? window = WindowScope.of(context);
+    if (window == null) {
+      model.refresh('Close the window to exit');
+      return;
+    }
+    window.close();
+  }
+
+  /// Whether the user agrees to lose the changes in [sessions].
+  Future<bool> _confirmDiscard(List<DocumentSession> sessions) async {
+    final String names = sessions.map((s) => s.name).join(', ');
+    try {
+      return await NativeMessageBox.show(
+        title: 'Unsaved changes',
+        message: sessions.length == 1
+            ? '$names has changes that have not been saved. Close it and '
+                'discard them?'
+            : '$names have changes that have not been saved. Discard them?',
+        kind: MessageBoxKind.confirm,
+      );
+    } on MessageBoxException {
+      // No dialog on this machine: keep the work rather than guess.
+      model.refresh('Save $names first - no dialog to confirm with');
+      return false;
+    }
   }
 
   // -------------------------------------------------------------------------
 
   @override
   Widget build(BuildContext context) {
+    // A tab opened or switched to since the last frame is fitted once.
+    _fitPending();
     final theme = Theme.of(context);
     final catalog = CommandCatalog(model: model, services: _services);
     final menus = catalog.menus;
@@ -332,7 +398,7 @@ class MainWindowState extends State<MainWindow> {
                       documents: model.documents,
                       activeIndex: model.activeIndex,
                       onSelected: model.selectDocument,
-                      onClosed: model.closeDocument,
+                      onClosed: (int index) => unawaited(_closeDocument(index)),
                     ),
                     Expanded(
                       child: Row(
@@ -340,8 +406,8 @@ class MainWindowState extends State<MainWindow> {
                         children: <Widget>[
                           Toolbox(
                             activeTool: model.tool,
-                            fill: model.currentFill,
-                            stroke: model.currentStroke,
+                            fill: model.shownFill,
+                            stroke: model.shownStroke,
                             onToolSelected: selectTool,
                             // Double-clicking the pick tool selects everything,
                             // which is what CorelDRAW and sK1 both do. Only the
@@ -369,13 +435,12 @@ class MainWindowState extends State<MainWindow> {
                       // Which cell the selection is already wearing, so the
                       // palette answers "what colour is this?" as well as
                       // "make it that colour".
-                      selectedFill: model.currentFill.isNone
+                      selectedFill:
+                          model.shownFill.isNone ? null : model.shownFill.color,
+                      selectedStroke: model.shownStroke.isNone ||
+                              model.shownStroke.width <= 0
                           ? null
-                          : model.currentFill.color,
-                      selectedStroke: model.currentStroke.isNone ||
-                              model.currentStroke.width <= 0
-                          ? null
-                          : model.currentStroke.color,
+                          : model.shownStroke.color,
                       onColorSelected: model.setFill,
                       onStrokeColorSelected: model.setStroke,
                     ),

@@ -83,6 +83,24 @@ abstract class ToolController {
   void onPointerUp(Offset point, VectorPage page);
   void onCancel();
 
+  /// The box a creation drag from [start] to [end] describes: Ctrl makes it
+  /// square, Shift grows it from [start] as the centre - CorelDRAW's and
+  /// Inkscape's modifiers for rectangles and ellipses.
+  Rect dragBox(Offset start, Offset end) {
+    var dx = end.dx - start.dx;
+    var dy = end.dy - start.dy;
+    if (isControlHeld) {
+      final side = dx.abs() > dy.abs() ? dx.abs() : dy.abs();
+      dx = dx < 0 ? -side : side;
+      dy = dy < 0 ? -side : side;
+    }
+    if (isShiftHeld) {
+      return Rect.fromLTRB(start.dx - dx.abs(), start.dy - dy.abs(),
+          start.dx + dx.abs(), start.dy + dy.abs());
+    }
+    return Rect.fromPoints(start, Offset(start.dx + dx, start.dy + dy));
+  }
+
   /// The editable layer of [page] a new object belongs on.
   VectorLayer targetLayer(VectorPage page) => page.children
       .whereType<VectorLayer>()
@@ -474,19 +492,12 @@ class RectangleToolController extends ToolController {
   @override
   void onPointerMove(Offset point, VectorPage page) {
     if (_startPoint == null || _currentRect == null) return;
-    final snapped = snap.snapPoint(point, page);
-
-    final left = _startPoint!.dx < snapped.dx ? _startPoint!.dx : snapped.dx;
-    final top = _startPoint!.dy < snapped.dy ? _startPoint!.dy : snapped.dy;
-    final width =
-        (_startPoint!.dx - snapped.dx).abs().clamp(1.0, double.infinity);
-    final height =
-        (_startPoint!.dy - snapped.dy).abs().clamp(1.0, double.infinity);
-
-    _currentRect!.startX = left;
-    _currentRect!.startY = top;
-    _currentRect!.rectWidth = width;
-    _currentRect!.rectHeight = height;
+    lastPoint = point;
+    final Rect box = dragBox(_startPoint!, snap.snapPoint(point, page));
+    _currentRect!.startX = box.left;
+    _currentRect!.startY = box.top;
+    _currentRect!.rectWidth = box.width.clamp(1.0, double.infinity);
+    _currentRect!.rectHeight = box.height.clamp(1.0, double.infinity);
     _currentRect!.update();
   }
 
@@ -544,14 +555,18 @@ class CircleToolController extends ToolController {
   @override
   void onPointerMove(Offset point, VectorPage page) {
     if (_startPoint == null || _currentCircle == null) return;
-    final snapped = snap.snapPoint(point, page);
-
-    final rx = (_startPoint!.dx - snapped.dx).abs();
-    final ry = (_startPoint!.dy - snapped.dy).abs();
-    final cx = (_startPoint!.dx + snapped.dx) / 2.0;
-    final cy = (_startPoint!.dy + snapped.dy) / 2.0;
-
-    _currentCircle!.trafo = [rx * 2, 0.0, 0.0, ry * 2, cx, cy];
+    lastPoint = point;
+    final Rect box = dragBox(_startPoint!, snap.snapPoint(point, page));
+    // The unit circle fills (0,0)-(1,1): size and top-left corner.
+    _currentCircle!.trafo = <double>[
+      box.width.clamp(1.0, double.infinity),
+      0.0,
+      0.0,
+      box.height.clamp(1.0, double.infinity),
+      box.left,
+      box.top,
+    ];
+    _currentCircle!.initialTrafo = List<double>.of(_currentCircle!.trafo);
     _currentCircle!.update();
   }
 
@@ -575,9 +590,23 @@ class CircleToolController extends ToolController {
 }
 
 // ---------------------------------------------------------------------------
-// Curve / Bézier Tool
+// Pen / Bézier Tool
 // ---------------------------------------------------------------------------
 
+/// CorelDRAW's Bézier tool and Inkscape's pen, as one controller.
+///
+///  * **click** places a corner node;
+///  * **press and drag** places a smooth node whose handles follow the drag -
+///    the outgoing handle under the pointer, the incoming one mirrored;
+///  * a **rubber segment** follows the pointer from the last node
+///    ([onHover]), so the next segment is visible before it is placed;
+///  * **clicking the first node** closes the path and finishes it;
+///  * **Enter**, a **double click** or changing tool finish it open
+///    ([finish]); **Escape** abandons it ([onCancel]).
+///
+/// The curve lives in the document while it is drawn, so it renders with
+/// everything else; [finish] reports it once, as one created object - one
+/// undo step for the whole path.
 class CurveToolController extends ToolController {
   CurveToolController({
     required super.doc,
@@ -586,50 +615,167 @@ class CurveToolController extends ToolController {
     required super.snap,
   });
 
-  VectorCurve? _currentCurve;
-  final List<VectorPath> _paths = [];
+  /// How close, in screen pixels, a click must be to the first node to
+  /// close the path.
+  static const double closePixels = 7.0;
+
+  VectorCurve? _curve;
+  VectorPath? _path;
+
+  /// Whether the path's last point is the rubber segment, not a placed one.
+  bool _rubber = false;
+
+  /// The outgoing handle of the last placed node, when it is smooth.
+  Offset? _handleOut;
+
+  /// The node the current press placed, for the drag that shapes it.
+  Offset? _pressNode;
+
+  /// Whether a path is being drawn.
+  bool get isDrawing => _curve != null;
+
+  Offset get _lastNode {
+    final VectorPath path = _path!;
+    final int placed = path.points.length - (_rubber ? 1 : 0);
+    if (placed == 0) return path.start;
+    return _endOf(path.points[placed - 1]);
+  }
+
+  static Offset _endOf(Object segment) =>
+      segment is CurvePoint ? segment.endpoint : segment as Offset;
+
+  int get _placedSegments =>
+      _path == null ? 0 : _path!.points.length - (_rubber ? 1 : 0);
+
+  void _dropRubber() {
+    if (_rubber) {
+      _path!.points.removeLast();
+      _rubber = false;
+    }
+  }
+
+  /// The segment from the last node to [end], honouring a smooth node's
+  /// outgoing handle.
+  Object _segmentTo(Offset end, {Offset? control2}) {
+    final Offset? out = _handleOut;
+    if (out == null && control2 == null) return end;
+    return CurvePoint(out ?? _lastNode, control2 ?? end, end);
+  }
+
+  /// Moves the rubber segment's end to [point].
+  void onHover(Offset point, VectorPage page) {
+    final VectorPath? path = _path;
+    if (path == null) return;
+    final Offset snapped = snap.snapPoint(point, page);
+    lastPoint = snapped;
+    final Object segment = _segmentTo(snapped);
+    if (_rubber) {
+      path.points.last = segment;
+    } else {
+      path.points.add(segment);
+      _rubber = true;
+    }
+    _curve!.update();
+  }
 
   @override
   void onPointerDown(Offset point, VectorPage page) {
-    final snapped = snap.snapPoint(point, page);
-
+    final Offset snapped = snap.snapPoint(point, page);
     lastPoint = snapped;
-    if (_currentCurve == null) {
-      final layer = targetLayer(page);
-      final newPath = VectorPath(
-        start: snapped,
-        points: [snapped],
-        closure: PathClosure.opened,
-      );
-      _paths.add(newPath);
-      _currentCurve = VectorCurve(paths: _paths);
-      methods.addObject(layer, _currentCurve!);
-      selection.select(_currentCurve!);
-    } else {
-      _paths.last.points.add(snapped);
-      _currentCurve!.update();
+    final VectorPath? path = _path;
+    if (path == null) {
+      final VectorPath first = VectorPath(start: snapped);
+      _path = first;
+      _curve = VectorCurve(paths: <VectorPath>[first], style: doc.defaultStyle);
+      methods.addObject(targetLayer(page), _curve!);
+      selection.select(_curve!);
+      _handleOut = null;
+      _pressNode = snapped;
+      _curve!.update();
+      return;
     }
+    _dropRubber();
+    final double tolerance = closePixels * onePixel;
+    // A second click on the node just placed is the double click that ends
+    // the path; it must not add a zero-length segment.
+    if (_placedSegments > 0 && (snapped - _lastNode).distance <= tolerance) {
+      _pressNode = null;
+      finish();
+      return;
+    }
+    if (_placedSegments >= 2 && (snapped - path.start).distance <= tolerance) {
+      path.points.add(_segmentTo(path.start));
+      path.closure = PathClosure.closed;
+      _pressNode = null;
+      finish();
+      return;
+    }
+    path.points.add(_segmentTo(snapped));
+    _handleOut = null;
+    _pressNode = snapped;
+    _curve!.update();
   }
 
   @override
   void onPointerMove(Offset point, VectorPage page) {
-    if (_currentCurve == null || _paths.isEmpty) return;
-    final snapped = snap.snapPoint(point, page);
-    if (_paths.last.points.isNotEmpty) {
-      _paths.last.points.last = snapped;
-      _currentCurve!.update();
+    final Offset? node = _pressNode;
+    final VectorPath? path = _path;
+    if (node == null || path == null) return;
+    lastPoint = point;
+    // Dragging out of a node shapes it: the handle under the pointer leads
+    // into the next segment, its mirror shapes the one just placed.
+    final Offset out = point;
+    final Offset into = node * 2 - point;
+    _handleOut = out;
+    if (path.points.isNotEmpty) {
+      final Object last = path.points.last;
+      final Offset previous = path.points.length >= 2
+          ? _endOf(path.points[path.points.length - 2])
+          : path.start;
+      path.points.last = last is CurvePoint
+          ? CurvePoint(last.control1, into, node, NodeType.symmetrical)
+          : CurvePoint(previous, into, node, NodeType.symmetrical);
     }
+    _curve!.update();
   }
 
   @override
   void onPointerUp(Offset point, VectorPage page) {
+    _pressNode = null;
+  }
+
+  /// Ends the path where it is. A path with no segment is removed rather
+  /// than left as an invisible dot.
+  void finish() {
+    final VectorCurve? curve = _curve;
+    if (curve == null) return;
+    _dropRubber();
+    if (_placedSegments == 0) {
+      methods.removeObject(curve);
+      selection.deselectAll();
+    } else {
+      curve.update();
+      reportCreated(curve);
+    }
+    _curve = null;
+    _path = null;
+    _handleOut = null;
+    _pressNode = null;
     doc.update();
   }
 
   @override
   void onCancel() {
-    _currentCurve = null;
-    _paths.clear();
+    final VectorCurve? curve = _curve;
+    if (curve != null) {
+      methods.removeObject(curve);
+      selection.deselectAll();
+    }
+    _curve = null;
+    _path = null;
+    _rubber = false;
+    _handleOut = null;
+    _pressNode = null;
   }
 }
 
@@ -650,7 +796,9 @@ class PolygonToolController extends ToolController {
     this.corners = 5,
   });
 
-  final int corners;
+  /// Corners of the next polygon; the canvas keeps it current with the
+  /// property bar, so a change applies to the very next drag.
+  int corners;
 
   Offset? _centre;
   VectorPolygon? _current;
@@ -676,14 +824,17 @@ class PolygonToolController extends ToolController {
     final polygon = _current;
     if (centre == null || polygon == null) return;
     lastPoint = point;
-    final radius = (point - centre).distance.clamp(1.0, double.infinity);
+    final radius = (snap.snapPoint(point, page) - centre)
+        .distance
+        .clamp(1.0, double.infinity);
+    // The unit polygon is centred on (0.5, 0.5).
     polygon.trafo = <double>[
       radius * 2,
       0.0,
       0.0,
       radius * 2,
-      centre.dx,
-      centre.dy,
+      centre.dx - radius,
+      centre.dy - radius,
     ];
     polygon.initialTrafo = List<double>.of(polygon.trafo);
     polygon.update();

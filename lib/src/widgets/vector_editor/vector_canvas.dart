@@ -37,6 +37,7 @@
 /// competing: the canvas is a leaf and the only thing under the pointer.
 library;
 
+import 'dart:async';
 import 'dart:math' as math;
 
 import '../../geometry/offset.dart';
@@ -184,6 +185,8 @@ class VectorCanvasState extends State<VectorCanvas>
   late SnapManager _snap;
   ToolController? _controller;
   ToolMode? _controllerTool;
+  VectorDocument? _controllerDoc;
+  SelectionManager? _controllerSelection;
 
   late final FocusNode _focusNode =
       FocusNode(debugLabel: 'VectorCanvas', target: this);
@@ -239,13 +242,17 @@ class VectorCanvasState extends State<VectorCanvas>
   void didUpdateWidget(VectorCanvas oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (!identical(oldWidget.doc, widget.doc)) {
+      _finishPath(deferReport: true);
       _cancelTextEdit();
       _methods = DocumentMethods(widget.doc);
       _controller = null;
       _controllerTool = null;
       widget.doc.update();
     }
-    if (oldWidget.tool != widget.tool) _commitTextEdit();
+    if (oldWidget.tool != widget.tool) {
+      _commitTextEdit();
+      _finishPath(deferReport: true);
+    }
     if (widget.snap != null && !identical(oldWidget.snap, widget.snap)) {
       _snap = widget.snap!;
     }
@@ -276,8 +283,14 @@ class VectorCanvasState extends State<VectorCanvas>
   /// operations, not document ones, and giving them a `ToolController` would
   /// mean handing the document to something that never touches it.
   ToolController? get _tool {
-    if (_controllerTool != widget.tool) {
+    // A tab switch keeps the tool but changes the document and selection;
+    // a controller built for the old ones would draw into a closed tab.
+    if (_controllerTool != widget.tool ||
+        !identical(_controllerDoc, widget.doc) ||
+        !identical(_controllerSelection, widget.selection)) {
       _controllerTool = widget.tool;
+      _controllerDoc = widget.doc;
+      _controllerSelection = widget.selection;
       _controller = switch (widget.tool) {
         ToolMode.select || ToolMode.shaper => SelectToolController(
             doc: widget.doc,
@@ -324,6 +337,9 @@ class VectorCanvasState extends State<VectorCanvas>
       controller
         ..modifiers = _modifiers
         ..zoom = widget.zoom;
+      if (controller is PolygonToolController) {
+        controller.corners = widget.polygonCorners;
+      }
     }
     return controller;
   }
@@ -412,6 +428,17 @@ class VectorCanvasState extends State<VectorCanvas>
     if (panStart != null) {
       widget.onPanChanged
           ?.call(panStart + (event.logicalPosition - _pressGlobal));
+      return;
+    }
+    if (_activePointer == null) {
+      // Nothing pressed: only the pen cares, to stretch its rubber segment.
+      final ToolController? controller = _controller;
+      if (widget.tool == ToolMode.curve &&
+          controller is CurveToolController &&
+          controller.isDrawing) {
+        controller.onHover(toDocument(event.logicalPosition), widget.page);
+        _report();
+      }
       return;
     }
     if (event.pointerId != _activePointer) return;
@@ -632,6 +659,29 @@ class VectorCanvasState extends State<VectorCanvas>
   }
 
   /// Keeps the edit and reports it for undo.
+  /// Ends a path the pen is drawing and reports it as created.
+  ///
+  /// From [didUpdateWidget] the owner is mid-build, so the report waits for
+  /// a microtask ([deferReport]); the path itself is finished at once, while
+  /// the controller still belongs to the document it was drawing in.
+  void _finishPath({bool deferReport = false}) {
+    final ToolController? controller = _controller;
+    if (controller is! CurveToolController || !controller.isDrawing) return;
+    controller.finish();
+    final Object? created = controller.takeCreatedObject();
+    final void Function(Object)? onCreated = widget.onObjectCreated;
+    void report() {
+      if (created != null) onCreated?.call(created);
+      if (mounted) _report(documentChanged: true);
+    }
+
+    if (deferReport) {
+      scheduleMicrotask(report);
+    } else {
+      report();
+    }
+  }
+
   void _commitTextEdit() {
     final CanvasTextEditor? editor = _textEditor;
     if (editor == null) return;
@@ -649,7 +699,8 @@ class VectorCanvasState extends State<VectorCanvas>
     if (editor == null) return;
     _textEditor = null;
     editor.cancel();
-    _report(documentChanged: true);
+    // Cancelling puts the text back as it was: nothing changed.
+    _report();
   }
 
   // -------------------------------------------------------------------------
@@ -664,6 +715,19 @@ class VectorCanvasState extends State<VectorCanvas>
     if (event.logicalKey == logicalKeySpace && _textEditor == null) {
       _spaceHeld = event is KeyDownEvent;
       return true;
+    }
+
+    final ToolController? pen = _controller;
+    if (event is KeyDownEvent && pen is CurveToolController && pen.isDrawing) {
+      if (event.logicalKey == logicalKeyEnter) {
+        _finishPath();
+        return true;
+      }
+      if (event.logicalKey == logicalKeyEscape) {
+        pen.onCancel();
+        _report(documentChanged: true);
+        return true;
+      }
     }
 
     final CanvasTextEditor? editor = _textEditor;

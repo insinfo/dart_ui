@@ -10,6 +10,8 @@
 /// cover "everything" must be told how big everything is.
 library;
 
+import 'dart:math' as math;
+
 import '../../geometry/offset.dart';
 import '../../geometry/path.dart';
 import '../../geometry/rect.dart';
@@ -18,6 +20,8 @@ import '../../graphics/color.dart';
 import '../../graphics/display_list.dart';
 import '../../graphics/display_list_geometry.dart';
 import '../../graphics/display_list_opcodes.dart';
+import '../../graphics/gradient.dart';
+import '../../graphics/vector/constants.dart';
 import '../../graphics/vector/document.dart';
 import '../../graphics/vector/document_object.dart';
 import '../../graphics/vector/primitives.dart';
@@ -299,22 +303,36 @@ class VectorRenderer {
     // atlas through scalable outlines and tiles the resulting mask. The old
     // 400 px ceiling made text disappear at roughly 2200% zoom.
     if (!pixelSize.isFinite || pixelSize < 3) return;
-    final face = FontRegistry.instance
-        .uiFont(pixelSize, weight: descriptor.bold ? 700 : 400);
-    if (face == null) return;
-
     final trafo = pending.object.trafo;
-    final origin = Offset(trafo[4], trafo[5]);
-    final device = Offset(pan.dx + origin.dx * zoom, pan.dy + origin.dy * zoom);
+    // Device matrix: the view (zoom, pan) after the object's own transform.
+    final a = zoom * trafo[0];
+    final b = zoom * trafo[1];
+    final c = zoom * trafo[2];
+    final d = zoom * trafo[3];
+    final tx = pan.dx + zoom * trafo[4];
+    final ty = pan.dy + zoom * trafo[5];
+    // Shape at the size the glyphs will actually cover, and let the matrix
+    // carry only rotation, skew and mirroring - so a plain text stays crisp
+    // and a rotated one turns with its frame instead of staying upright.
+    final scale = math.sqrt((a * d - b * c).abs());
     final fill = pending.object.style.fill;
     final color = fill.isNone ? const Color(0xFF000000) : fill.color;
-    _textPainter.paint(
-      list,
-      content,
-      face,
-      device,
-      list.addPaint(colorArgb: color.value, antiAlias: true),
-    );
+    final shapedSize = descriptor.fontSize * scale;
+    if (!shapedSize.isFinite || shapedSize < 3) return;
+    final shapedFace = FontRegistry.instance
+        .uiFont(shapedSize, weight: descriptor.bold ? 700 : 400);
+    if (shapedFace == null) return;
+    final paint = list.addPaint(colorArgb: color.value, antiAlias: true);
+    final plain = b == 0 && c == 0 && a > 0 && d > 0 && (a - d).abs() < 1e-9;
+    if (plain) {
+      _textPainter.paint(list, content, shapedFace, Offset(tx, ty), paint);
+      return;
+    }
+    list
+      ..save()
+      ..transform(a / scale, b / scale, c / scale, d / scale, tx, ty);
+    _textPainter.paint(list, content, shapedFace, Offset.zero, paint);
+    list.restore();
   }
 
   static final TextPainter _textPainter = TextPainter();
@@ -371,8 +389,14 @@ class VectorRenderer {
 
       // Fill
       if (!fill.isNone) {
-        final fillPaint =
-            list.addPaint(colorArgb: fill.color.value, antiAlias: true);
+        final fillPaint = list.addPaint(
+          colorArgb: fill.color.value,
+          antiAlias: true,
+          fillRule: fill.fillRule == FillRule.evenOdd
+              ? pathFillRuleEvenOdd
+              : pathFillRuleNonZero,
+          gradient: fill.isGradient ? _gradientFor(obj, paths) : null,
+        );
         list.drawPath(pathId, fillPaint);
       }
 
@@ -388,6 +412,64 @@ class VectorRenderer {
         list.drawPath(pathId, strokePaint);
       }
     }
+  }
+
+  /// The fill's gradient in document space.
+  ///
+  /// Its geometry is relative to the shape's own box before the transform -
+  /// SVG's `objectBoundingBox` - so it stretches, turns and moves with the
+  /// object.
+  static Gradient? _gradientFor(PrimitiveObject obj, List<VectorPath> paths) {
+    final fill = obj.style.fill;
+    final stops = <GradientStop>[
+      for (final stop in fill.gradientStops)
+        GradientStop(stop.offset.clamp(0.0, 1.0), stop.color.value),
+    ];
+    if (stops.length < 2) return null;
+    var minX = double.infinity, minY = double.infinity;
+    var maxX = double.negativeInfinity, maxY = double.negativeInfinity;
+    void take(Offset p) {
+      if (p.dx < minX) minX = p.dx;
+      if (p.dy < minY) minY = p.dy;
+      if (p.dx > maxX) maxX = p.dx;
+      if (p.dy > maxY) maxY = p.dy;
+    }
+
+    for (final vp in paths) {
+      take(vp.start);
+      for (final pt in vp.points) {
+        if (pt is CurvePoint) {
+          take(pt.endpoint);
+        } else if (pt is Offset) {
+          take(pt);
+        }
+      }
+    }
+    if (!minX.isFinite) return null;
+    final w = maxX - minX;
+    final h = maxY - minY;
+    Offset map(Offset relative) => applyTrafoToPoint(
+        Offset(minX + relative.dx * w, minY + relative.dy * h), obj.trafo);
+    if (fill.fillType == FillType.radialGradient) {
+      final centre = map(fill.gradientCenter);
+      final edge = map(Offset(fill.gradientCenter.dx + fill.gradientRadius,
+          fill.gradientCenter.dy));
+      return RadialGradient(
+        centerX: centre.dx,
+        centerY: centre.dy,
+        radius: (edge - centre).distance,
+        stops: stops,
+      );
+    }
+    final start = map(fill.gradientStart);
+    final end = map(fill.gradientEnd);
+    return LinearGradient(
+      startX: start.dx,
+      startY: start.dy,
+      endX: end.dx,
+      endY: end.dy,
+      stops: stops,
+    );
   }
 
   static void _renderGrid(

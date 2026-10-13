@@ -168,7 +168,9 @@ class _MeasuredCanvas extends StatelessWidget {
         },
         onSelectionChanged: (_) => model.refresh(),
         onDocumentChanged: () => model.touch(),
-        onObjectCreated: (_) => model.touch('Object created'),
+        onObjectCreated: (Object object) {
+          if (object is SelectableObject) model.objectCreated(object);
+        },
         onTransformCommitted: model.commitTransform,
         onTextCommitted: model.commitTextEdit,
         onHint: (String hint) => model.refresh(hint),
