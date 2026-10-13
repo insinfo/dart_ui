@@ -33,14 +33,14 @@ void main() {
           label: 'Delete',
           shortcut: const KeyGesture(0x2E),
           alsoShortcuts: const <KeyGesture>[KeyGesture(0x08)],
-          enabled: () => selected,
-          disabledReason: () => 'nothing is selected',
+          enabled: (_) => selected,
+          disabledReason: (_) => 'nothing is selected',
           run: (_) => log.add('delete'),
         ),
         CommandSpec(
           id: 'view.rulers',
           label: 'Rulers',
-          checked: () => rulers,
+          checked: (_) => rulers,
           run: (_) => rulers = !rulers,
         ),
         CommandSpec(

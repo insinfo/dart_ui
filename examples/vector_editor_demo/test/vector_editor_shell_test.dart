@@ -19,7 +19,6 @@ import 'package:test/test.dart';
 import 'package:vector_editor_demo/src/engine/editor_model.dart';
 import 'package:vector_editor_demo/src/ui/app.dart';
 import 'package:vector_editor_demo/src/ui/canvas_area.dart';
-import 'package:vector_editor_demo/src/ui/commands.dart';
 import 'package:vector_editor_demo/src/ui/context_panel.dart';
 import 'package:vector_editor_demo/src/ui/doc_tabs.dart';
 import 'package:vector_editor_demo/src/ui/main_window.dart';
@@ -226,10 +225,10 @@ void main() {
     test('every menu carries its rows, with shortcuts and reasons', () {
       final harness = _Harness();
       harness.frame();
-      final catalog = harness.catalog;
+      final menus = harness.windowState.menus;
 
       expect(
-        catalog.menus.map((menu) => menu.label),
+        menus.bar.map((menu) => menu.label),
         <String>[
           'File',
           'Edit',
@@ -245,7 +244,7 @@ void main() {
       );
 
       // The menu shows the platform's own chord: Ctrl+N on a PC, ⌘N on a Mac.
-      final file = catalog.menus.first.toPlatformMenu().children;
+      final file = menus.barMenus().first.children;
       final String newShortcut =
           platformEditingConvention == EditingConvention.mac ? '⌘N' : 'Ctrl+N';
       expect(
@@ -257,10 +256,11 @@ void main() {
 
       // Nothing is selected, so Group must be disabled *and* say why - a
       // dimmed row with no reason tells a screen reader nothing.
-      final group = catalog.group;
-      expect(group.enabled, isFalse);
-      expect(group.disabledReason, isNotNull);
-      expect(group.disabledReason, contains('selected'));
+      final registry = harness.windowState.registry;
+      final group = registry['object.group']!;
+      expect(group.isEnabled, isFalse);
+      expect(group.disabledReasonWith(CommandArgs.empty), contains('selected'));
+      expect(registry.execute('object.group').ok, isFalse);
       harness.dispose();
     });
 
@@ -398,7 +398,7 @@ void main() {
     test('Properties and Objects are docked beside the document', () {
       final harness = _Harness();
       harness.frame();
-      final workspace = harness.model.workspace;
+      final workspace = harness.windowState.ui.workspace;
       expect(workspace.layout.hierarchy(nameInfo: true),
           'R(IDocument,C(T(ITransform,IAlign,IFill & Outline),IObjects))');
       expect(harness.sizeOf(ObjectsPanel), isNotNull);
@@ -411,7 +411,7 @@ void main() {
       harness.frame();
       final before =
           harness.rendersOfType<RenderVectorCanvas>().single.size.width;
-      final workspace = harness.model.workspace;
+      final workspace = harness.windowState.ui.workspace;
       workspace.layout.removeItem(
           item: workspace.layout.findDockingItem(WorkspacePanels.objects)!);
       workspace.layout.removeItem(
@@ -424,7 +424,7 @@ void main() {
       final after =
           harness.rendersOfType<RenderVectorCanvas>().single.size.width;
       expect(after, greaterThan(before));
-      harness.model.showPanelTab(WorkspacePanels.objects);
+      harness.windowState.registry.execute('panel.objects');
       harness.frame();
       expect(workspace.isDocked(WorkspacePanels.objects), isTrue);
       workspace.reset();
@@ -435,10 +435,11 @@ void main() {
 
     test('the theme follows the View menu', () {
       final harness = _Harness();
-      harness.model.setThemeMode(EditorThemeMode.light);
-      expect(harness.model.theme.name, ThemeData.studioLight.name);
-      harness.model.setThemeMode(EditorThemeMode.dark);
-      expect(harness.model.theme.name, ThemeData.studioDark.name);
+      final window = harness.windowState;
+      expect(window.registry.execute('theme.light').ok, isTrue);
+      expect(window.ui.theme.name, ThemeData.studioLight.name);
+      expect(window.registry.execute('theme.dark').ok, isTrue);
+      expect(window.ui.theme.name, ThemeData.studioDark.name);
       harness.dispose();
     });
 
@@ -535,26 +536,6 @@ final class _Harness {
     walk(owner.rootElement!);
     return found ?? (throw StateError('no canvas is mounted'));
   }
-
-  CommandCatalog get catalog => CommandCatalog(
-        model: model,
-        services: EditorServices(
-          newDocument: () {},
-          openDocument: () {},
-          saveDocument: () {},
-          saveDocumentAs: () {},
-          exportDocument: (_) {},
-          printDocument: () {},
-          closeDocument: () {},
-          zoomIn: () {},
-          zoomOut: () {},
-          zoomActual: () {},
-          zoomToPage: () {},
-          zoomToSelection: () {},
-          showPanel: (_) {},
-          quit: () {},
-        ),
-      );
 
   /// The laid-out box of the first widget of [type], or null when it is absent.
   Size? sizeOf(Type type) {

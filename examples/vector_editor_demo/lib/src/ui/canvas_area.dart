@@ -8,6 +8,7 @@ library;
 import 'package:dart_ui/dart_ui.dart';
 
 import '../engine/editor_model.dart';
+import 'editor_scope.dart';
 import 'metrics.dart';
 
 /// Rulers, corner button and canvas.
@@ -146,11 +147,13 @@ class _MeasuredCanvas extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final session = model.active;
+    final EditorScope? scope = EditorScope.maybeOf(context);
     return ContextMenuArea(
-      enabled: model.contextMenus != null,
+      enabled: scope != null,
       onOpen: _selectUnder,
-      menuChildren: () =>
-          PlatformMenuBar.menuWidgets(model.contextMenus?.canvas() ?? const []),
+      menuChildren: () => scope == null
+          ? const <Widget>[]
+          : scope.menus.widgets(scope.menus.canvas),
       child: _SizeReporter(
         onSize: onViewportResized,
         child: VectorCanvas(

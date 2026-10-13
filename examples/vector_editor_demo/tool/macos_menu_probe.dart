@@ -18,6 +18,7 @@ import 'package:dart_ui/dart_ui.dart';
 import 'package:dart_ui/src/backends/macos/macos_window.dart';
 import 'package:vector_editor_demo/src/engine/editor_model.dart';
 import 'package:vector_editor_demo/src/ui/app.dart';
+import 'package:vector_editor_demo/src/ui/editor_ui.dart';
 import 'package:vector_editor_demo/src/ui/main_window.dart';
 
 Future<void> main(List<String> args) async {
@@ -52,10 +53,12 @@ Future<void> main(List<String> args) async {
       exit(2);
     }
     final BuildOwner owner = app.primaryWindow.buildOwner;
-    final EditorModel model = _findState(owner).model;
-    check('the window offers the system menu bar', model.nativeMenuAvailable);
+    final MainWindowState window = _findState(owner);
+    final EditorModel model = window.model;
+    final EditorUi ui = window.ui;
+    check('the window offers the system menu bar', ui.nativeMenuAvailable);
 
-    model.setNativeMenuBar(true);
+    window.registry.execute('view.systemMenuBar');
     await pause();
     if (shotDir != null) {
       await Process.run('screencapture',
@@ -69,7 +72,7 @@ Future<void> main(List<String> args) async {
 
     menu('Theme: Light');
     await pause();
-    check('a native item runs its command', model.themeMode.name == 'light');
+    check('a native item runs its command', ui.themeMode.name == 'light');
 
     model.deselect();
     // Command+A, posted to the application: AppKit offers it to the view
@@ -85,12 +88,12 @@ Future<void> main(List<String> args) async {
 
     menu('Use the macOS menu bar');
     await pause();
-    check('the toggle puts the menus back in the window', !model.nativeMenuBar);
+    check('the toggle puts the menus back in the window', !ui.nativeMenuBar);
 
     menu('Theme: Dark');
     await pause();
     check('the system bar no longer has the editor menus',
-        model.themeMode.name == 'light');
+        ui.themeMode.name == 'light');
 
     final int errors = app.primaryWindow.buildOwner.errorReporter.errors.length;
     check('no framework errors', errors == 0);

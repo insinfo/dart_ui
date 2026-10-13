@@ -87,10 +87,10 @@ que falta vão para `doc/vector_editor_paridade.md` a cada entrega.
 
 | # | Entrega | Estado |
 |---|---|---|
-| 1 | `lib/src/commands/`: registro, parâmetros, `MenuSpec`, atalhos, testes | em andamento |
+| 1 | `lib/src/commands/`: registro, parâmetros, `MenuSpec`, atalhos, testes | feito |
 | 2 | `lib/src/automation/`: servidor de controle e host padrão de janela | — |
-| 3 | Editor: todos os comandos no registro; menus, contexto, barras e atalhos a partir dele | — |
-| 4 | Editor: pastas `engine/` e `ui/`, teste de camadas | — |
+| 3 | Editor: todos os comandos no registro; menus, contexto, barras e atalhos a partir dele | feito (painéis de propriedades ainda chamam o modelo) |
+| 4 | Editor: pastas `engine/` e `ui/`, teste de camadas | feito |
 | 5 | `--control` no editor; sonda que desenha e captura só pelo canal | — |
 | 6 | Ferramenta de paridade e `doc/vector_editor_paridade.md` | — |
 | 7 | Paleta de comandos (Ctrl/⌘+Shift+P) | — |

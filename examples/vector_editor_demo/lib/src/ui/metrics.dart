@@ -1,4 +1,4 @@
-/// The editor's dimensions: its chrome, from the theme, and its zoom limits.
+/// The editor's chrome dimensions, from the theme.
 library;
 
 import 'package:dart_ui/dart_ui.dart';
@@ -82,14 +82,4 @@ final class ChromeMetrics {
   /// [barGroupSpacing] one step and [barPadding] two.
   static const double barGroupSpacing = 4;
   static const double barPadding = 8;
-}
-
-/// Zoom limits and the step a zoom button takes.
-abstract final class ZoomMetrics {
-  static const double minimum = 0.02;
-  static const double maximum = 64.0;
-  static const double step = 1.25;
-
-  /// Margin left around the page when fitting it to the window.
-  static const double fitMargin = 24.0;
 }

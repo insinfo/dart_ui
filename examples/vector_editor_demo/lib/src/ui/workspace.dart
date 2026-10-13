@@ -6,9 +6,25 @@ library;
 import 'package:dart_ui/dart_ui.dart';
 
 import '../engine/editor_model.dart';
+import 'editor_scope.dart';
+import 'editor_ui.dart';
+import 'menus.dart';
 import 'metrics.dart';
 import 'objects_panel.dart';
 import 'panels.dart';
+
+/// The property panels' ids - the plugin ids sK1 uses in `plgarea.py`.
+abstract final class PanelIds {
+  static const String transform = 'TransformPlugin';
+  static const String align = 'AlignPlugin';
+  static const String fillStroke = 'FillStrokePlugin';
+
+  static const Map<String, String> names = <String, String>{
+    transform: 'Transformations',
+    align: 'Align and Distribute',
+    fillStroke: 'Fill and Outline',
+  };
+}
 
 /// Every panel the workspace can show, by id.
 abstract final class WorkspacePanels {
@@ -32,6 +48,24 @@ abstract final class WorkspacePanels {
         align => 'Align',
         fillStroke => 'Fill & Outline',
         _ => PanelIds.names[id] ?? id,
+      };
+
+  /// The command that shows panel [id]: `panel.transform`, `panel.objects`.
+  static String commandOf(String id) => switch (id) {
+        transform => 'panel.transform',
+        align => 'panel.align',
+        fillStroke => 'panel.fillStroke',
+        objects => 'panel.objects',
+        _ => 'panel.$id',
+      };
+
+  /// CorelDRAW's keys for the dockers this editor has.
+  static KeyGesture? shortcutOf(String id) => switch (id) {
+        transform => const KeyGesture(logicalKeyF5, alt: true),
+        align => const KeyGesture(logicalKeyD, command: true, shift: true),
+        fillStroke => const KeyGesture(logicalKeyF11),
+        objects => const KeyGesture(logicalKeyF7, command: true),
+        _ => null,
       };
 
   static IconData iconOf(String id) => switch (id) {
@@ -160,8 +194,9 @@ final class EditorWorkspace {
     DockingItem item, {
     required Offset at,
     required WindowController? window,
-    required ThemeData theme,
-    required EditorModel model,
+    required EditorUi ui,
+    required CommandRegistry registry,
+    required EditorMenus menus,
   }) async {
     final Object? id = item.id;
     if (id is! String || window == null) return;
@@ -173,8 +208,14 @@ final class EditorWorkspace {
       size: const Size(300, 460),
       position:
           at == Offset.zero ? null : window.toScreen(at - const Offset(40, 14)),
-      child:
-          _FloatingPanel(model: model, id: id, theme: theme, workspace: this),
+      // A new widget tree: it gets the editor's scope again, so the panel
+      // reaches the same commands and menus from its own window.
+      child: EditorScope(
+        ui: ui,
+        registry: registry,
+        menus: menus,
+        child: _FloatingPanel(ui: ui, id: id),
+      ),
       onClosed: () => dock(id),
     );
     final entry = floating[id];
@@ -197,17 +238,13 @@ final class EditorWorkspace {
 
 /// A panel in a window of its own, rebuilt whenever the editor changes.
 final class _FloatingPanel extends StatefulWidget {
-  const _FloatingPanel({
-    required this.model,
-    required this.id,
-    required this.theme,
-    required this.workspace,
-  });
+  const _FloatingPanel({required this.ui, required this.id});
 
-  final EditorModel model;
+  final EditorUi ui;
   final String id;
-  final ThemeData theme;
-  final EditorWorkspace workspace;
+
+  EditorModel get model => ui.model;
+  EditorWorkspace get workspace => ui.workspace;
 
   @override
   State<_FloatingPanel> createState() => _FloatingPanelState();
@@ -232,7 +269,7 @@ final class _FloatingPanelState extends State<_FloatingPanel> {
 
   @override
   Widget build(BuildContext context) {
-    final ThemeData theme = widget.model.theme;
+    final ThemeData theme = widget.ui.theme;
     return Directionality(
       textDirection: TextDirection.leftToRight,
       child: Theme(

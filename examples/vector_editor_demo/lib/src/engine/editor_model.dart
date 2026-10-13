@@ -7,10 +7,8 @@ library;
 
 import 'package:dart_ui/dart_ui.dart';
 
-import '../ui/context_menus.dart';
-import '../ui/metrics.dart';
-import '../ui/workspace.dart';
 import 'document_api.dart';
+import 'zoom.dart';
 
 /// One open document, with its own history, selection and viewport.
 ///
@@ -83,22 +81,6 @@ class DocumentSession {
   String get tabTitle => modified ? '$name*' : name;
 }
 
-/// Which side panel is showing, if any.
-///
-/// The ids are the plugin ids sK1 uses in `plgarea.py`, kept as strings so the
-/// collapsed tab strip can be driven by data instead of a switch.
-abstract final class PanelIds {
-  static const String transform = 'TransformPlugin';
-  static const String align = 'AlignPlugin';
-  static const String fillStroke = 'FillStrokePlugin';
-
-  static const Map<String, String> names = <String, String>{
-    transform: 'Transformations',
-    align: 'Align and Distribute',
-    fillStroke: 'Fill and Outline',
-  };
-}
-
 /// The transform sub-modes of sK1's Transformations panel.
 enum TransformMode {
   position('Position'),
@@ -132,17 +114,6 @@ enum HorizontalAlign { left, centre, right }
 /// Vertical alignment targets.
 enum VerticalAlign { top, middle, bottom }
 
-/// Which look the editor wears.
-enum EditorThemeMode {
-  system('Follow the system'),
-  dark('Dark'),
-  light('Light');
-
-  const EditorThemeMode(this.label);
-
-  final String label;
-}
-
 /// The whole editor, minus the widgets.
 class EditorModel {
   EditorModel({required this.onChanged});
@@ -153,47 +124,6 @@ class EditorModel {
   /// Bumped on every change, for widgets outside the main window's tree -
   /// a panel floating in its own window - to rebuild with it.
   final ValueNotifier<int> revision = ValueNotifier<int>(0);
-
-  /// The panels and where they are.
-  final EditorWorkspace workspace = EditorWorkspace();
-
-  EditorThemeMode themeMode = EditorThemeMode.system;
-
-  /// What the system said last time it was asked; null when it did not say.
-  bool? systemDark;
-
-  /// The theme the editor wears: the studio look at the sizes this desktop's
-  /// own applications use.
-  ThemeData get theme => switch (themeMode) {
-        EditorThemeMode.dark => _dark,
-        EditorThemeMode.light => _light,
-        EditorThemeMode.system => systemDark == false ? _light : _dark,
-      };
-
-  static final ThemeData _dark = ThemeData.studioDark.adaptedToPlatform();
-  static final ThemeData _light = ThemeData.studioLight.adaptedToPlatform();
-
-  /// Whether the menus are in the system's menu bar (macOS) rather than in
-  /// the window - the user's choice, offered where [nativeMenuAvailable].
-  bool nativeMenuBar = false;
-
-  /// Whether this window can put its menus in the system's bar; set by the
-  /// window as it builds.
-  bool nativeMenuAvailable = false;
-
-  /// The right-click menus, over the window's command catalog; set by the
-  /// window as it builds. Null in a model no window shows.
-  EditorContextMenus? contextMenus;
-
-  void setNativeMenuBar(bool value) {
-    nativeMenuBar = value;
-    refresh(value ? 'Menus in the macOS menu bar' : 'Menus in the window');
-  }
-
-  void setThemeMode(EditorThemeMode mode) {
-    themeMode = mode;
-    refresh('Theme: ${mode.label}');
-  }
 
   final List<DocumentSession> documents = <DocumentSession>[];
   int activeIndex = 0;
@@ -221,18 +151,11 @@ class EditorModel {
     width: 1.0,
   );
 
-  /// The Properties tab on show.
-  String? activePanel = PanelIds.transform;
-
   TransformMode transformMode = TransformMode.position;
   AlignReference alignReference = AlignReference.page;
   HorizontalAlign? horizontalAlign = HorizontalAlign.centre;
   VerticalAlign? verticalAlign = VerticalAlign.middle;
   bool alignAsGroup = true;
-
-  /// One per menu of the menu bar, so a tool or a test can open one.
-  final List<MenuController> menuControllers =
-      List<MenuController>.generate(12, (_) => MenuController());
 
   /// The free-text message at the right of the status bar.
   String status = 'Ready';
@@ -278,6 +201,21 @@ class EditorModel {
   // -------------------------------------------------------------------------
   // Documents
   // -------------------------------------------------------------------------
+
+  int _untitled = 0;
+
+  /// The name of the next unnamed drawing: "Untitled 1", "Untitled 2"...
+  String nextUntitledName() => 'Untitled ${++_untitled}';
+
+  /// A new, empty drawing in a tab of its own.
+  DocumentSession newDocument() {
+    final session = DocumentSession(
+      document: VectorDocument(docUnits: units),
+      name: nextUntitledName(),
+    );
+    addDocument(session);
+    return session;
+  }
 
   void addDocument(DocumentSession session, {bool activate = true}) {
     documents.add(session);
@@ -1030,17 +968,6 @@ class EditorModel {
         }
         return best;
     }
-  }
-
-  // -------------------------------------------------------------------------
-  // Panels
-  // -------------------------------------------------------------------------
-
-  /// Shows panel [id], wherever it is - its tab, its window, or docked back.
-  void showPanelTab(String id) {
-    activePanel = id;
-    workspace.show(id);
-    refresh('${PanelIds.names[id]} shown');
   }
 
   // Small local trig, so the model does not pull in dart:math for two calls

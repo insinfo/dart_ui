@@ -15,9 +15,9 @@ library;
 import 'dart:io';
 
 import 'package:dart_ui/dart_ui.dart';
-import 'package:vector_editor_demo/src/engine/editor_model.dart';
 import 'package:vector_editor_demo/src/ui/app.dart';
 import 'package:vector_editor_demo/src/ui/main_window.dart';
+import 'package:vector_editor_demo/src/ui/workspace.dart';
 
 Future<void> main(List<String> args) async {
   final path = args.isNotEmpty ? args[0] : 'shot.png';
@@ -61,24 +61,23 @@ Future<void> main(List<String> args) async {
           .firstWhere(test);
 
   if (scenario.startsWith('menu:')) {
-    state.model.menuControllers[int.parse(scenario.substring(5))].open();
+    state.ui.menuControllers[int.parse(scenario.substring(5))].open();
     state.model.refresh();
   } else if (scenario == 'select') {
-    state.model.selectAll();
+    state.registry.execute('edit.selectAll');
   } else if (scenario == 'align') {
-    state.model
-      ..selectAll()
-      ..activePanel = PanelIds.align
-      ..refresh();
+    state.registry
+      ..execute('edit.selectAll')
+      ..execute('panel.align');
   } else if (scenario == 'fill') {
-    state.model
-      ..selectAll()
-      ..activePanel = PanelIds.fillStroke
-      ..refresh();
+    state.registry
+      ..execute('edit.selectAll')
+      ..execute('panel.fillStroke');
   } else if (scenario == 'collapsed') {
-    state.model
-      ..activePanel = null
-      ..refresh();
+    state.ui.workspace.layout.removeItem(
+        item: state.ui.workspace.layout
+            .findDockingItem(WorkspacePanels.objects)!);
+    state.model.refresh();
   } else if (scenario == 'drag-star') {
     // Bug 1: the star used to leave the viewport on the first drag.
     final star = objectOfType((o) => o is VectorPolygon);

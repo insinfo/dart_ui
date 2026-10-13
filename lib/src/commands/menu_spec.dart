@@ -23,11 +23,17 @@ final class CommandItem extends MenuSpecEntry {
     this.command, {
     this.params = const <String, Object?>{},
     this.label,
+    this.checkable = true,
   });
 
   final String command;
   final Map<String, Object?> params;
   final String? label;
+
+  /// False shows a toggle command as a plain action: "Align and
+  /// Distribute..." under Arrange opens the panel, while the same command
+  /// under Window shows whether it is open.
+  final bool checkable;
 }
 
 /// A line between groups.
@@ -124,12 +130,16 @@ final class MenuBuilder {
             onSelected: null,
           );
         }
-        final bool enabled = _guard(() => command.isEnabled, false);
+        final CommandArgs args = CommandArgs(entry.params);
+        final bool enabled = _guard(() => command.isEnabledWith(args), false);
         return PlatformMenuItem(
-          label: entry.label ?? _guard(() => command.labelNow, command.label),
+          label: entry.label ??
+              _guard(() => command.labelWith(args), command.label),
           icon: command.icon,
           shortcut: command.shortcut,
-          checked: _guard(() => command.isChecked, null),
+          checked: entry.checkable
+              ? _guard(() => command.isCheckedWith(args), null)
+              : null,
           onSelected: enabled
               ? () => registry.execute(entry.command, entry.params)
               : null,
@@ -149,19 +159,20 @@ final class MenuBuilder {
             walk(entry.children, <String>[...path, entry.label]);
           case CommandItem():
             final CommandSpec? command = registry[entry.command];
+            final CommandArgs args = CommandArgs(entry.params);
             rows.add(MenuRow(
               path: path,
               label: entry.label ??
                   (command == null
                       ? entry.command
-                      : _guard(() => command.labelNow, command.label)),
+                      : _guard(() => command.labelWith(args), command.label)),
               command: entry.command,
               registered: command != null,
-              enabled:
-                  command != null && _guard(() => command.isEnabled, false),
+              enabled: command != null &&
+                  _guard(() => command.isEnabledWith(args), false),
               checked: command == null
                   ? null
-                  : _guard(() => command.isChecked, null),
+                  : _guard(() => command.isCheckedWith(args), null),
               shortcut: command?.shortcut?.label(),
             ));
         }

@@ -148,7 +148,7 @@ final class CommandSpec {
   /// What a menu shows; [currentLabel] when it depends on the state
   /// ("Undo Move").
   final String label;
-  final String Function()? currentLabel;
+  final String Function(CommandArgs args)? currentLabel;
 
   /// One sentence for a tooltip, the command palette and automation.
   final String description;
@@ -160,22 +160,29 @@ final class CommandSpec {
 
   final List<CommandParam> params;
 
-  /// Null means always enabled.
-  final bool Function()? enabled;
+  /// Null means always enabled. Given the parameters a row or a caller
+  /// would run it with - "Delete layer 3" can be possible when "Delete
+  /// layer 1" is not.
+  final bool Function(CommandArgs args)? enabled;
 
   /// Why it is disabled now - read only while [enabled] says false.
-  final String Function()? disabledReason;
+  final String Function(CommandArgs args)? disabledReason;
 
   /// Non-null for a toggle; the function returns whether it is on.
-  final bool Function()? checked;
+  final bool Function(CommandArgs args)? checked;
 
   /// Does the work. Returns a JSON-serialisable result or null; throws
   /// [CommandError] to refuse with a reason.
   final Object? Function(CommandArgs args) run;
 
-  bool get isEnabled => enabled?.call() ?? true;
-  bool? get isChecked => checked?.call();
-  String get labelNow => currentLabel?.call() ?? label;
+  bool get isEnabled => isEnabledWith(CommandArgs.empty);
+  bool? get isChecked => isCheckedWith(CommandArgs.empty);
+  String get labelNow => labelWith(CommandArgs.empty);
+
+  bool isEnabledWith(CommandArgs args) => enabled?.call(args) ?? true;
+  bool? isCheckedWith(CommandArgs args) => checked?.call(args);
+  String labelWith(CommandArgs args) => currentLabel?.call(args) ?? label;
+  String? disabledReasonWith(CommandArgs args) => disabledReason?.call(args);
 }
 
 /// How a run ended: [ok] with a [result], or not with an [error].

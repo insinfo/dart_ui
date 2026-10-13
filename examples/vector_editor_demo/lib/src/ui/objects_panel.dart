@@ -10,6 +10,7 @@ library;
 import 'package:dart_ui/dart_ui.dart';
 
 import '../engine/editor_model.dart';
+import 'editor_scope.dart';
 
 /// The row height every row shares: the theme's row, plus room for the
 /// swatch and the eye and lock buttons.
@@ -65,17 +66,17 @@ class ObjectsPanel extends StatelessWidget {
               _IconButton(
                 icon: PhosphorIcons.plus,
                 tooltip: 'New layer',
-                onTap: model.addLayer,
+                onTap: () => _run(context, 'layer.new'),
               ),
               _IconButton(
                 icon: PhosphorIcons.arrowUp,
                 tooltip: 'Raise layer',
-                onTap: () => model.moveLayer(active, up: true),
+                onTap: () => _run(context, 'layer.raise'),
               ),
               _IconButton(
                 icon: PhosphorIcons.arrowDown,
                 tooltip: 'Lower layer',
-                onTap: () => model.moveLayer(active, up: false),
+                onTap: () => _run(context, 'layer.lower'),
               ),
               const Spacer(),
               _IconButton(
@@ -84,7 +85,7 @@ class ObjectsPanel extends StatelessWidget {
                     ? 'Delete layer and its objects'
                     : 'The last layer cannot be deleted',
                 onTap: session.layers.length > 1
-                    ? () => model.deleteLayer(active)
+                    ? () => _run(context, 'layer.delete')
                     : null,
               ),
               const SizedBox(width: 4),
@@ -94,6 +95,14 @@ class ObjectsPanel extends StatelessWidget {
       ],
     );
   }
+}
+
+/// Runs [command] through the editor's registry - the same path as the
+/// menu bar and the right-click menu, so the panel cannot do anything a
+/// command cannot.
+void _run(BuildContext context, String command,
+    [Map<String, Object?> params = const <String, Object?>{}]) {
+  EditorScope.maybeOf(context)?.registry.execute(command, params);
 }
 
 class _LayerRow extends StatelessWidget {
@@ -107,18 +116,23 @@ class _LayerRow extends StatelessWidget {
   final VectorLayer layer;
   final bool active;
 
+  Map<String, Object?> _at(VectorLayer layer) =>
+      <String, Object?>{'index': model.active.layers.indexOf(layer)};
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     final count = layer.children.whereType<SelectableObject>().length;
-    final menus = model.contextMenus;
+    final EditorScope? scope = EditorScope.maybeOf(context);
     return ContextMenuArea(
-      enabled: menus != null,
-      menuChildren: () => PlatformMenuBar.menuWidgets(
-          menus?.layer(layer) ?? const <PlatformMenuEntry>[]),
+      enabled: scope != null,
+      menuChildren: () => scope == null
+          ? const <Widget>[]
+          : scope.menus
+              .widgets(scope.menus.layer(model.active.layers.indexOf(layer))),
       child: GestureDetector(
         behavior: GestureHitTestBehavior.opaque,
-        onTap: () => model.activateLayer(layer),
+        onTap: () => _run(context, 'layer.activate', _at(layer)),
         child: SizedBox(
           height: _rowHeight(theme),
           child: ColoredBox(
@@ -138,7 +152,7 @@ class _LayerRow extends StatelessWidget {
                       : PhosphorIcons.eyeSlash,
                   tooltip: layer.isVisible ? 'Hide layer' : 'Show layer',
                   dim: !layer.isVisible,
-                  onTap: () => model.setLayerVisible(layer, !layer.isVisible),
+                  onTap: () => _run(context, 'layer.visible', _at(layer)),
                 ),
                 _IconButton(
                   icon: layer.isEditable
@@ -146,7 +160,7 @@ class _LayerRow extends StatelessWidget {
                       : PhosphorIcons.lockSimple,
                   tooltip: layer.isEditable ? 'Lock layer' : 'Unlock layer',
                   dim: layer.isEditable,
-                  onTap: () => model.setLayerLocked(layer, layer.isEditable),
+                  onTap: () => _run(context, 'layer.lock', _at(layer)),
                 ),
                 const SizedBox(width: 4),
                 const Icon(PhosphorIcons.stack),
@@ -215,16 +229,17 @@ class _ObjectRow extends StatelessWidget {
     final selected = model.selection.contains(object);
     final (icon, label) = describe(object);
     final fill = object.style.fill;
-    final menus = model.contextMenus;
+    final EditorScope? scope = EditorScope.maybeOf(context);
     return ContextMenuArea(
-      enabled: enabled && menus != null,
+      enabled: enabled && scope != null,
       // The row's object becomes the selection unless it is already part of
       // it - the same rule as the canvas.
       onOpen: (_) {
         if (!selected) model.pickObject(object);
       },
-      menuChildren: () => PlatformMenuBar.menuWidgets(
-          menus?.selection() ?? const <PlatformMenuEntry>[]),
+      menuChildren: () => scope == null
+          ? const <Widget>[]
+          : scope.menus.widgets(scope.menus.selection),
       child: GestureDetector(
         behavior: GestureHitTestBehavior.opaque,
         onTap: enabled

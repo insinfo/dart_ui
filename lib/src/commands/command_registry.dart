@@ -70,12 +70,13 @@ final class CommandRegistry {
     final String? invalid = validate(command, params);
     if (invalid != null) return CommandOutcome.failure(invalid);
     try {
-      if (!command.isEnabled) {
+      final CommandArgs args = CommandArgs(params);
+      if (!command.isEnabledWith(args)) {
         final String reason =
-            command.disabledReason?.call() ?? 'not available now';
+            command.disabledReasonWith(args) ?? 'not available now';
         return CommandOutcome.failure('`$id` is disabled: $reason');
       }
-      return CommandOutcome.success(command.run(CommandArgs(params)));
+      return CommandOutcome.success(command.run(args));
     } on CommandError catch (error) {
       return CommandOutcome.failure(error.message);
     } on Object catch (error) {
@@ -170,7 +171,7 @@ final class CommandRegistry {
     bool? checked;
     try {
       enabled = command.isEnabled;
-      reason = enabled ? null : command.disabledReason?.call();
+      reason = enabled ? null : command.disabledReasonWith(CommandArgs.empty);
       checked = command.isChecked;
     } on Object {
       enabled = false;

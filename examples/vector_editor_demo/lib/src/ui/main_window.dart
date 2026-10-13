@@ -6,18 +6,21 @@
 library;
 
 import 'dart:async';
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:dart_ui/dart_ui.dart';
 
+import '../engine/editor_commands.dart';
+import '../engine/editor_files.dart';
+import '../engine/editor_host.dart';
 import '../engine/editor_model.dart';
 import 'canvas_area.dart';
-import 'commands.dart';
-import 'context_menus.dart';
 import 'context_panel.dart';
 import 'doc_tabs.dart';
+import 'editor_scope.dart';
+import 'editor_ui.dart';
 import 'menu_bar.dart';
+import 'menus.dart';
 import 'metrics.dart';
 import 'standard_toolbar.dart';
 import 'status_bar.dart';
@@ -34,15 +37,28 @@ class MainWindow extends StatefulWidget {
   State<MainWindow> createState() => MainWindowState();
 }
 
-class MainWindowState extends State<MainWindow> {
+class MainWindowState extends State<MainWindow> implements EditorHost {
   late final EditorModel model = EditorModel(
     onChanged: () {
       if (mounted) setState(() {});
     },
   );
 
+  /// The window's own state: theme, panels, menu bar placement.
+  late final EditorUi ui = EditorUi(model);
+
+  /// Every command of the editor - the document's and the window's. Menus,
+  /// toolbars, shortcuts, right-click menus, tests and automation all run
+  /// commands through it.
+  final CommandRegistry registry = CommandRegistry();
+
+  late final EditorMenus menus = EditorMenus(registry, ui);
+
   /// The canvas box, kept so zoom-to-fit knows what it is fitting into.
   Size _viewport = const Size(800, 600);
+
+  @override
+  Size get viewport => _viewport;
 
   /// Where a save falls back to when the platform has no dialog.
   ///
@@ -52,55 +68,33 @@ class MainWindowState extends State<MainWindow> {
   /// fails.
   static const String _fallbackDirectory = 'vector_editor_output';
 
-  int _untitledCounter = 1;
-
   @override
   void initState() {
     super.initState();
-    model.documents.add(
+    registerEditorCommands(registry, model, this);
+    registerUiCommands(registry, ui);
+    // A command that refuses says why, where the user is looking.
+    registry.onExecuted = (String id, CommandOutcome outcome) {
+      if (!outcome.ok) model.refresh(outcome.error);
+    };
+    model.addDocument(
       DocumentSession(
         document: widget.initialDoc ?? buildSampleDocument(),
-        name: widget.initialName ?? 'Untitled 1',
+        name: widget.initialName ?? model.nextUntitledName(),
       ),
     );
     // "Follow the system" needs to know what the system is; asked once at
     // start, and again whenever the user picks that mode.
     unawaited(SystemInfo.isDarkMode().then((bool? dark) {
       if (!mounted) return;
-      model.systemDark = dark;
+      ui.systemDark = dark;
       model.refresh();
     }).catchError((Object _) {}));
   }
 
   // -------------------------------------------------------------------------
-  // Services the command catalog calls into
+  // EditorHost: what the commands need a person or the window for
   // -------------------------------------------------------------------------
-
-  late final EditorServices _services = EditorServices(
-    newDocument: () {
-      _untitledCounter++;
-      model.addDocument(
-        DocumentSession(
-          document: VectorDocument(docUnits: model.units),
-          name: 'Untitled $_untitledCounter',
-        ),
-      );
-    },
-    openDocument: _open,
-    saveDocument: _save,
-    saveDocumentAs: () => _saveAs('svg'),
-    exportDocument: _saveAs,
-    printDocument: () => _saveAs('pdf'),
-    closeDocument: () => _closeDocument(model.activeIndex),
-    zoomIn: () => model.zoomBy(ZoomMetrics.step, _viewport),
-    zoomOut: () => model.zoomBy(1 / ZoomMetrics.step, _viewport),
-    zoomActual: () => model.zoomAbout(1.0, _viewport),
-    zoomToPage: () => model.zoomToRect(model.active.page.rect, _viewport),
-    zoomToSelection: () =>
-        model.zoomToRect(model.selection.selectionBounds, _viewport),
-    showPanel: model.showPanelTab,
-    quit: () => unawaited(_quit()),
-  );
 
   /// The file types this editor can read, in the order the dialog lists them.
   static const List<FilePickerFilter> _readableFilters = <FilePickerFilter>[
@@ -136,15 +130,8 @@ class MainWindowState extends State<MainWindow> {
         const FilePickerFilter(label: 'All files', extensions: <String>['*']),
       ];
 
-  /// Opens a drawing through the operating system's own file dialog.
-  ///
-  /// This used to scan the working directory and open the first `.svg` it
-  /// found, on the conclusion that the framework had no file picker. It has
-  /// one - `FilePicker.openFile`, `GetOpenFileNameW` on Windows, `NSOpenPanel`
-  /// on macOS, zenity/kdialog/yad on Linux - and this is it.
-  void _open() {
-    unawaited(_openAsync());
-  }
+  @override
+  void pickAndOpen() => unawaited(_openAsync());
 
   Future<void> _openAsync() async {
     final PickedFile? picked;
@@ -161,53 +148,19 @@ class MainWindowState extends State<MainWindow> {
       model.refresh('Open cancelled');
       return;
     }
-    final String name = picked.name;
     try {
-      final VectorDocument document;
-      if (name.toLowerCase().endsWith('.cdr')) {
-        document = CdrDocument.fromBytes(picked.bytes).toVectorDocument();
-      } else {
-        // utf8, not String.fromCharCodes: an SVG is a text file and its
-        // <title> or a text element may hold anything, and reading it a byte
-        // per character mangles every accented letter in it.
-        document = VectorSvgCodec.importFromSvg(
-          utf8.decode(picked.bytes, allowMalformed: true),
-        );
-      }
       model.addDocument(DocumentSession(
-        document: document,
-        name: name,
+        document: readDrawing(picked.name, picked.bytes),
+        name: picked.name,
         filePath: picked.path,
       ));
     } on Object catch (error) {
-      model.refresh('Could not read $name: $error');
+      model.refresh('Could not read ${picked.name}: $error');
     }
   }
 
-  /// Save: writes over the file this document came from, or asks for one.
-  ///
-  /// Only an SVG is written over. A drawing opened from a `.cdr` is saved as
-  /// SVG under a new name: the CDR writer produces a minimal CDR6 that keeps
-  /// neither colours nor text, and writing it over the original would destroy
-  /// the user's file.
-  void _save() {
-    if (!model.hasDocument) return;
-    final String? existing = model.active.filePath;
-    if (existing == null || _formatOf(existing) != 'svg') {
-      if (existing != null) {
-        model.refresh('${_basename(existing)} is not SVG - choose where to '
-            'save the drawing as SVG');
-      }
-      _saveAs('svg');
-      return;
-    }
-    _writeTo(model.active, existing, 'svg');
-  }
-
-  /// Save As / Export: always asks, then writes.
-  void _saveAs(String format) {
-    unawaited(_saveAsAsync(format));
-  }
+  @override
+  void pickAndSave(String format) => unawaited(_saveAsAsync(format));
 
   Future<void> _saveAsAsync(String format) async {
     if (!model.hasDocument) return;
@@ -238,51 +191,68 @@ class MainWindowState extends State<MainWindow> {
     // The tab that asked, even if another one became current while the
     // dialog was open.
     if (!model.documents.contains(session)) return;
-    _writeTo(session, target, format);
-  }
-
-  static String _formatOf(String path) {
-    final int dot = path.lastIndexOf('.');
-    if (dot < 0) return 'svg';
-    return path.substring(dot + 1).toLowerCase();
-  }
-
-  void _writeTo(DocumentSession session, String target, String format) {
     try {
-      switch (format) {
-        case 'svg':
-          File(target)
-              .writeAsStringSync(VectorSvgCodec.exportToSvg(session.document));
-        case 'pdf':
-          File(target).writeAsBytesSync(
-            VectorPdfExporter.exportToPdf(session.document),
-          );
-        case 'cdr':
-          File(target).writeAsBytesSync(
-            CdrTranslator.toCdrBytes(session.document),
-          );
-        default:
-          model.refresh('Unknown export format $format');
-          return;
-      }
-      // Only the format the editor saves in counts as "this document now
-      // lives here"; exporting a PDF or a CDR does not make that the document.
-      if (format == 'svg') {
-        session
-          ..filePath = target
-          ..name = _basename(target)
-          ..modified = false;
-      }
+      writeDrawing(session, target, format);
       model.refresh('Wrote $target');
     } on Object catch (error) {
       model.refresh('Export failed: $error');
     }
   }
 
-  static String _basename(String path) {
-    final slash = path.lastIndexOf(RegExp(r'[\\/]'));
-    return slash < 0 ? path : path.substring(slash + 1);
+  @override
+  void closeDocument(int index) => unawaited(_closeDocument(index));
+
+  /// Closes tab [index], asking first when it has unsaved changes.
+  Future<void> _closeDocument(int index) async {
+    if (index < 0 || index >= model.documents.length) return;
+    final DocumentSession session = model.documents[index];
+    if (session.modified &&
+        !await _confirmDiscard(<DocumentSession>[session])) {
+      return;
+    }
+    final int now = model.documents.indexOf(session);
+    if (now >= 0) model.closeDocument(now);
   }
+
+  @override
+  void quit() => unawaited(_quit());
+
+  /// Exit: the same as the window's close button, after the same question.
+  Future<void> _quit() async {
+    final List<DocumentSession> unsaved =
+        model.documents.where((d) => d.modified).toList();
+    if (unsaved.isNotEmpty && !await _confirmDiscard(unsaved)) return;
+    if (!mounted) return;
+    final WindowController? window = WindowScope.of(context);
+    if (window == null) {
+      model.refresh('Close the window to exit');
+      return;
+    }
+    window.close();
+  }
+
+  /// Whether the user agrees to lose the changes in [sessions].
+  Future<bool> _confirmDiscard(List<DocumentSession> sessions) async {
+    final String names = sessions.map((s) => s.name).join(', ');
+    try {
+      return await NativeMessageBox.show(
+        title: 'Unsaved changes',
+        message: sessions.length == 1
+            ? '$names has changes that have not been saved. Close it and '
+                'discard them?'
+            : '$names have changes that have not been saved. Discard them?',
+        kind: MessageBoxKind.confirm,
+      );
+    } on MessageBoxException {
+      // No dialog on this machine: keep the work rather than guess.
+      model.refresh('Save $names first - no dialog to confirm with');
+      return false;
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // The view
+  // -------------------------------------------------------------------------
 
   /// Learns the canvas box, and fits the page into it the first time.
   ///
@@ -323,49 +293,28 @@ class MainWindowState extends State<MainWindow> {
     return true;
   }
 
-  /// Closes tab [index], asking first when it has unsaved changes.
-  Future<void> _closeDocument(int index) async {
-    if (index < 0 || index >= model.documents.length) return;
-    final DocumentSession session = model.documents[index];
-    if (session.modified &&
-        !await _confirmDiscard(<DocumentSession>[session])) {
-      return;
+  /// The window's keyboard: every command's shortcut, plus the arrow keys,
+  /// which nudge the selection - Shift for ten times, the command key for a
+  /// tenth.
+  Map<KeyGesture, void Function()?> _keyBindings() {
+    final Map<KeyGesture, void Function()?> bindings = registry.keyBindings();
+    if (!model.hasSelection) return bindings;
+    for (final (int key, int dx, int dy) in <(int, int, int)>[
+      (logicalKeyArrowLeft, -1, 0),
+      (logicalKeyArrowRight, 1, 0),
+      (logicalKeyArrowUp, 0, -1),
+      (logicalKeyArrowDown, 0, 1),
+    ]) {
+      for (final (KeyGesture gesture, String step) in <(KeyGesture, String)>[
+        (KeyGesture(key), 'normal'),
+        (KeyGesture(key, shift: true), 'big'),
+        (KeyGesture(key, command: true), 'small'),
+      ]) {
+        bindings[gesture] = () => registry.execute('object.nudge',
+            <String, Object?>{'dx': dx, 'dy': dy, 'step': step});
+      }
     }
-    final int now = model.documents.indexOf(session);
-    if (now >= 0) model.closeDocument(now);
-  }
-
-  /// Exit: the same as the window's close button, after the same question.
-  Future<void> _quit() async {
-    final List<DocumentSession> unsaved =
-        model.documents.where((d) => d.modified).toList();
-    if (unsaved.isNotEmpty && !await _confirmDiscard(unsaved)) return;
-    if (!mounted) return;
-    final WindowController? window = WindowScope.of(context);
-    if (window == null) {
-      model.refresh('Close the window to exit');
-      return;
-    }
-    window.close();
-  }
-
-  /// Whether the user agrees to lose the changes in [sessions].
-  Future<bool> _confirmDiscard(List<DocumentSession> sessions) async {
-    final String names = sessions.map((s) => s.name).join(', ');
-    try {
-      return await NativeMessageBox.show(
-        title: 'Unsaved changes',
-        message: sessions.length == 1
-            ? '$names has changes that have not been saved. Close it and '
-                'discard them?'
-            : '$names have changes that have not been saved. Discard them?',
-        kind: MessageBoxKind.confirm,
-      );
-    } on MessageBoxException {
-      // No dialog on this machine: keep the work rather than guess.
-      model.refresh('Save $names first - no dialog to confirm with');
-      return false;
-    }
+    return bindings;
   }
 
   // -------------------------------------------------------------------------
@@ -374,51 +323,12 @@ class MainWindowState extends State<MainWindow> {
   Widget build(BuildContext context) {
     // A tab opened or switched to since the last frame is fitted once.
     _fitPending();
-    final theme = model.theme;
-    final catalog = CommandCatalog(model: model, services: _services);
-    model.nativeMenuAvailable = PlatformMenuBar.hasNativeMenuBar(context);
-    final contextMenus = model.contextMenus = EditorContextMenus(catalog);
-    final menus = catalog.menus;
-
-    // ComboBoxScope has to sit above everything that hosts a combo box, for
-    // the same reason the menu overlay does: a drop-down painted inside its
-    // field would be under every widget that follows it.
-    void selectTool(ToolMode tool) {
-      model.tool = tool;
-      model.refresh('Tool: ${tool.name}');
-    }
-
-    // One table for the keyboard: the menus' chords (Cmd on a Mac, Ctrl
-    // elsewhere) and the tool box's single keys.
-    final Map<KeyGesture, void Function()?> bindings =
-        <KeyGesture, void Function()?>{
-      for (final ToolEntry? tool in kToolEntries)
-        if (tool?.shortcut != null)
-          tool!.shortcut!: () => selectTool(tool.mode),
-    };
-    // Arrow keys nudge the selection; Shift for ten times, the command key
-    // for a tenth.
-    if (model.hasSelection) {
-      for (final (int key, int dx, int dy) in <(int, int, int)>[
-        (logicalKeyArrowLeft, -1, 0),
-        (logicalKeyArrowRight, 1, 0),
-        (logicalKeyArrowUp, 0, -1),
-        (logicalKeyArrowDown, 0, 1),
-      ]) {
-        bindings[KeyGesture(key)] = () => model.nudge(dx, dy);
-        bindings[KeyGesture(key, shift: true)] =
-            () => model.nudge(dx, dy, big: true);
-        bindings[KeyGesture(key, command: true)] =
-            () => model.nudge(dx, dy, small: true);
-      }
-    }
-    catalog.keyBindings(menus).forEach((KeyGesture gesture, run) {
-      if (bindings[gesture] == null) bindings[gesture] = run;
-    });
+    final theme = ui.theme;
+    ui.nativeMenuAvailable = PlatformMenuBar.hasNativeMenuBar(context);
 
     // The document area - its tabs and the canvas - is the fixed middle of
     // the docking layout; the panels arrange themselves around it.
-    model.workspace.refresh(
+    ui.workspace.refresh(
       model,
       Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -426,10 +336,11 @@ class MainWindowState extends State<MainWindow> {
           DocumentTabs(
             documents: model.documents,
             activeIndex: model.activeIndex,
-            onSelected: model.selectDocument,
-            onClosed: (int index) => unawaited(_closeDocument(index)),
-            contextMenu: () =>
-                PlatformMenuBar.menuWidgets(contextMenus.documentTab()),
+            onSelected: (int index) => registry
+                .execute('document.select', <String, Object?>{'index': index}),
+            onClosed: (int index) => registry
+                .execute('file.close', <String, Object?>{'index': index}),
+            contextMenu: () => menus.widgets(menus.documentTab),
           ),
           Expanded(
             child: CanvasArea(
@@ -441,90 +352,98 @@ class MainWindowState extends State<MainWindow> {
       ),
     );
 
-    return Theme(
-      data: theme,
-      child: CallbackShortcuts(
-        bindings: bindings,
-        child: ComboBoxScope(
-          child: ColoredBox(
-            color: theme.surface,
-            child: Stack(
-              children: <Widget>[
-                Positioned.fill(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: <Widget>[
-                      EditorMenuBar(
-                        menus: menus,
-                        controllers: model.menuControllers,
-                        native: model.nativeMenuBar,
-                      ),
-                      StandardToolbar(commands: catalog.standardToolbar),
-                      ContextPanel(model: model),
-                      Expanded(
-                        child: Row(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          children: <Widget>[
-                            Toolbox(
-                              activeTool: model.tool,
-                              fill: model.shownFill,
-                              stroke: model.shownStroke,
-                              onToolSelected: selectTool,
-                              // Double-clicking the pick tool selects everything,
-                              // which is what CorelDRAW and sK1 both do. Only the
-                              // pick tool: a second click on "create rectangle"
-                              // means nothing, and making it mean Select All would
-                              // be a surprise rather than a shortcut.
-                              onToolDoubleTapped: (ToolMode tool) {
-                                if (tool != ToolMode.select) return;
-                                model.selectAll();
-                              },
-                            ),
-                            Expanded(
-                              child: Docking(
-                                layout: model.workspace.layout,
-                                maximizableItem: false,
-                                maximizableTab: false,
-                                onItemFloat: (DockingItem item, Offset at) =>
-                                    unawaited(model.workspace
-                                        .float(
-                                          item,
-                                          at: at,
-                                          window: WindowScope.of(context),
-                                          theme: model.theme,
-                                          model: model,
-                                        )
-                                        .then((_) => model.refresh(
-                                            '${item.name} in its own window'))),
-                                onItemClose: (DockingItem item) =>
-                                    model.refresh('${item.name} closed - '
-                                        'Window menu brings it back'),
-                              ),
-                            ),
-                          ],
+    return EditorScope(
+      ui: ui,
+      registry: registry,
+      menus: menus,
+      child: Theme(
+        data: theme,
+        child: CallbackShortcuts(
+          bindings: _keyBindings(),
+          // ComboBoxScope has to sit above everything that hosts a combo box:
+          // a drop-down painted inside its field would be under every widget
+          // that follows it.
+          child: ComboBoxScope(
+            child: ColoredBox(
+              color: theme.surface,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: <Widget>[
+                  EditorMenuBar(
+                    menus: menus.barMenus(),
+                    native: ui.nativeMenuBar,
+                  ),
+                  StandardToolbar(
+                    registry: registry,
+                    items: EditorMenus.standardToolbar,
+                  ),
+                  ContextPanel(model: model),
+                  Expanded(
+                    child: Row(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: <Widget>[
+                        Toolbox(
+                          activeTool: model.tool,
+                          fill: model.shownFill,
+                          stroke: model.shownStroke,
+                          onToolSelected: (ToolMode tool) =>
+                              registry.execute(toolCommandOf(tool)),
+                          // Double-clicking the pick tool selects everything,
+                          // which is what CorelDRAW and sK1 both do. Only the
+                          // pick tool: a second click on "create rectangle"
+                          // means nothing.
+                          onToolDoubleTapped: (ToolMode tool) {
+                            if (tool != ToolMode.select) return;
+                            registry.execute('edit.selectAll');
+                          },
                         ),
-                      ),
-                      ColorPaletteBar(
-                        swatchSize: ChromeMetrics.of(theme).paletteSwatchSize,
-                        height: ChromeMetrics.of(theme).paletteHeight,
-                        // Which cell the selection is already wearing, so the
-                        // palette answers "what colour is this?" as well as
-                        // "make it that colour".
-                        selectedFill: model.shownFill.isNone
-                            ? null
-                            : model.shownFill.color,
-                        selectedStroke: model.shownStroke.isNone ||
-                                model.shownStroke.width <= 0
+                        Expanded(
+                          child: Docking(
+                            layout: ui.workspace.layout,
+                            maximizableItem: false,
+                            maximizableTab: false,
+                            onItemFloat: (DockingItem item, Offset at) =>
+                                unawaited(ui.workspace
+                                    .float(
+                                      item,
+                                      at: at,
+                                      window: WindowScope.of(context),
+                                      ui: ui,
+                                      registry: registry,
+                                      menus: menus,
+                                    )
+                                    .then((_) => model.refresh(
+                                        '${item.name} in its own window'))),
+                            onItemClose: (DockingItem item) =>
+                                model.refresh('${item.name} closed - '
+                                    'Window menu brings it back'),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  ColorPaletteBar(
+                    swatchSize: ChromeMetrics.of(theme).paletteSwatchSize,
+                    height: ChromeMetrics.of(theme).paletteHeight,
+                    // Which cell the selection is already wearing, so the
+                    // palette answers "what colour is this?" as well as
+                    // "make it that colour".
+                    selectedFill:
+                        model.shownFill.isNone ? null : model.shownFill.color,
+                    selectedStroke:
+                        model.shownStroke.isNone || model.shownStroke.width <= 0
                             ? null
                             : model.shownStroke.color,
-                        onColorSelected: model.setFill,
-                        onStrokeColorSelected: model.setStroke,
-                      ),
-                      EditorStatusBar(model: model),
-                    ],
+                    onColorSelected: (Color? color) => registry.execute(
+                        'object.fill',
+                        <String, Object?>{'color': hexOf(color)}),
+                    onStrokeColorSelected: (Color? color) => registry.execute(
+                        'object.outline',
+                        <String, Object?>{'color': hexOf(color)}),
                   ),
-                ),
-              ],
+                  EditorStatusBar(model: model),
+                ],
+              ),
             ),
           ),
         ),
@@ -532,6 +451,10 @@ class MainWindowState extends State<MainWindow> {
     );
   }
 }
+
+/// [color] as the `#aarrggbb` a command takes, or null for none.
+String? hexOf(Color? color) =>
+    color == null ? null : '#${color.value.toRadixString(16).padLeft(8, '0')}';
 
 /// The document a fresh editor opens with.
 ///
