@@ -99,7 +99,7 @@ final class MacosWindow
     required void Function(BackendDiagnostic diagnostic) onDiagnostic,
     required void Function(MacosWindow window) onClosed,
     bool globalSurfaces = false,
-    int slotCount = 2,
+    int slotCount = 3,
     MacosHostStarter? hostStarter,
     MacosSurfacePoolAttacher? poolAttacher,
   })  : _id = id,
@@ -1116,7 +1116,9 @@ MacosSurfacePool createIOSurfacePool({
   required int pixelWidth,
   required int pixelHeight,
   required bool global,
-  int slotCount = 2,
+  // Three, so a slot the window server is still compositing never has to
+  // be written - see MacosSurfacePool._nextWritable.
+  int slotCount = 3,
 }) {
   final surfaces = <MacosPoolSurface>[];
   try {

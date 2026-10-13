@@ -86,6 +86,8 @@ final _ioSurfaceLock = _ioSurfaceLib.lookupFunction<
 final _ioSurfaceUnlock = _ioSurfaceLib.lookupFunction<
     Int32 Function(_VoidPtr, Uint32, Pointer<Uint32>),
     int Function(_VoidPtr, int, Pointer<Uint32>)>('IOSurfaceUnlock');
+final _ioSurfaceIsInUse = _ioSurfaceLib.lookupFunction<Uint8 Function(_VoidPtr),
+    int Function(_VoidPtr)>('IOSurfaceIsInUse');
 final _ioSurfaceGetBaseAddress = _ioSurfaceLib.lookupFunction<
     _VoidPtr Function(_VoidPtr),
     _VoidPtr Function(_VoidPtr)>('IOSurfaceGetBaseAddress');
@@ -195,6 +197,15 @@ final class MacosIOSurface implements MacosPoolSurface {
   /// [dispose] is still what releases it. Metal retains what it wraps for as
   /// long as the texture lives, which is why the texture must be released
   /// before the pool is torn down and not after.
+  /// Whether the window server - or anything else - still holds this
+  /// surface: it is on screen, or a composition of it is in flight. A
+  /// surface in use must not be written, or that composition shows a half
+  /// drawn - often freshly cleared, white - frame.
+  bool get isInUse {
+    final Pointer<Void> ref = surfaceRef;
+    return ref != nullptr && _ioSurfaceIsInUse(ref) != 0;
+  }
+
   Pointer<Void> get surfaceRef {
     _checkAlive();
     return _surface;

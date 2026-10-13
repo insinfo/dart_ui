@@ -381,8 +381,29 @@ final class MacosSurfacePool {
     final sequence = ++_frameCounter;
     _contentSequence[slot] = sequence;
     _presentedSlot = slot;
-    _backSlot = (slot + 1) % _surfaces.length;
+    _backSlot = _nextWritable(slot);
     return sequence;
+  }
+
+  /// The slot after [presented] that nothing is reading.
+  ///
+  /// "Sent" is not "shown": the host swaps `layer.contents` only when it
+  /// reads the present off its pipe, and the window server goes on
+  /// compositing the old surface until its next frame. Writing a surface in
+  /// that window flashes a half-drawn - freshly cleared, white - frame on
+  /// screen, which is what moving the mouse over the window (a frame per
+  /// move) made visible. So a slot the window server still holds is
+  /// skipped; with three slots there is always one free, and with every one
+  /// busy the round-robin choice stands rather than stalling the frame.
+  int _nextWritable(int presented) {
+    final int count = _surfaces.length;
+    for (int step = 1; step < count; step++) {
+      final int candidate = (presented + step) % count;
+      final MacosPoolSurface surface = _surfaces[candidate];
+      if (surface is MacosIOSurface && surface.isInUse) continue;
+      return candidate;
+    }
+    return (presented + 1) % count;
   }
 
   /// Forgets which slot was presented, without touching the pixels.
