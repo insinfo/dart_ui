@@ -16,7 +16,7 @@ Cobertura = (feitas + metade das parciais) / total.
 
 Menus do editor: 90 de 105 linhas têm comando registrado; as outras aparecem desabilitadas.
 
-Comandos registrados: 128.
+Comandos registrados: 129.
 
 ## Por área
 
@@ -97,7 +97,7 @@ Comandos registrados: 128.
 | ❌ | Mesh fill | P2 |  | tudo |
 | ❌ | Smart fill | P2 |  | tudo |
 | 🟡 | Outline pen (F12) | P0 | `panel.fillStroke`, `object.outline`, `object.outlineWidth`, `object.outlineStyle` | no calligraphic pen |
-| 🟡 | Fill (F11) | P0 | `panel.fillStroke`, `object.fill` | uniform colour; no fountain, pattern or texture fills |
+| 🟡 | Fill (F11) | P0 | `panel.fillStroke`, `object.fill`, `object.fountainFill` | uniform and fountain (linear, radial); no pattern or texture fills |
 
 ### Interações no canvas
 

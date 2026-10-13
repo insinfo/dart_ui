@@ -122,8 +122,13 @@ const List<ParityFeature> kParityCatalog = <ParityFeature>[
       ],
       partial: 'no calligraphic pen'),
   ParityFeature(_tools, 'Fill (F11)', 'P0',
-      commands: <String>['panel.fillStroke', 'object.fill'],
-      partial: 'uniform colour; no fountain, pattern or texture fills'),
+      commands: <String>[
+        'panel.fillStroke',
+        'object.fill',
+        'object.fountainFill',
+      ],
+      partial: 'uniform and fountain (linear, radial); no pattern or '
+          'texture fills'),
 
   // --- canvas -----------------------------------------------------------------
   ParityFeature(_canvas, 'Click selects', 'P0',

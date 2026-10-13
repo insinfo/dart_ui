@@ -176,6 +176,50 @@ List<CommandSpec> objectCommands(EditorContext context) {
           model.setFill(parseColor(args['color']), live: args.flag('live')),
     ),
     CommandSpec(
+      id: 'object.fountainFill',
+      label: 'Fountain fill',
+      description: 'A gradient fill from one colour to another: linear '
+          'along an angle, or radial from the centre out.',
+      params: const <CommandParam>[
+        CommandParam('type', CommandParamType.string,
+            required: true, description: 'linear or radial'),
+        CommandParam('from', CommandParamType.string, required: true),
+        CommandParam('to', CommandParamType.string, required: true),
+        CommandParam('angle', CommandParamType.number,
+            description: 'degrees, for a linear fill; 0 runs left to right'),
+        _live,
+      ],
+      when: context.needsDocument,
+      checked: (CommandArgs args) {
+        final List<SelectableObject> picked = model.hasDocument
+            ? model.selection.selectedObjects.toList()
+            : const <SelectableObject>[];
+        final FillType wanted = args['type'] == 'radial'
+            ? FillType.radialGradient
+            : FillType.linearGradient;
+        return picked.isNotEmpty &&
+            picked
+                .every((SelectableObject o) => o.style.fill.fillType == wanted);
+      },
+      run: (CommandArgs args) {
+        final String type =
+            oneOf(args, 'type', const <String>['linear', 'radial']);
+        final Color? from = parseColor(args['from']);
+        final Color? to = parseColor(args['to']);
+        if (from == null || to == null) {
+          throw const CommandError('`from` and `to` are colours');
+        }
+        model.setFountainFill(
+          radial: type == 'radial',
+          from: from,
+          to: to,
+          angle: args.has('angle') ? args.number('angle') : 0,
+          live: args.flag('live'),
+        );
+        return null;
+      },
+    ),
+    CommandSpec(
       id: 'object.outline',
       label: 'Outline colour',
       params: const <CommandParam>[_color, _live],

@@ -174,6 +174,24 @@ Future<void> main(List<String> args) async {
         ..execute('text.align', <String, Object?>{'align': align});
     }
     state.registry.execute('text.bold', <String, Object?>{'on': true});
+  } else if (scenario == 'fountain') {
+    // A linear fountain on the rectangle, a radial one on the ellipse; the
+    // Properties panel on the ellipse shows both colours.
+    state.model.selection.select(objectOfType((o) => o is VectorRectangle));
+    state.registry.execute('object.fountainFill', <String, Object?>{
+      'type': 'linear',
+      'from': '#1E88E5',
+      'to': '#FFEB3B',
+      'angle': 30,
+    });
+    state.model.selection.select(objectOfType((o) => o is VectorCircle));
+    state.registry
+      ..execute('object.fountainFill', <String, Object?>{
+        'type': 'radial',
+        'from': '#FFFFFF',
+        'to': '#E53935',
+      })
+      ..execute('panel.properties');
   } else if (scenario == 'find') {
     // Edit > Find and Replace, the editor's first dialog.
     state.registry.execute('edit.findReplace');

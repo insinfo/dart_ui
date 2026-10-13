@@ -329,4 +329,34 @@ void main() {
     expect(registry.execute('text.bold').result, isFalse,
         reason: 'toggled back off');
   });
+
+  test('a fountain fill, linear along an angle or radial, in one undo', () {
+    registry.execute('shape.rectangle',
+        <String, Object?>{'x': 0, 'y': 0, 'width': 10, 'height': 10});
+    final SelectableObject rect = objects().single;
+    registry.execute('object.fountainFill', <String, Object?>{
+      'type': 'linear',
+      'from': '#FF0000',
+      'to': '#0000FF',
+      'angle': 90,
+    });
+    final FillDescriptor fill = rect.style.fill;
+    expect(fill.fillType, FillType.linearGradient);
+    expect(fill.gradientStops.first.color, const Color(0xFFFF0000));
+    expect(fill.gradientStops.last.color, const Color(0xFF0000FF));
+    expect(fill.gradientStart.dx, closeTo(0.5, 1e-9), reason: '90 degrees');
+    expect(fill.gradientEnd.dy, closeTo(1, 1e-9), reason: 'runs downward');
+    expect(
+        registry['object.fountainFill']!.isCheckedWith(
+            const CommandArgs(<String, Object?>{'type': 'linear'})),
+        isTrue);
+    registry.execute('object.fountainFill', <String, Object?>{
+      'type': 'radial',
+      'from': '#FFFFFF',
+      'to': '#000000',
+    });
+    expect(rect.style.fill.fillType, FillType.radialGradient);
+    model.undo();
+    expect(rect.style.fill.fillType, FillType.linearGradient);
+  });
 }

@@ -5,6 +5,8 @@
 /// Keeping it in one object rather than in the widgets is what lets them agree.
 library;
 
+import 'dart:math' as math;
+
 import 'package:dart_ui/commands.dart';
 import 'package:dart_ui/vector.dart';
 
@@ -356,6 +358,41 @@ class EditorModel {
                 : FillDescriptor.solid(color)
                     .copyWith(fillRule: style.fill.fillRule)),
         live: live ? 'fill' : null);
+  }
+
+  /// A fountain fill, CorelDRAW's: [from] to [to], linear along [angle]
+  /// degrees or radial from the centre out, laid over each object's own box
+  /// so it turns and stretches with it.
+  void setFountainFill({
+    required bool radial,
+    required Color from,
+    required Color to,
+    double angle = 0,
+    bool live = false,
+  }) {
+    final double rad = angle * math.pi / 180;
+    final Offset half = Offset(math.cos(rad), math.sin(rad)) * 0.5;
+    FillDescriptor fountain(FillRule rule) => FillDescriptor(
+          fillType: radial ? FillType.radialGradient : FillType.linearGradient,
+          fillRule: rule,
+          color: from,
+          gradientStops: <GradientColorStop>[
+            GradientColorStop(0, from),
+            GradientColorStop(1, to),
+          ],
+          gradientStart: const Offset(0.5, 0.5) - half,
+          gradientEnd: const Offset(0.5, 0.5) + half,
+          gradientCenter: const Offset(0.5, 0.5),
+          gradientRadius: 0.5,
+        );
+    currentFill = fountain(FillRule.evenOdd);
+    if (!hasSelection) {
+      refresh('New objects will use this fountain fill');
+      return;
+    }
+    applyToSelection(
+        (style) => style.copyWith(fill: fountain(style.fill.fillRule)),
+        live: live ? 'fountain' : null);
   }
 
   void setStroke(Color? color, {bool live = false}) {

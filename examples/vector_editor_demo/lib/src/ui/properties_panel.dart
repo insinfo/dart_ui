@@ -6,6 +6,8 @@
 /// script would make, and a control that cannot apply says why.
 library;
 
+import 'dart:math' as math;
+
 import 'package:dart_ui/dart_ui.dart';
 
 import '../engine/editor_model.dart';
@@ -99,23 +101,87 @@ class PropertiesPanel extends StatelessWidget {
   // --- fill -------------------------------------------------------------------
 
   Widget _fillSection(VectorStyle style, SelectableObject target) {
-    final bool none = style.fill.fillType == FillType.none;
+    final FillDescriptor fill = style.fill;
+    final bool none = fill.fillType == FillType.none;
+    final bool fountain = fill.fillType == FillType.linearGradient ||
+        fill.fillType == FillType.radialGradient;
+    final Color from = fill.gradientStops.isNotEmpty
+        ? fill.gradientStops.first.color
+        : fill.color;
+    final Color to = fill.gradientStops.length > 1
+        ? fill.gradientStops.last.color
+        : const Color(0xFFFFFFFF);
+    final String type =
+        fill.fillType == FillType.radialGradient ? 'radial' : 'linear';
+    final double angle = fill.fillType == FillType.linearGradient
+        ? math.atan2(fill.gradientEnd.dy - fill.gradientStart.dy,
+                fill.gradientEnd.dx - fill.gradientStart.dx) *
+            180 /
+            math.pi
+        : 0;
+    void fountainWith({Color? start, Color? end, String? kind}) =>
+        _run('object.fountainFill', <String, Object?>{
+          'type': kind ?? type,
+          'from': '#${colorToHex(start ?? from)}',
+          'to': '#${colorToHex(end ?? to)}',
+          'angle': angle,
+          if (kind == null) 'live': true,
+        });
     return PanelSection(
       caption: 'Fill',
       children: <Widget>[
+        // The colour of a uniform fill, or where a fountain starts.
         ColorPicker(
-          value: style.fill.color,
+          value: fountain ? from : fill.color,
           planeSize: 150,
-          onChanged: (Color color) => _run('object.fill', <String, Object?>{
-            'color': '#${colorToHex(color)}',
-            'live': true,
-          }),
+          onChanged: (Color color) => fountain
+              ? fountainWith(start: color)
+              : _run('object.fill', <String, Object?>{
+                  'color': '#${colorToHex(color)}',
+                  'live': true,
+                }),
         ),
+        if (fountain) ...<Widget>[
+          const SizedBox(height: Spacing.xs),
+          const Text('To'),
+          ColorPicker(
+            value: to,
+            planeSize: 150,
+            onChanged: (Color color) => fountainWith(end: color),
+          ),
+        ],
         const SizedBox(height: Spacing.xs),
         Wrap(
           spacing: Spacing.xs,
           runSpacing: Spacing.xs,
           children: <Widget>[
+            CommandChip(
+              registry: registry,
+              command: 'object.fill',
+              label: 'Uniform',
+              params: <String, Object?>{'color': '#${colorToHex(from)}'},
+            ),
+            CommandChip(
+              registry: registry,
+              command: 'object.fountainFill',
+              label: 'Linear',
+              params: <String, Object?>{
+                'type': 'linear',
+                'from': '#${colorToHex(from)}',
+                'to': '#${colorToHex(to)}',
+                'angle': angle,
+              },
+            ),
+            CommandChip(
+              registry: registry,
+              command: 'object.fountainFill',
+              label: 'Radial',
+              params: <String, Object?>{
+                'type': 'radial',
+                'from': '#${colorToHex(from)}',
+                'to': '#${colorToHex(to)}',
+              },
+            ),
             CommandChip(
               registry: registry,
               command: 'object.fill',
