@@ -41,6 +41,7 @@ import 'focus.dart';
 import 'focus_scope.dart';
 import 'keyboard_router.dart';
 import 'menu.dart';
+import 'pointer_router.dart' show MouseCursorTarget;
 import 'text_editing.dart';
 import 'theme.dart';
 import 'widget.dart';
@@ -959,7 +960,7 @@ final class _TextFieldRenderWidget extends RenderObjectWidget {
 
 final class RenderTextField extends RenderBox
     with ControlBehavior
-    implements TextInputTarget, TextInputClient {
+    implements TextInputTarget, TextInputClient, MouseCursorTarget {
   RenderTextField({
     required TextEditingController controller,
     required String label,
@@ -1194,6 +1195,11 @@ final class RenderTextField extends RenderBox
       return null;
     }
   }
+
+  /// The I-beam every platform shows over editable text.
+  @override
+  SystemCursor? cursorFor(PointerEvent event) =>
+      enabled ? SystemCursor.text : null;
 
   @override
   void performLayout() => size = constraints.constrain(

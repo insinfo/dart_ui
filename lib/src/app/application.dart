@@ -2988,7 +2988,10 @@ final class Application with DisposableMixin {
         // action, and marking any *other* window would be the cross-window
         // relayout this design exists to prevent.
         onBuildScheduled: () => appWindow._requestFrameFromTree(),
-      );
+      )
+        // The shape widgets ask for (MouseRegion, a canvas over a handle)
+        // goes straight to the platform pointer of this window.
+        ..onCursorChanged = native.setCursor;
       bag.add(buildOwner, () {
         _teardownOrder.add('buildOwner');
         buildOwner.dispose();

@@ -6,6 +6,7 @@ import '../gestures/binding.dart';
 import '../gestures/pointer_signal_resolver.dart';
 import '../layout/render_box.dart';
 import '../platform/input_events.dart';
+import '../platform/native_window.dart' show SystemCursor;
 
 /// A render node that consumes pointer events after hit testing.
 ///
@@ -31,6 +32,17 @@ abstract interface class PointerEventBarrier implements PointerEventTarget {}
 /// The router diffs the old and new hit paths and reports both transitions.
 abstract interface class HoverEventTarget {
   void handleHoverChanged(bool hovered);
+}
+
+/// A render node that decides the pointer's shape while it is over it.
+///
+/// The router asks the hit path deepest-first on every move and uses the
+/// first non-null answer, so a text field inside a canvas shows an I-beam
+/// and the canvas around it its own cursor. [event] carries the position, for
+/// a node whose cursor depends on where in it the pointer is - a resize
+/// arrow over a handle, a cross over empty canvas.
+abstract interface class MouseCursorTarget {
+  SystemCursor? cursorFor(PointerEvent event);
 }
 
 /// Connects backend [PointerEvent]s to the render nodes under their position.
@@ -150,6 +162,7 @@ final class PointerRouter {
 
     if (event is PointerMoveEvent) {
       _updateHoverPath(event.pointerId);
+      _updateCursor(event);
     }
 
     if (event is PointerDownEvent) {
@@ -230,6 +243,31 @@ final class PointerRouter {
         if (target is PointerEventBarrier) break;
       }
     }
+  }
+
+  /// Receives the pointer shape whenever it changes - the window's
+  /// `setCursor`, installed by the application.
+  void Function(SystemCursor cursor)? onCursorChanged;
+
+  SystemCursor _cursor = SystemCursor.arrow;
+
+  /// The shape the pointer currently has.
+  SystemCursor get cursor => _cursor;
+
+  void _updateCursor(PointerEvent event) {
+    var next = SystemCursor.arrow;
+    for (int i = 0; i < _path.length; i++) {
+      if (_path[i] case final MouseCursorTarget target) {
+        final SystemCursor? wanted = target.cursorFor(event);
+        if (wanted != null) {
+          next = wanted;
+          break;
+        }
+      }
+    }
+    if (next == _cursor) return;
+    _cursor = next;
+    onCursorChanged?.call(next);
   }
 
   void _updateHoverPath(int pointerId) {

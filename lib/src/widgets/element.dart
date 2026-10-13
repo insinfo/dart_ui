@@ -3,6 +3,7 @@ library;
 import '../layout/pipeline.dart';
 import '../layout/render_box.dart';
 import '../platform/input_events.dart';
+import '../platform/native_window.dart' show SystemCursor;
 import '../semantics/semantics.dart';
 import 'actions.dart';
 import 'drag_drop.dart';
@@ -131,6 +132,11 @@ final class BuildOwner {
     _throwIfDisposed();
     return _pointerRouter.route(event, root: _renderView);
   }
+
+  /// Receives the pointer shape [MouseCursorTarget]s ask for, whenever it
+  /// changes. The application points it at the window's `setCursor`.
+  set onCursorChanged(void Function(SystemCursor cursor)? callback) =>
+      _pointerRouter.onCursorChanged = callback;
 
   /// Removes persistent hover state when the pointer leaves this window.
   void clearPointerHover() {
