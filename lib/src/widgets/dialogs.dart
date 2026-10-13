@@ -25,7 +25,9 @@ import '../layout/box_constraints.dart';
 import '../layout/edge_insets.dart';
 import '../layout/render_stack.dart' as layout;
 import '../platform/input_events.dart';
+import '../text/shaper.dart' show TextDirection;
 import 'basic.dart';
+import 'directionality.dart';
 import 'element.dart';
 import 'focus.dart';
 import 'focus_scope.dart';
@@ -34,6 +36,7 @@ import 'layout_builder.dart' show Builder;
 import 'overlay.dart' show WidgetBuilder;
 import 'proxy.dart' show Center;
 import 'sizing.dart';
+import 'theme.dart';
 import 'widget.dart';
 
 /// Opens the dialog [builder] makes, over the window [context] is in, and
@@ -58,12 +61,26 @@ Future<T?> showDialog<T>({
       context.getInheritedWidgetOfExactType<_DialogLayerScope>()?.layer;
   if (layer == null) {
     throw StateError(
-      'showDialog needs a DialogLayer above the context; every window an '
-      'Application opens, and every DartUiApp, has one.',
+      'showDialog needs a DialogLayer above the context; every PopupScope '
+      'has one - so every window an Application opens, and every DartUiApp.',
     );
   }
+  // The builder runs in the layer's context, above whatever the caller sat
+  // under; the caller's theme and reading direction travel with it, so a
+  // dialog opened from a dark editor is dark - Flutter's captured themes.
+  final ThemeData theme = Theme.of(context);
+  final TextDirection? direction =
+      context.getInheritedWidgetOfExactType<Directionality>()?.textDirection;
   final _DialogEntry<T> entry = _DialogEntry<T>(
-    builder: builder,
+    builder: (BuildContext inner) => Theme(
+      data: theme,
+      child: direction == null
+          ? Builder(builder: builder)
+          : Directionality(
+              textDirection: direction,
+              child: Builder(builder: builder),
+            ),
+    ),
     dismissible: dismissible,
     barrierDismissible: barrierDismissible,
     barrierColor: barrierColor,
@@ -89,8 +106,8 @@ int modalDepthOf(BuildContext context) =>
 /// Where the dialogs of a window open: above [child], each over the dimmed
 /// window.
 ///
-/// [DartUiApp] puts one in every window; a test that mounts a bare tree adds
-/// its own.
+/// [PopupScope] puts one in every window, under its popups; a test that
+/// mounts a tree with neither adds its own.
 final class DialogLayer extends StatefulWidget {
   const DialogLayer({super.key, required this.child});
 

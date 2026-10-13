@@ -57,6 +57,7 @@ import '../layout/box_constraints.dart';
 import '../layout/render_box.dart';
 import '../platform/input_events.dart';
 import '../platform/native_window.dart' show WindowKind;
+import 'dialogs.dart';
 import 'element.dart';
 import 'overlay.dart' show WidgetBuilder;
 import 'pointer_router.dart';
@@ -669,12 +670,16 @@ final class _PopupScopeState extends State<PopupScope> {
     // Only an in-tree host has a layer to draw: a window host puts its pixels
     // in another window, and wrapping the content in a layer that can never
     // have children would cost a render object per window for nothing.
+    // Dialogs open here too, under the popups so a dialog's combo box drops
+    // its list above the dialog: any tree that can show a menu can show a
+    // dialog, with no second wrapper to forget.
+    final Widget content = DialogLayer(child: widget.child);
     if (host is! InTreePopupHost) {
-      return PopupHostScope(host: host, child: widget.child);
+      return PopupHostScope(host: host, child: content);
     }
     return PopupHostScope(
       host: host,
-      child: PopupLayer(host: host, child: widget.child),
+      child: PopupLayer(host: host, child: content),
     );
   }
 }

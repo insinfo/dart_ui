@@ -5,7 +5,6 @@ import '../animation/clock.dart';
 import '../scheduler/frame_scheduler.dart';
 import '../text/shaper.dart' show TextDirection;
 import 'animation_scope.dart';
-import 'dialogs.dart';
 import 'directionality.dart';
 import 'focus.dart';
 import 'focus_scope.dart';
@@ -94,9 +93,8 @@ final class _DartUiAppState extends State<DartUiApp> {
           // through [popupHost]; the application layer does exactly that.
           child: PopupScope(
             host: widget.popupHost,
-            // Dialogs open over the content and under the popups, so a
-            // dialog's combo box drops its list above the dialog.
-            child: DialogLayer(child: widget.home),
+            // The popup scope holds the dialog layer too; see PopupScope.
+            child: widget.home,
           ),
         ),
       ),
