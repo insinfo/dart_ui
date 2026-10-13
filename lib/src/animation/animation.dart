@@ -11,6 +11,7 @@
 /// without any of them knowing the others exist.
 library;
 
+import '../foundation/change_notifier.dart';
 import '../geometry/offset.dart';
 import '../geometry/rect.dart';
 import '../geometry/size.dart';
@@ -43,7 +44,7 @@ enum AnimationStatus {
 /// animation value that arrives one microtask after the frame that produced it
 /// is a frame of latency on every transition. Listeners here are called
 /// synchronously, inside the frame, before layout runs.
-abstract class Animation<T> {
+abstract class Animation<T> implements Listenable {
   /// The current value.
   T get value;
 
@@ -54,8 +55,10 @@ abstract class Animation<T> {
   bool get isAnimating;
 
   /// Called after every change to [value].
+  @override
   void addListener(void Function() listener);
 
+  @override
   bool removeListener(void Function() listener);
 
   /// Called after every change to [status].
