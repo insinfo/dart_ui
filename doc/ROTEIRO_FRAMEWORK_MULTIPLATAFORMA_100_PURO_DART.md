@@ -4920,12 +4920,14 @@ framework — nenhum hospeda controle nativo — e todos estão exportados por
 - [x] Text, Icon, Image (mais `Svg`, e os conjuntos `Icons`, `TablerIcons`, `PhosphorIcons`);
 - [x] Button, ToggleButton, CheckBox (tri-state), RadioButton, Switch, Slider, Progress (linear e circular, mais `LoadingSpinner`);
 - [x] TextField, PasswordField (seleção, caret, undo/redo, clipboard);
-- [ ] TextArea — edição multilinha não fechada;
+- [x] TextArea — `TextField(maxLines:, minLines:)` desde 12/10/2026: quebra de linha, altura que cresce até `maxLines` e rola, Enter como nova linha (Ctrl/Cmd+Enter envia), setas entre linhas mantendo a coluna, Home/End na linha, colar preservando quebras;
 - [x] ComboBox (com overlay flutuante próprio), ListBox virtualizado;
 - [x] **TreeView** — virtualizado pelo mesmo `ListVirtualization` do ListBox, com o handshake de carga preguiçosa (`hasChildren` verdadeiro com `children` vazio) e navegação por teclado. **Seleção única apenas**: não há conjunto de seleção nem extensão por Shift/Ctrl;
 - [x] **DataGrid** — ~~posterior~~, entregue: virtualização de **linhas**, redimensionamento de coluna por arraste, seleção `none`/`single`/`multiple` com Shift e Ctrl+A. **Sem virtualização de coluna e sem rolagem horizontal** (o excesso é recortado), **sem edição de célula**, e **a ordenação é intenção**: a grade desenha a seta e reporta por `onSortChanged`, e quem ordena os dados é o chamador — ela não sabe se a coluna guarda texto, data ou dinheiro;
 - [x] Tabs, Menu, ContextMenu, Toolbar, Tooltip, Dialog, SplitView (o divisor), Expander;
-- [x] **Calendar/DatePicker** — ~~posterior~~, entregue. **O DatePicker abre embutido, abaixo do botão, não flutuando**: a máquina de overlay que um dropdown flutuante precisa está no `combo_box.dart` e ainda não foi reaproveitada aqui;
+- [x] **Calendar/DatePicker** — ~~posterior~~, entregue. Desde 13/10/2026 o DatePicker abre o calendário **flutuando** num `Flyout`, com a grade já com o teclado; clique fora, Escape ou escolher um dia fecham. O `Calendar` tem o tamanho da grade (antes o cabeçalho esticava até a largura disponível);
+- [x] **Flyout** (13/10/2026, `widgets/flyout.dart`): popup de dispensa leve com qualquer conteúdo, ancorado a um widget, como o `Flyout` do WinUI. `FlyoutController` (`open`/`close`/`toggle`/`isOpen`, notifica), superfície elevada no tema de quem o abriu, foco no primeiro controle (ou no que se declara `autofocus`), Escape fecha o flyout antes do diálogo em que ele estiver (`addWindowKeyHandler(first:)`), e fecha junto quando a âncora sai da árvore;
+- [x] **TimePicker** e `TimeOfDay` (13/10/2026, `widgets/time_picker.dart`): botão com a hora no relógio do idioma (`14:35` em português, `2:35 PM` em inglês, ou `use24HourClock`) que abre colunas de hora, minuto e AM/PM num `Flyout`. As setas navegam sem escolher; OK ou Enter guardam, Cancelar, Escape ou clique fora descartam. `minuteIncrement` (15 oferece :00/:15/:30/:45). As colunas não dão a volta (23 não vira 00) como no WinUI;
 - [x] **NumberBox**;
 - [x] **InfoBar / Toast** (`InfoBarSeverity`, `ToastController`, `ToastHost`);
 - [x] **Badge, Chip, Avatar, Card**;

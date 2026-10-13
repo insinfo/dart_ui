@@ -62,6 +62,10 @@ final class CalendarLocalizations {
     required this.monthNames,
     required this.weekdayAbbreviations,
     required this.firstDayOfWeek,
+    this.use24HourClock = false,
+    this.amPm = const <String>['AM', 'PM'],
+    this.acceptLabel = 'OK',
+    this.cancelLabel = 'Cancel',
   });
 
   /// January first, twelve entries.
@@ -72,6 +76,17 @@ final class CalendarLocalizations {
 
   /// A [DateTime.monday]..[DateTime.sunday] constant.
   final int firstDayOfWeek;
+
+  /// Whether times read `14:05` rather than `2:05 PM`; what a [TimePicker]
+  /// shows when it is not told.
+  final bool use24HourClock;
+
+  /// The two halves of a 12-hour day, morning first.
+  final List<String> amPm;
+
+  /// The buttons that keep and drop a picker's choice.
+  final String acceptLabel;
+  final String cancelLabel;
 
   static const CalendarLocalizations english = CalendarLocalizations(
     monthNames: <String>[
@@ -89,6 +104,8 @@ final class CalendarLocalizations {
     ],
     weekdayAbbreviations: <String>['Se', 'Te', 'Qa', 'Qi', 'Sx', 'Sá', 'Do'],
     firstDayOfWeek: DateTime.sunday,
+    use24HourClock: true,
+    cancelLabel: 'Cancelar',
   );
 
   /// The instance for [context]: an application-installed one first, then the
@@ -115,6 +132,17 @@ final class CalendarLocalizations {
       return '${two(date.day)}/${two(date.month)}/${date.year}';
     }
     return '${monthNames[date.month - 1]} ${date.day}, ${date.year}';
+  }
+
+  /// `14:05` on a 24-hour clock, `2:05 PM` on a 12-hour one; what a
+  /// [TimePicker] shows on its face. [use24Hour] overrides the locale's.
+  String formatTime(int hour, int minute, {bool? use24Hour}) {
+    final String mm = minute.toString().padLeft(2, '0');
+    if (use24Hour ?? use24HourClock) {
+      return '${hour.toString().padLeft(2, '0')}:$mm';
+    }
+    final int twelve = hour % 12 == 0 ? 12 : hour % 12;
+    return '$twelve:$mm ${amPm[hour < 12 ? 0 : 1]}';
   }
 }
 

@@ -66,6 +66,7 @@ final class ListBox extends StatefulWidget {
     this.onSelected,
     this.controller,
     this.scrollbar = ScrollbarVisibility.always,
+    this.autofocus = false,
   });
 
   final int itemCount;
@@ -86,6 +87,10 @@ final class ListBox extends StatefulWidget {
   final void Function(int index)? onSelected;
   final ScrollPosition? controller;
   final ScrollbarVisibility scrollbar;
+
+  /// Whether the list takes the keyboard when it appears and nothing in its
+  /// scope holds it - the first column of a picker's popup.
+  final bool autofocus;
 
   @override
   State<ListBox> createState() => _ListBoxState();
@@ -144,6 +149,7 @@ final class _ListBoxState extends State<ListBox> {
     );
     final list = FocusAttachment(
       node: _focusNode,
+      autofocus: widget.autofocus,
       child: _ListBoxRenderWidget(
         position: _position,
         focusNode: _focusNode,
