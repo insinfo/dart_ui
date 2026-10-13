@@ -190,7 +190,9 @@ BackendCandidate _probeAppKitNativeHost(MacosBackendOptions options) {
     // The host's view is an NSTextInputClient: dead keys and input methods,
     // with the preedit mirrored to the field (macos_text_input.dart).
     hasIme: canCreate,
-    hasAccessibility: false, // Not wired yet.
+    // VoiceOver reads the tree through the host's NSAccessibility
+    // elements (macos_accessibility.dart).
+    hasAccessibility: canCreate,
     hasOrderlyShutdown: canCreate,
     needsHostBinary: true,
     hostBinaryPath: locatorResult.binaryPath,

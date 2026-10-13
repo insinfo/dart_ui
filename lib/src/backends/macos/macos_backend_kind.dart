@@ -115,9 +115,13 @@ final class MacosBackendCapabilities {
       // only process here that runs AppKit.
       if (canCreateWindow && kind == MacosBackendKind.appkitNativeHost)
         Capability.clipboardText,
-      // Receiving only: the host's view is the NSDraggingDestination.
+      // Both ways: the host's view is the NSDraggingDestination and, since
+      // 12/10/2026, the NSDraggingSource too (macos_drag_drop.dart).
       if (canCreateWindow && kind == MacosBackendKind.appkitNativeHost)
         Capability.dragAndDrop,
+      // One host process per window, so a window opens like the first one.
+      if (canCreateWindow && kind == MacosBackendKind.appkitNativeHost)
+        Capability.multipleWindows,
     };
 
     return BackendProbeResult(
