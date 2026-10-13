@@ -232,6 +232,12 @@ enum HostPresentTransport {
 abstract interface class HostMessageSink {
   void onHandshake(HostHandshakeField field, int value);
 
+  /// `WINDOW=TITLEBAR:<x>:<y>:<w>:<h>:<height>` - with the title bar hidden,
+  /// where the window buttons sit over the content (top-left-origin points;
+  /// all zero in full screen) and how tall the hidden bar is.
+  void onTitleBar(
+      double x, double y, double width, double height, double titleBarHeight);
+
   /// `PROTOCOL_FEATURES=<csv>`. Once per host, so a String is affordable and
   /// the alternative - a feature enum this client would have to keep in sync
   /// with a host it cannot rebuild - is worse.
@@ -354,6 +360,10 @@ abstract interface class HostMessageSink {
 mixin HostMessageSinkAdapter implements HostMessageSink {
   @override
   void onHandshake(HostHandshakeField field, int value) {}
+
+  @override
+  void onTitleBar(
+      double x, double y, double width, double height, double titleBarHeight) {}
 
   @override
   void onProtocolFeatures(String features) {}
@@ -973,6 +983,17 @@ final class HostProtocolParser {
         0,
       );
     }
+    if (_regionEquals(start, end, 'TITLEBAR')) {
+      final x = _readDoubleField();
+      final y = _readDoubleField();
+      final w = _readDoubleField();
+      final h = _readDoubleField();
+      final bar = _readDoubleField();
+      if (x.isNaN || y.isNaN || w.isNaN || h.isNaN || bar.isNaN) {
+        return _sink.onError('BAD_WINDOW_TITLEBAR');
+      }
+      return _sink.onTitleBar(x, y, w, h, bar);
+    }
     if (_regionEquals(start, end, 'MOVED')) {
       final x = _readDoubleField();
       final y = _readDoubleField();
@@ -1328,6 +1349,10 @@ final class HostCommands {
   static String menuSet(int generation) => 'MENU_SET $generation\n';
 
   static String setTitle(String title) => 'SET_TITLE $title\n';
+
+  /// Starts AppKit's window move from the latest left press in the content -
+  /// a press the framework found on a title-bar handle.
+  static String beginDrag() => 'BEGIN_DRAG\n';
 
   /// Asks for a window state, numbered as [HostWindowEventKind.stateChanged]
   /// reports it: 0 normal, 1 minimised, 2 zoomed, 3 full screen. Answered

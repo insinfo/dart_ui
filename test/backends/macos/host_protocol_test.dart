@@ -15,6 +15,11 @@ final class _RecordingSink with HostMessageSinkAdapter {
   void onProtocolFeatures(String features) => events.add('features:$features');
 
   @override
+  void onTitleBar(double x, double y, double width, double height,
+          double titleBarHeight) =>
+      events.add('titlebar:$x:$y:$width:$height:$titleBarHeight');
+
+  @override
   void onWindowEvent(
     HostWindowEventKind kind,
     double a,
@@ -82,6 +87,19 @@ final class _RecordingSink with HostMessageSinkAdapter {
 }
 
 void main() {
+  test('a hidden title bar reports where the window buttons are', () {
+    final sink = _RecordingSink();
+    HostProtocolParser(sink).addBytes(
+        utf8.encode('WINDOW=TITLEBAR:7.0000:6.0000:54.0000:16.0000:28.0000\n'
+            'WINDOW=TITLEBAR:0:0:0:0:0\n'
+            'WINDOW=TITLEBAR:7:6\n'));
+    expect(sink.events, <String>[
+      'titlebar:7.0:6.0:54.0:16.0:28.0',
+      'titlebar:0.0:0.0:0.0:0.0:0.0',
+      'error:BAD_WINDOW_TITLEBAR',
+    ]);
+  });
+
   test('handshake survives arbitrary chunk boundaries and CRLF', () {
     final sink = _RecordingSink();
     final parser = HostProtocolParser(sink, initialCapacity: 2);

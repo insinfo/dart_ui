@@ -3,6 +3,9 @@ import 'package:test/test.dart';
 
 /// A window with a system menu bar, recording what it was given.
 final class _MacWindow implements WindowController {
+  @override
+  HiddenTitleBarWindow? get hiddenTitleBar => null;
+
   _MacWindow({this.hasNativeMenuBar = true});
 
   @override

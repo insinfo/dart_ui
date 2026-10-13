@@ -525,6 +525,7 @@ final class MacosHostSupervisor {
       y: _boundsY,
       visible: _visible,
       decorated: _spawnOptions.decorated,
+      titleBarHidden: _spawnOptions.titleBarHidden,
       resizable: _spawnOptions.resizable,
       kind: _spawnOptions.kind,
       handshakeTimeout: _spawnOptions.handshakeTimeout,

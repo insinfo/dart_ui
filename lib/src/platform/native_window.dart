@@ -88,6 +88,19 @@ enum SystemCursor {
   notAllowed,
 }
 
+/// What happens to a decorated window's title bar.
+enum WindowTitleBar {
+  /// The platform's own title bar, above the client area.
+  standard,
+
+  /// No title bar: the client area reaches the top of the window and the
+  /// application draws what the title bar held - tabs, a toolbar - there,
+  /// as Finder, Safari and Windows 11's File Explorer do. Where the platform
+  /// keeps its own window buttons (macOS's close, minimise and zoom) they
+  /// stay, over the client area; see [HiddenTitleBarWindow].
+  hidden,
+}
+
 /// What the application asks for when creating a window.
 final class WindowOptions {
   const WindowOptions({
@@ -98,6 +111,7 @@ final class WindowOptions {
     this.maximumSize,
     this.resizable = true,
     this.decorated = true,
+    this.titleBar = WindowTitleBar.standard,
     this.visible = true,
     this.backgroundColor,
     this.owner,
@@ -138,6 +152,11 @@ final class WindowOptions {
 
   final bool resizable;
   final bool decorated;
+
+  /// Whether a decorated window keeps its title bar. A backend that cannot
+  /// hide it keeps it, and does not implement [HiddenTitleBarWindow].
+  final WindowTitleBar titleBar;
+
   final bool visible;
 
   /// What the platform should put in the client area when *nobody has drawn
@@ -352,6 +371,38 @@ abstract interface class ClientDecoratedWindow {
   /// What the close button of a frame does: the same request the window
   /// manager's close button sends, which the application may refuse.
   void requestClose();
+}
+
+/// A window opened with [WindowTitleBar.hidden] whose title bar the
+/// platform really took away.
+///
+/// The client area then starts at the top of the window, and the
+/// application owns that strip: it draws its tabs or toolbar there, keeps
+/// clear of [systemButtons] and makes its empty parts a handle - a press
+/// there calls [beginMove], a double click [toggleMaximized] - which is
+/// what `WindowDragArea` does.
+abstract interface class HiddenTitleBarWindow {
+  /// Whether this window was opened with its title bar hidden. A backend
+  /// type implements the interface for every window it makes; only the
+  /// ones that asked for it answer true.
+  bool get isTitleBarHidden;
+
+  /// Where the platform's own window buttons sit over the client area, in
+  /// logical client coordinates - macOS's three buttons at the top left -
+  /// or [Rect.zero] where there are none (in full screen, or on a platform
+  /// whose application must draw its own).
+  ValueNotifier<Rect> get systemButtons;
+
+  /// The height of the strip the title bar used to occupy - where a
+  /// toolbar centred on the window buttons goes.
+  double get titleBarHeight;
+
+  /// Starts the platform's own window move from the latest primary press.
+  /// False when there was no press to start it from.
+  bool beginMove();
+
+  /// What a double click on a title bar does: zoom, or restore.
+  void toggleMaximized();
 }
 
 /// A window whose operating-system handle can be passed to native UI.

@@ -496,6 +496,7 @@ final class ApplicationOptions {
     this.liveResize = true,
     this.minimumSize,
     this.maximumSize,
+    this.titleBar = WindowTitleBar.standard,
     this.windowBackgroundColor,
     this.gpuPresentationCapability = kGpuPresentationCapability,
     this.renderingPolicy = RenderingPolicy.auto,
@@ -543,6 +544,7 @@ final class ApplicationOptions {
     bool liveResize = true,
     Size? minimumSize,
     Size? maximumSize,
+    WindowTitleBar titleBar = WindowTitleBar.standard,
     Color? windowBackgroundColor,
     Capability? gpuPresentationCapability = kGpuPresentationCapability,
     RenderingPolicy renderingPolicy = RenderingPolicy.auto,
@@ -611,6 +613,7 @@ final class ApplicationOptions {
       liveResize: liveResize,
       minimumSize: minimumSize,
       maximumSize: maximumSize,
+      titleBar: titleBar,
       windowBackgroundColor: windowBackgroundColor,
       gpuPresentationCapability: gpuPresentationCapability,
       renderingPolicy: gpu
@@ -774,6 +777,11 @@ final class ApplicationOptions {
   /// then runs against constraints nothing was designed for.
   final Size? minimumSize;
   final Size? maximumSize;
+
+  /// Whether the main window keeps the platform's title bar or gives its
+  /// strip to the application - see [WindowTitleBar.hidden]. Dialogs, menus
+  /// and other owned windows always keep theirs.
+  final WindowTitleBar titleBar;
 
   /// What the platform paints where no frame has drawn yet - the strip a
   /// window grows into mid-resize, and the client area before the first frame.
@@ -2862,6 +2870,7 @@ final class Application with DisposableMixin {
     WindowKind kind = WindowKind.normal,
     bool modal = false,
     bool? focus,
+    WindowTitleBar? titleBar,
   }) async {
     throwIfDisposed();
     if (_state == ApplicationLifecycleState.closing) {
@@ -2912,6 +2921,12 @@ final class Application with DisposableMixin {
         maximumSize: maximumSize ?? options.maximumSize,
         resizable: resizable,
         decorated: decorated,
+        // Only an application's own top-level windows give their title bar
+        // away; a dialog keeps the platform's.
+        titleBar: titleBar ??
+            (owner == null && kind == WindowKind.normal
+                ? options.titleBar
+                : WindowTitleBar.standard),
         visible: visible,
         backgroundColor: (backgroundColor ??
                 options.windowBackgroundColor ??
@@ -4574,6 +4589,13 @@ final class _ApplicationWindowController implements WindowController {
 
   @override
   bool get hasNativeMenuBar => _window.nativeWindow is NativeMenuBarWindow;
+
+  @override
+  HiddenTitleBarWindow? get hiddenTitleBar => switch (_window.nativeWindow) {
+        final HiddenTitleBarWindow window when window.isTitleBarHidden =>
+          window,
+        _ => null,
+      };
 
   @override
   void setNativeMenuBar(

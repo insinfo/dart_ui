@@ -381,6 +381,7 @@ final class MacosWindowingBackend
       y: options.position?.dy,
       visible: options.visible,
       decorated: options.decorated,
+      titleBarHidden: options.titleBar == WindowTitleBar.hidden,
       resizable: options.resizable,
       kind: MacosHostWindowKind.values.byName(options.kind.name),
     );

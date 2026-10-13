@@ -29,6 +29,11 @@ abstract interface class WindowController {
   /// [local] (a position in this window, logical pixels) on the screen.
   Offset toScreen(Offset local);
 
+  /// The title bar this window gave away - opened with
+  /// `WindowTitleBar.hidden` on a platform that could - or null for a window
+  /// with its title bar. `WindowDragArea` is the widget over it.
+  HiddenTitleBarWindow? get hiddenTitleBar;
+
   /// Whether this window can put menus in the operating system's menu bar -
   /// the macOS one. See [setNativeMenuBar].
   bool get hasNativeMenuBar;

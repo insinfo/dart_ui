@@ -305,6 +305,7 @@ export 'src/widgets/vector_editor/vector_canvas.dart';
 export 'src/widgets/vector_editor/vector_renderer.dart';
 export 'src/widgets/video.dart';
 export 'src/widgets/widget.dart';
+export 'src/widgets/window_drag_area.dart';
 export 'src/widgets/window_scope.dart';
 
 /// Mounts [rootWidget] using production platform defaults.

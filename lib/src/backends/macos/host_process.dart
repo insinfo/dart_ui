@@ -149,6 +149,7 @@ final class MacosHostSpawnOptions {
     this.y,
     this.visible = true,
     this.decorated = true,
+    this.titleBarHidden = false,
     this.resizable = true,
     this.kind = MacosHostWindowKind.normal,
     this.handshakeTimeout = const Duration(seconds: 10),
@@ -165,6 +166,11 @@ final class MacosHostSpawnOptions {
 
   final bool visible;
   final bool decorated;
+
+  /// The content reaches the top of the window, under a transparent title
+  /// bar with no title; the three window buttons stay. See
+  /// `WindowTitleBar.hidden`.
+  final bool titleBarHidden;
   final bool resizable;
   final MacosHostWindowKind kind;
 
@@ -189,6 +195,7 @@ final class MacosHostSpawnOptions {
         ],
         if (!visible) '--hidden',
         if (!decorated) '--no-decorations',
+        if (decorated && titleBarHidden) '--titlebar-hidden',
         if (!resizable) '--not-resizable',
         '--window-kind',
         kind.name,
@@ -754,6 +761,11 @@ final class MacosHostProcess
     double d,
   ) =>
       _sink.onWindowEvent(kind, a, b, c, d);
+
+  @override
+  void onTitleBar(double x, double y, double width, double height,
+          double titleBarHeight) =>
+      _sink.onTitleBar(x, y, width, height, titleBarHeight);
 
   @override
   void onInput(

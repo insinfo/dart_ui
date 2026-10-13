@@ -23,6 +23,7 @@ import 'dart:convert';
 
 import '../../foundation/diagnostics.dart';
 import '../../foundation/lifecycle.dart';
+import '../../foundation/value_notifier.dart';
 import '../../geometry/offset.dart';
 import '../../geometry/rect.dart';
 import '../../geometry/size.dart';
@@ -92,7 +93,8 @@ final class MacosWindow
         NativeHandleWindow,
         PresentPacer,
         WindowStateControl,
-        NativeMenuBarWindow {
+        NativeMenuBarWindow,
+        HiddenTitleBarWindow {
   MacosWindow({
     required NativeWindowId id,
     required MacosSurfaceFactory surfaceFactory,
@@ -144,6 +146,41 @@ final class MacosWindow
   double _renderScale;
   double _desktopScale;
   WindowState _state = WindowState.normal;
+
+  bool _titleBarHidden = false;
+  final ValueNotifier<Rect> _systemButtons = ValueNotifier<Rect>(Rect.zero);
+  double _titleBarHeight = 0;
+
+  @override
+  bool get isTitleBarHidden => _titleBarHidden;
+
+  @override
+  ValueNotifier<Rect> get systemButtons => _systemButtons;
+
+  @override
+  double get titleBarHeight => _titleBarHeight;
+
+  @override
+  bool beginMove() {
+    if (isDisposed || !_titleBarHidden) return false;
+    return _supervisor?.send(HostCommands.beginDrag()) ?? false;
+  }
+
+  @override
+  void toggleMaximized() {
+    requestState(_state == WindowState.maximised
+        ? WindowState.normal
+        : WindowState.maximised);
+  }
+
+  void _onTitleBar(
+      double x, double y, double width, double height, double titleBarHeight) {
+    _titleBarHeight = titleBarHeight;
+    _systemButtons.value = width <= 0 || height <= 0
+        ? Rect.zero
+        : Rect.fromLTWH(x, y, width, height);
+  }
+
   Offset _screenPosition = Offset.zero;
   bool _resizeInFlight = false;
   bool _closed = false;
@@ -341,6 +378,7 @@ final class MacosWindow
     MacosSurfaceHandoff handoff = MacosSurfaceHandoff.rendezvous,
   }) async {
     throwIfDisposed();
+    _titleBarHidden = spawnOptions.decorated && spawnOptions.titleBarHidden;
     _transient = spawnOptions.kind == MacosHostWindowKind.popup ||
         spawnOptions.kind == MacosHostWindowKind.tooltip;
     final supervisor = MacosHostSupervisor(
@@ -353,6 +391,7 @@ final class MacosWindow
         y: spawnOptions.y,
         visible: false,
         decorated: spawnOptions.decorated,
+        titleBarHidden: spawnOptions.titleBarHidden,
         resizable: spawnOptions.resizable,
         kind: spawnOptions.kind,
         handshakeTimeout: spawnOptions.handshakeTimeout,
@@ -1072,6 +1111,11 @@ final class _HostSink with HostMessageSinkAdapter {
   _HostSink(this._window);
 
   final MacosWindow _window;
+
+  @override
+  void onTitleBar(double x, double y, double width, double height,
+          double titleBarHeight) =>
+      _window._onTitleBar(x, y, width, height, titleBarHeight);
 
   @override
   void onWindowEvent(

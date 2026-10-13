@@ -110,6 +110,9 @@ static void DartUiInstallMainMenu(NSApplication *application,
 // needs the mouse event, and the request arrives from the framework a moment
 // after the pointer moved, so the view keeps the latest one.
 @property(nonatomic, strong) NSEvent *lastMouseEvent;
+// The latest left press itself - what a window drag must start from, which
+// lastMouseEvent stops being as soon as the pointer moves.
+@property(nonatomic, strong) NSEvent *lastPressEvent;
 // The DRAG_START being served, and the operations its source allows.
 @property(nonatomic, assign) long long dragSourceRequest;
 @property(nonatomic, assign) NSDragOperation dragSourceMask;
@@ -487,8 +490,17 @@ static const unsigned long long kA11yActionDecrement = 1ull << 4;
   [self.sink hostView:self reportEvent:@"keyUp" of:event];
 }
 
+// Never let AppKit turn a press into a window drag on its own: with the
+// title bar hidden the content lies under it, and a click on a tab there must
+// reach the framework. Dragging is asked for explicitly, with BEGIN_DRAG, by
+// the parts of the window the application says are a handle.
+- (BOOL)mouseDownCanMoveWindow {
+  return NO;
+}
+
 - (void)mouseDown:(NSEvent *)event {
   self.lastMouseEvent = event;
+  self.lastPressEvent = event;
   [self.sink hostView:self reportEvent:@"pointerDown" of:event];
 }
 
@@ -618,6 +630,9 @@ static const unsigned long long kA11yActionDecrement = 1ull << 4;
 @property(nonatomic, assign) BOOL hasInitialY;
 @property(nonatomic, assign) BOOL initiallyVisible;
 @property(nonatomic, assign) BOOL decorated;
+// The content reaches the top of the window under a transparent title bar
+// with no title; the three window buttons stay where they are.
+@property(nonatomic, assign) BOOL titleBarHidden;
 @property(nonatomic, assign) BOOL resizable;
 @property(nonatomic, assign) BOOL commandStdin;
 @property(nonatomic, copy) NSString *windowKind;
@@ -774,6 +789,7 @@ static const unsigned long long kA11yActionDecrement = 1ull << 4;
   } else if (self.decorated) {
     style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable |
             NSWindowStyleMaskMiniaturizable;
+    if (self.titleBarHidden) style |= NSWindowStyleMaskFullSizeContentView;
   }
   if (self.resizable && !isTransient) style |= NSWindowStyleMaskResizable;
 
@@ -794,6 +810,13 @@ static const unsigned long long kA11yActionDecrement = 1ull << 4;
   }
   self.window.delegate = self;
   self.window.title = self.initialTitle ?: @"dart_ui";
+  if (self.decorated && self.titleBarHidden && !isTransient) {
+    // Finder's arrangement: the title bar is still there - it is what the
+    // window buttons live in and what Mission Control reads - but it draws
+    // nothing and the content shows through it.
+    self.window.titlebarAppearsTransparent = YES;
+    self.window.titleVisibility = NSWindowTitleHidden;
+  }
   self.window.releasedWhenClosed = NO;
 
   self.hostView = [[DartUiHostView alloc] initWithFrame:contentRect];
@@ -852,6 +875,35 @@ static const unsigned long long kA11yActionDecrement = 1ull << 4;
   printf("WINDOW=MOVED:%.4f:%.4f\n", position.x, position.y);
   printf("WINDOW=SCALE:%.4f:%.4f\n", scale, scale);
   printf("WINDOW=STATE:%ld\n", (long)self.reportedState);
+  [self reportTitleBar];
+  fflush(stdout);
+}
+
+// Where the window buttons sit over the content, in the content's points
+// with a top-left origin, and how tall the hidden title bar is - so the
+// application keeps its tabs clear of the buttons. Nothing to report while
+// the title bar is shown, and an empty area in full screen, where the
+// buttons are gone.
+- (void)reportTitleBar {
+  if (!self.titleBarHidden || !self.decorated) return;
+  NSRect area = NSZeroRect;
+  BOOL fullScreen = (self.window.styleMask & NSWindowStyleMaskFullScreen) != 0;
+  if (!fullScreen) {
+    for (NSNumber *kind in @[ @(NSWindowCloseButton),
+                              @(NSWindowMiniaturizeButton),
+                              @(NSWindowZoomButton) ]) {
+      NSButton *button = [self.window standardWindowButton:kind.integerValue];
+      if (button == nil || button.hidden) continue;
+      NSRect inWindow = [button convertRect:button.bounds toView:nil];
+      area = NSIsEmptyRect(area) ? inWindow : NSUnionRect(area, inWindow);
+    }
+  }
+  CGFloat height = NSHeight(self.window.contentView.frame);
+  CGFloat bar = NSHeight(self.window.frame) -
+                NSHeight(self.window.contentLayoutRect);
+  printf("WINDOW=TITLEBAR:%.4f:%.4f:%.4f:%.4f:%.4f\n", NSMinX(area),
+         NSIsEmptyRect(area) ? 0.0 : height - NSMaxY(area), NSWidth(area),
+         NSHeight(area), fullScreen ? 0.0 : bar);
   fflush(stdout);
 }
 
@@ -1994,6 +2046,13 @@ static const NSUInteger kClipboardChunk = 6000;
   } else if ([command isEqualToString:@"PING"]) {
     printf("PONG\n");
     fflush(stdout);
+  } else if ([command isEqualToString:@"BEGIN_DRAG"]) {
+    // The window move the title bar would have started, from the press that
+    // the framework decided landed on a handle. AppKit tracks the rest.
+    NSEvent *press = self.hostView.lastPressEvent;
+    if (press != nil) {
+      [self.window performWindowDragWithEvent:press];
+    }
   } else if ([command hasPrefix:@"SET_TITLE "]) {
     self.window.title = [command substringFromIndex:10];
     printf("TITLE_OK\n");
@@ -2193,11 +2252,13 @@ static const NSUInteger kClipboardChunk = 6000;
 - (void)windowDidEnterFullScreen:(NSNotification *)notification {
   (void)notification;
   [self endFullScreenTransition];
+  [self reportTitleBar];
 }
 
 - (void)windowDidExitFullScreen:(NSNotification *)notification {
   (void)notification;
   [self endFullScreenTransition];
+  [self reportTitleBar];
 }
 
 - (void)windowDidFailToEnterFullScreen:(NSWindow *)window {
@@ -2520,6 +2581,8 @@ int main(int argc, const char *argv[]) {
         delegate.initiallyVisible = NO;
       } else if (strcmp(argument, "--no-decorations") == 0) {
         delegate.decorated = NO;
+      } else if (strcmp(argument, "--titlebar-hidden") == 0) {
+        delegate.titleBarHidden = YES;
       } else if (strcmp(argument, "--not-resizable") == 0) {
         delegate.resizable = NO;
       } else if (strcmp(argument, "--window-kind") == 0 && index + 1 < argc) {
