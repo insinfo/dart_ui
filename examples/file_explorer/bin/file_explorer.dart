@@ -12,6 +12,7 @@ import 'package:file_explorer/src/engine/explorer_model.dart';
 import 'package:file_explorer/src/engine/location.dart';
 import 'package:file_explorer/src/engine/strings.dart';
 import 'package:file_explorer/src/io/io_file_system.dart';
+import 'package:file_explorer/src/io/thumbnail_loader.dart';
 import 'package:file_explorer/src/ui/app.dart';
 
 Future<void> main(List<String> arguments) async {
@@ -57,7 +58,12 @@ Future<void> main(List<String> arguments) async {
   );
 
   await runApp(
-    FileExplorerApp(model: model, dark: dark, onClose: () => exit(0)),
+    FileExplorerApp(
+      model: model,
+      dark: dark,
+      onClose: () => exit(0),
+      thumbnailLoader: loadThumbnail,
+    ),
     options: ApplicationOptions.fromArguments(
       arguments,
       environment: Platform.environment,

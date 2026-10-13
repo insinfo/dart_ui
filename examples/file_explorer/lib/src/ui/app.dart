@@ -5,6 +5,7 @@ import 'package:dart_ui/dart_ui.dart';
 
 import '../engine/explorer_model.dart';
 import 'explorer_window.dart';
+import 'thumbnails.dart';
 
 /// The explorer, themed.
 class FileExplorerApp extends StatelessWidget {
@@ -14,12 +15,14 @@ class FileExplorerApp extends StatelessWidget {
     this.dark = false,
     this.onReady,
     this.onClose,
+    this.thumbnailLoader,
   });
 
   final ExplorerModel model;
   final bool dark;
   final void Function(ExplorerWindowState window)? onReady;
   final void Function()? onClose;
+  final ThumbnailLoader? thumbnailLoader;
 
   @override
   Widget build(BuildContext context) => Directionality(
@@ -33,6 +36,7 @@ class FileExplorerApp extends StatelessWidget {
             model: model,
             onReady: onReady,
             onClose: onClose,
+            thumbnailLoader: thumbnailLoader,
           ),
         ),
       );

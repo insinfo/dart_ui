@@ -133,6 +133,27 @@ void main() {
     h.dispose();
   });
 
+  test('typing a name in the list selects it; a pause starts over', () async {
+    final _Harness h = _Harness();
+    await h.settle();
+    h.owner.dispatchTextInputEvent(TextInputEvent(
+      windowId: const NativeWindowId(1),
+      generation: 1,
+      timestamp: Duration.zero,
+      text: 'h',
+    ));
+    h.owner.dispatchTextInputEvent(TextInputEvent(
+      windowId: const NativeWindowId(1),
+      generation: 1,
+      timestamp: Duration.zero,
+      text: 'i',
+    ));
+    await h.settle();
+    expect(h.model.tab.selection,
+        <String>{'/Users/ana/Documents/History of Skateboarding.docx'});
+    h.dispose();
+  });
+
   test('the icon views draw every item', () async {
     final _Harness h = _Harness(mode: ViewMode.largeIcons);
     await h.settle();

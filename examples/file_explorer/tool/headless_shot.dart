@@ -5,10 +5,11 @@
 /// ```
 ///
 /// Scenarios: home, details (the default), icons, tiles, rename, search,
-/// thispc, details-pane.
+/// thispc, details-pane, pictures.
 library;
 
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:dart_ui/dart_ui.dart';
 import 'package:file_explorer/src/engine/demo_disk.dart';
@@ -53,6 +54,7 @@ Future<void> main(List<String> args) async {
     child: FileExplorerApp(
       model: model,
       dark: dark,
+      thumbnailLoader: _paintedThumbnail,
       onReady: (ExplorerWindowState w) => window = w,
     ),
   ));
@@ -65,7 +67,7 @@ Future<void> main(List<String> args) async {
       list = DisplayList();
       owner.buildScope();
       owner.pipelineOwner.drawFrame(list);
-      if (!owner.hasScheduledBuilds) break;
+      if (pass > 3 && !owner.hasScheduledBuilds) break;
     }
     return list;
   }
@@ -81,6 +83,10 @@ Future<void> main(List<String> args) async {
         });
     case 'tiles':
       registry.execute('view.tiles');
+    case 'pictures':
+      registry
+        ..execute('nav.go', <String, Object?>{'path': '/Users/ana/Pictures'})
+        ..execute('view.largeIcons');
     case 'rename':
       registry
         ..execute('select.byName', <String, Object?>{'prefix': 'license'})
@@ -113,4 +119,29 @@ Future<void> main(List<String> args) async {
   File(path).writeAsBytesSync(shot.toPng());
   stdout.writeln('render ${result.isSuccess ? 'ok' : 'FAILED'} -> $path');
   exit(0);
+}
+
+/// The made-up disk holds no pixels, so every picture is painted: a
+/// landscape gradient whose hue comes from the name.
+Future<DecodedImage?> _paintedThumbnail(String path) async {
+  const int w = 256;
+  const int h = 170;
+  final int hue = path.hashCode;
+  final Uint8List pixels = Uint8List(w * h * 4);
+  for (var y = 0; y < h; y++) {
+    for (var x = 0; x < w; x++) {
+      final int i = (y * w + x) * 4;
+      pixels[i] = (hue + x) & 0xFF; // blue
+      pixels[i + 1] = (hue >> 8) + y & 0xFF;
+      pixels[i + 2] = (hue >> 16) + x ~/ 2 & 0xFF;
+      pixels[i + 3] = 255;
+    }
+  }
+  return DecodedImage(
+    width: w,
+    height: h,
+    order: ImageChannelOrder.bgra,
+    pixels: pixels,
+    hasAlpha: false,
+  );
 }

@@ -10,6 +10,7 @@ import '../engine/file_system.dart';
 import '../engine/file_types.dart';
 import '../engine/location.dart';
 import 'file_icon.dart';
+import 'thumbnails.dart';
 
 /// The items of the active tab.
 class FolderView extends StatelessWidget {
@@ -19,6 +20,7 @@ class FolderView extends StatelessWidget {
     required this.registry,
     required this.renameField,
     this.headerMenu,
+    this.thumbnails,
   });
 
   final ExplorerModel model;
@@ -30,6 +32,27 @@ class FolderView extends StatelessWidget {
 
   /// The Details header's right-click menu: which columns to show.
   final List<Widget> Function()? headerMenu;
+
+  /// Pictures' thumbnails for the icon views and Tiles.
+  final ThumbnailCache? thumbnails;
+
+  /// [entry]'s picture in a [size] box - its thumbnail cropped to fill the
+  /// box, as Files shows photographs - or its icon.
+  Widget _picture(FileEntry entry, double size) {
+    final DecodedImage? thumb = size >= 40 ? thumbnails?.of(entry) : null;
+    if (thumb == null) return FileIcon(kindOf(entry), size: size);
+    return SizedBox(
+      width: size,
+      height: size,
+      child: Center(
+        child: ClipRRect(
+          radius: 2,
+          child:
+              Image(thumb, width: size, height: size * .66, fit: BoxFit.cover),
+        ),
+      ),
+    );
+  }
 
   ExplorerTab get tab => model.tab;
 
@@ -325,7 +348,7 @@ class FolderView extends StatelessWidget {
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.center,
                       children: <Widget>[
-                        FileIcon(kindOf(entry), size: iconSize),
+                        _picture(entry, iconSize),
                         SizedBox(width: tiles ? 12 : 8),
                         Expanded(
                           child: renaming
@@ -346,7 +369,7 @@ class FolderView extends StatelessWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.center,
                       children: <Widget>[
-                        FileIcon(kindOf(entry), size: iconSize),
+                        _picture(entry, iconSize),
                         const SizedBox(height: 6),
                         if (renaming)
                           SizedBox(height: 28, child: renameField(entry))

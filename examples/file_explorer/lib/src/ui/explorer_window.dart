@@ -20,6 +20,7 @@ import 'folder_view.dart';
 import 'home_page.dart';
 import 'menus.dart';
 import 'sidebar.dart';
+import 'thumbnails.dart';
 
 /// The explorer window.
 class ExplorerWindow extends StatefulWidget {
@@ -28,9 +29,13 @@ class ExplorerWindow extends StatefulWidget {
     required this.model,
     this.onReady,
     this.onClose,
+    this.thumbnailLoader,
   });
 
   final ExplorerModel model;
+
+  /// Reads pictures' thumbnails for the icon views; null shows file icons.
+  final ThumbnailLoader? thumbnailLoader;
 
   /// Told when the commands are registered - where a test reaches them.
   final void Function(ExplorerWindowState window)? onReady;
@@ -58,18 +63,51 @@ class ExplorerWindowState extends State<ExplorerWindow>
 
   ExplorerModel get model => widget.model;
 
+  late final ThumbnailCache? _thumbnails = widget.thumbnailLoader == null
+      ? null
+      : ThumbnailCache(loader: widget.thumbnailLoader!, onLoaded: _changed);
+
   @override
   void initState() {
     super.initState();
     registerExplorerCommands(registry, model, this);
     model.addListener(_changed);
     renameFocus.addListener(_renameFocusChanged);
+    final BuildContext self = context;
+    _keysOwner = self is Element ? self.owner : null;
+    _keysOwner?.addTextInputHandler(_typeAhead);
     unawaited(model.refresh());
     widget.onReady?.call(this);
   }
 
+  BuildOwner? _keysOwner;
+
+  /// What has been typed into the list, and when the last key came: a pause
+  /// of a second starts a new name, as in File Explorer.
+  String _typed = '';
+  final Stopwatch _sinceTyped = Stopwatch();
+
+  /// Typing in the list - nothing else having taken the text - selects the
+  /// next item whose name starts with it.
+  bool _typeAhead(TextInputEvent event) {
+    final Location at = model.tab.location;
+    if (at is! FolderLocation && at is! SearchLocation) return false;
+    if (model.tab.renaming != null || _searching) return false;
+    if (!_sinceTyped.isRunning || _sinceTyped.elapsedMilliseconds > 1000) {
+      _typed = '';
+    }
+    _typed += event.text;
+    _sinceTyped
+      ..reset()
+      ..start();
+    registry.execute('select.byName', <String, Object?>{'prefix': _typed});
+    return true;
+  }
+
   @override
   void dispose() {
+    _keysOwner?.removeTextInputHandler(_typeAhead);
+    _thumbnails?.dispose();
     model.removeListener(_changed);
     renameFocus
       ..removeListener(_renameFocusChanged)
@@ -585,6 +623,7 @@ class ExplorerWindowState extends State<ExplorerWindow>
               registry: registry,
               renameField: _renameField,
               headerMenu: () => menus.widgets(kColumnsMenu),
+              thumbnails: _thumbnails,
             ),
           ),
       };
