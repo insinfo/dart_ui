@@ -180,13 +180,18 @@ final class RenderButton extends RenderBox with ControlBehavior {
       size.width,
       size.height,
     );
-    paintRoundedFill(list, rect, surfaceColor(), theme.cornerRadius);
+    // Material 3's buttons are pills; iOS's and ours are rounded rectangles
+    // at the theme's radius.
+    final double radius = theme.controlStyle == ControlStyle.material
+        ? rect.height / 2
+        : theme.cornerRadius;
+    paintRoundedFill(list, rect, surfaceColor(), radius);
     if (theme.highContrast || !enabled) {
       paintRoundedBorder(
         list,
         rect,
         enabled ? theme.borderStrong : theme.disabledForeground,
-        theme.cornerRadius,
+        radius,
       );
     }
     paintCenteredLabel(
@@ -195,7 +200,7 @@ final class RenderButton extends RenderBox with ControlBehavior {
       rect,
       enabled ? theme.colorScheme.onPrimary : theme.disabledForeground,
     );
-    paintFocusRing(list, rect);
+    paintFocusRing(list, rect, radius: radius);
   }
 
   @override
@@ -340,6 +345,16 @@ final class RenderToggle extends RenderBox with ControlBehavior {
     return (raw / 2).roundToDouble() * 2;
   }
 
+  /// The switch's track, which each control style draws at its own size:
+  /// iOS's is 51 x 31 pt and Material 3's 52 x 32 dp whatever the text size,
+  /// while ours follows the text like the other indicators.
+  Size get switchTrackSize => switch (theme.controlStyle) {
+        ControlStyle.cupertino => const Size(51, 31),
+        ControlStyle.material => const Size(52, 32),
+        ControlStyle.standard => Size(
+            (indicatorExtent * 1.8 / 2).roundToDouble() * 2, indicatorExtent),
+      };
+
   String get label => _label;
 
   set label(String value) {
@@ -375,7 +390,7 @@ final class RenderToggle extends RenderBox with ControlBehavior {
       return;
     }
     final double indicator = style == ToggleStyle.switchControl
-        ? indicatorExtent * 1.8
+        ? switchTrackSize.width
         : indicatorExtent;
     final Size text = measureLabel(_label);
     size = constraints.constrain(Size(
@@ -502,10 +517,95 @@ final class RenderToggle extends RenderBox with ControlBehavior {
   }
 
   void _paintSwitch(DisplayList list, Rect rect) {
-    final double extent = indicatorExtent;
-    final double width = (extent * 1.8 / 2).roundToDouble() * 2;
-    final double top = (rect.top + (rect.height - extent) / 2).roundToDouble();
-    final Rect track = Rect.fromLTWH(rect.left, top, width, extent);
+    final Size trackSize = switchTrackSize;
+    final double top =
+        (rect.top + (rect.height - trackSize.height) / 2).roundToDouble();
+    final Rect track =
+        Rect.fromLTWH(rect.left, top, trackSize.width, trackSize.height);
+    switch (theme.controlStyle) {
+      case ControlStyle.cupertino:
+        _paintCupertinoSwitch(list, track);
+      case ControlStyle.material:
+        _paintMaterialSwitch(list, track);
+      case ControlStyle.standard:
+        _paintStandardSwitch(list, track);
+    }
+    paintLabel(
+      list,
+      _label,
+      Offset(track.right + theme.effectiveGap, labelTopIn(rect)),
+      foregroundColor(),
+    );
+    paintFocusRing(list, track, radius: track.height / 2);
+  }
+
+  /// A white knob on a pill that is green when on and a light grey fill when
+  /// off - never outlined - with the knob's soft shadow.
+  void _paintCupertinoSwitch(DisplayList list, Rect track) {
+    final bool dark = theme.brightness == Brightness.dark;
+    paintRoundedFill(
+      list,
+      track,
+      !enabled
+          ? theme.disabledSurface
+          : _value
+              ? theme.toggleActiveColor
+              : (dark ? const Color(0xFF39393D) : const Color(0xFFE9E9EA)),
+      track.height / 2,
+    );
+    final double knob = track.height - 4;
+    final double left =
+        (_value ? track.right - knob - 2 : track.left + 2).roundToDouble();
+    final Rect knobRect = Rect.fromLTWH(left, track.top + 2, knob, knob);
+    paintRoundedFill(list, knobRect.translate(0, 1).inflate(0.5),
+        const Color(0x26000000), knob / 2);
+    paintRoundedFill(list, knobRect,
+        enabled ? const Color(0xFFFFFFFF) : const Color(0xFFF2F2F2), knob / 2);
+  }
+
+  /// Material 3: off is an outlined track with a small thumb in the outline
+  /// colour; on is a filled track with a large thumb in the on-colour. The
+  /// thumb grows further while pressed.
+  void _paintMaterialSwitch(DisplayList list, Rect track) {
+    final double radius = track.height / 2;
+    if (_value) {
+      paintRoundedFill(
+          list,
+          track,
+          enabled
+              ? (isPressed ? theme.accentPressed : theme.accent)
+              : theme.disabledForeground,
+          radius);
+    } else {
+      paintRoundedFill(list, track,
+          enabled ? theme.disabledSurface : theme.disabledSurface, radius);
+      paintRoundedBorder(list, track,
+          enabled ? theme.borderStrong : theme.disabledForeground, radius,
+          width: 2);
+    }
+    final double thumb = isPressed ? 28 : (_value ? 24 : 16);
+    final double centerX = _value ? track.right - radius : track.left + radius;
+    final Rect thumbRect = Rect.fromLTWH(
+      (centerX - thumb / 2).roundToDouble(),
+      (track.top + (track.height - thumb) / 2).roundToDouble(),
+      thumb,
+      thumb,
+    );
+    paintRoundedFill(
+      list,
+      thumbRect,
+      !enabled
+          ? theme.disabledForeground
+          : _value
+              ? theme.colorScheme.onPrimary
+              : theme.borderStrong,
+      thumb / 2,
+    );
+  }
+
+  void _paintStandardSwitch(DisplayList list, Rect track) {
+    final double extent = track.height;
+    final double top = track.top;
     // A pill, not a rounded rectangle. The switch is the one control whose
     // whole meaning is that something slides from one end to the other, and a
     // square track reads as a progress bar with a block in it.
@@ -543,13 +643,6 @@ final class RenderToggle extends RenderBox with ControlBehavior {
               : theme.foregroundSecondary,
       thumb / 2,
     );
-    paintLabel(
-      list,
-      _label,
-      Offset(track.right + theme.effectiveGap, labelTopIn(rect)),
-      foregroundColor(),
-    );
-    paintFocusRing(list, track, radius: extent / 2);
   }
 
   @override

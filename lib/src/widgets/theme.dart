@@ -103,6 +103,25 @@ enum Brightness { light, dark }
 /// Compatibility spelling used by the first pre-release dart_ui themes.
 typedef ThemeBrightness = Brightness;
 
+/// The shape language the controls draw in.
+///
+/// Colours and sizes are tokens; shapes are not, because a switch is not "the
+/// same switch with other numbers" from one platform to the next. A Material 3
+/// switch grows its thumb when on and outlines its track when off; an iOS
+/// switch is a white knob on a green pill that never outlines. The controls
+/// read this to choose the drawing, and every other token keeps meaning what
+/// it meant.
+enum ControlStyle {
+  /// dart_ui's own: rounded rectangles, outlined indicators.
+  standard,
+
+  /// Material 3: pill buttons, the M3 switch, slider and check box.
+  material,
+
+  /// iOS: 44 pt controls, the green-pill switch, a round check, white knobs.
+  cupertino,
+}
+
 /// Material-style semantic colours used by widgets that should not need to
 /// know the framework's older palette field names.
 final class ColorScheme {
@@ -564,8 +583,20 @@ final class ThemeData {
     this.controlHeight = 32.0,
     this.controlPadding = 12.0,
     this.focusRingWidth = 2.0,
+    this.controlStyle = ControlStyle.standard,
+    Color? toggleActiveColor,
   })  : _onSelection = onSelection,
-        _surfaceSunken = surfaceSunken;
+        _surfaceSunken = surfaceSunken,
+        _toggleActiveColor = toggleActiveColor;
+
+  /// The shape language of the controls; see [ControlStyle].
+  final ControlStyle controlStyle;
+
+  final Color? _toggleActiveColor;
+
+  /// The track of a switch that is on. The accent everywhere but where the
+  /// platform says otherwise - iOS draws it green whatever the tint.
+  Color get toggleActiveColor => _toggleActiveColor ?? accent;
 
   final String name;
   final ThemeBrightness brightness;
@@ -785,6 +816,8 @@ final class ThemeData {
     ProgressIndicatorThemeData? progressIndicatorTheme,
     ScrollbarThemeData? scrollbarTheme,
     bool? useMaterial3,
+    ControlStyle? controlStyle,
+    Color? toggleActiveColor,
   }) =>
       ThemeData(
         name: name ?? this.name,
@@ -826,6 +859,8 @@ final class ThemeData {
         controlHeight: controlHeight ?? this.controlHeight,
         controlPadding: controlPadding ?? this.controlPadding,
         focusRingWidth: focusRingWidth,
+        controlStyle: controlStyle ?? this.controlStyle,
+        toggleActiveColor: toggleActiveColor ?? _toggleActiveColor,
       );
 
   @override
@@ -862,7 +897,9 @@ final class ThemeData {
       other.controlPadding == controlPadding &&
       other.focusRingWidth == focusRingWidth &&
       other.textTheme == textTheme &&
-      other.scrollbarTheme == scrollbarTheme;
+      other.scrollbarTheme == scrollbarTheme &&
+      other.controlStyle == controlStyle &&
+      other.toggleActiveColor == toggleActiveColor;
 
   @override
   int get hashCode => Object.hash(
@@ -879,7 +916,7 @@ final class ThemeData {
         Object.hash(highContrast, reducedMotion),
         Object.hash(
             cornerRadius, controlHeight, controlPadding, focusRingWidth),
-        Object.hash(textTheme, scrollbarTheme),
+        Object.hash(textTheme, scrollbarTheme, controlStyle, toggleActiveColor),
       );
 
   /// The neutral base: no platform's look, and the one every test uses so a
@@ -1060,6 +1097,182 @@ final class ThemeData {
     controlHeight: 32.0,
     controlPadding: 12.0,
   );
+
+  /// Material 3's baseline scheme (the purple one its specification shows),
+  /// with M3's shapes: pill buttons, the M3 switch and slider, 40 dp controls
+  /// and 14 sp body text. Values from the published baseline tonal palette.
+  static const ThemeData material3Light = ThemeData(
+    name: 'material3-light',
+    brightness: Brightness.light,
+    controlStyle: ControlStyle.material,
+    accent: Color(0xFF6750A4),
+    accentHovered: Color(0xFF7965AF),
+    accentPressed: Color(0xFF4F378B),
+    accentSubtle: Color(0xFFE8DEF8),
+    surfaceBase: Color(0xFFFEF7FF),
+    surfaceSunken: Color(0xFFECE6F0),
+    surface: Color(0xFFFEF7FF),
+    surfaceAlternate: Color(0xFFF7F2FA),
+    surfaceRaised: Color(0xFFF3EDF7),
+    borderSubtle: Color(0xFFCAC4D0),
+    border: Color(0xFFCAC4D0),
+    borderStrong: Color(0xFF79747E),
+    foreground: Color(0xFF1D1B20),
+    foregroundSecondary: Color(0xFF49454F),
+    disabledForeground: Color(0xFFA19DA5),
+    disabledSurface: Color(0xFFE6E0E9),
+    hoverSurface: Color(0xFFEFE9F3),
+    pressedSurface: Color(0xFFE6E0EA),
+    focusRing: Color(0xFF6750A4),
+    selection: Color(0xFFE8DEF8),
+    colorScheme: ColorScheme.light(
+      primary: Color(0xFF6750A4),
+      onPrimary: Color(0xFFFFFFFF),
+      surface: Color(0xFFFEF7FF),
+      onSurface: Color(0xFF1D1B20),
+      surfaceContainer: Color(0xFFF3EDF7),
+      outline: Color(0xFF79747E),
+    ),
+    textTheme: TextTheme(base: 14),
+    iconTheme: IconThemeData(color: Color(0xFF49454F), size: 24),
+    cornerRadius: 12,
+    controlHeight: 40,
+    controlPadding: 24,
+  );
+
+  static const ThemeData material3Dark = ThemeData(
+    name: 'material3-dark',
+    brightness: Brightness.dark,
+    controlStyle: ControlStyle.material,
+    accent: Color(0xFFD0BCFF),
+    accentHovered: Color(0xFFDCCBFF),
+    accentPressed: Color(0xFFEADDFF),
+    accentSubtle: Color(0xFF4A4458),
+    surfaceBase: Color(0xFF141218),
+    surfaceSunken: Color(0xFF0F0D13),
+    surface: Color(0xFF141218),
+    surfaceAlternate: Color(0xFF1D1B20),
+    surfaceRaised: Color(0xFF211F26),
+    borderSubtle: Color(0xFF49454F),
+    border: Color(0xFF49454F),
+    borderStrong: Color(0xFF938F99),
+    foreground: Color(0xFFE6E0E9),
+    foregroundSecondary: Color(0xFFCAC4D0),
+    disabledForeground: Color(0xFF66626B),
+    disabledSurface: Color(0xFF2B2930),
+    hoverSurface: Color(0xFF26242A),
+    pressedSurface: Color(0xFF302D35),
+    focusRing: Color(0xFFD0BCFF),
+    selection: Color(0xFF4A4458),
+    colorScheme: ColorScheme.dark(
+      primary: Color(0xFFD0BCFF),
+      onPrimary: Color(0xFF381E72),
+      surface: Color(0xFF141218),
+      onSurface: Color(0xFFE6E0E9),
+      surfaceContainer: Color(0xFF211F26),
+      outline: Color(0xFF938F99),
+    ),
+    textTheme: TextTheme(base: 14),
+    iconTheme: IconThemeData(color: Color(0xFFCAC4D0), size: 24),
+    cornerRadius: 12,
+    controlHeight: 40,
+    controlPadding: 24,
+  );
+
+  /// iOS: system blue on grouped backgrounds, 17 pt text, 44 pt controls, the
+  /// green switch. The system colours of UIKit's light appearance.
+  static const ThemeData cupertinoLight = ThemeData(
+    name: 'cupertino-light',
+    brightness: Brightness.light,
+    controlStyle: ControlStyle.cupertino,
+    accent: Color(0xFF007AFF),
+    accentHovered: Color(0xFF0A6FE0),
+    accentPressed: Color(0xFF0051A8),
+    accentSubtle: Color(0xFFE1EEFF),
+    toggleActiveColor: Color(0xFF34C759),
+    surfaceBase: Color(0xFFF2F2F7),
+    surfaceSunken: Color(0xFFE5E5EA),
+    surface: Color(0xFFF2F2F7),
+    surfaceAlternate: Color(0xFFFFFFFF),
+    surfaceRaised: Color(0xFFFFFFFF),
+    borderSubtle: Color(0xFFE5E5EA),
+    border: Color(0xFFC6C6C8),
+    borderStrong: Color(0xFF8E8E93),
+    foreground: Color(0xFF000000),
+    foregroundSecondary: Color(0xFF8A8A8E),
+    disabledForeground: Color(0xFFC7C7CC),
+    disabledSurface: Color(0xFFE5E5EA),
+    hoverSurface: Color(0xFFEFEFF4),
+    pressedSurface: Color(0xFFD1D1D6),
+    focusRing: Color(0xFF007AFF),
+    selection: Color(0xFFCCE4FF),
+    colorScheme: ColorScheme.light(
+      primary: Color(0xFF007AFF),
+      onPrimary: Color(0xFFFFFFFF),
+      surface: Color(0xFFFFFFFF),
+      onSurface: Color(0xFF000000),
+      surfaceContainer: Color(0xFFF2F2F7),
+      outline: Color(0xFFC6C6C8),
+    ),
+    textTheme: TextTheme(base: 17),
+    iconTheme: IconThemeData(color: Color(0xFF007AFF), size: 22),
+    cornerRadius: 10,
+    controlHeight: 44,
+    controlPadding: 20,
+  );
+
+  static const ThemeData cupertinoDark = ThemeData(
+    name: 'cupertino-dark',
+    brightness: Brightness.dark,
+    controlStyle: ControlStyle.cupertino,
+    accent: Color(0xFF0A84FF),
+    accentHovered: Color(0xFF3395FF),
+    accentPressed: Color(0xFF66AFFF),
+    accentSubtle: Color(0xFF0F2E52),
+    toggleActiveColor: Color(0xFF30D158),
+    surfaceBase: Color(0xFF000000),
+    surfaceSunken: Color(0xFF000000),
+    surface: Color(0xFF000000),
+    surfaceAlternate: Color(0xFF1C1C1E),
+    surfaceRaised: Color(0xFF2C2C2E),
+    borderSubtle: Color(0xFF2C2C2E),
+    border: Color(0xFF38383A),
+    borderStrong: Color(0xFF8E8E93),
+    foreground: Color(0xFFFFFFFF),
+    foregroundSecondary: Color(0xFF8D8D93),
+    disabledForeground: Color(0xFF48484A),
+    disabledSurface: Color(0xFF2C2C2E),
+    hoverSurface: Color(0xFF2C2C2E),
+    pressedSurface: Color(0xFF3A3A3C),
+    focusRing: Color(0xFF0A84FF),
+    selection: Color(0xFF0F3E73),
+    colorScheme: ColorScheme.dark(
+      primary: Color(0xFF0A84FF),
+      onPrimary: Color(0xFFFFFFFF),
+      surface: Color(0xFF1C1C1E),
+      onSurface: Color(0xFFFFFFFF),
+      surfaceContainer: Color(0xFF2C2C2E),
+      outline: Color(0xFF38383A),
+    ),
+    textTheme: TextTheme(base: 17),
+    iconTheme: IconThemeData(color: Color(0xFF0A84FF), size: 22),
+    cornerRadius: 10,
+    controlHeight: 44,
+    controlPadding: 20,
+  );
+
+  /// The theme an application gets on [operatingSystem] when it asks for
+  /// none: Material 3 on Android, iOS on iOS, the neutral one elsewhere.
+  static ThemeData platformDefault(String operatingSystem,
+          {Brightness brightness = Brightness.light}) =>
+      switch ((operatingSystem, brightness)) {
+        ('android', Brightness.light) => material3Light,
+        ('android', Brightness.dark) => material3Dark,
+        ('ios', Brightness.light) => cupertinoLight,
+        ('ios', Brightness.dark) => cupertinoDark,
+        (_, Brightness.light) => neutralLight,
+        (_, Brightness.dark) => neutralDark,
+      };
 
   /// High contrast, per section 28.3's `high-contrast` pseudo-class: pure
   /// extremes, always-visible borders, a thicker focus ring.
