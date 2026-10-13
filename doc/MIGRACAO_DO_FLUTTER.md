@@ -165,9 +165,12 @@ feito**, que é uma lista de trabalho e não uma posição.
 
 Sem justificativa de projeto — simplesmente não escrito:
 
-- **Layout**: `Flow`. (`Table`, `CustomMultiChildLayout` com `LayoutId`,
-  `FittedBox`, `UnconstrainedBox`, `Placeholder` e `Container` existem desde
-  outubro de 2026.)
+- **Layout**: nada de essencial. (`Flow` com `FlowDelegate` existe desde
+  13/10/2026 - `paintChild` recebe um `Transform2D` em vez de `Matrix4`,
+  porque o display list só tem transformações afins 2D, e o recorte é sempre
+  ligado, sem `clipBehavior`; `Table`, `CustomMultiChildLayout` com
+  `LayoutId`, `FittedBox`, `UnconstrainedBox`, `Placeholder` e `Container`
+  existem desde outubro de 2026.)
 - **Animação**: nada de essencial. (`Hero`, `AnimatedBuilder`,
   `ListenableBuilder`, as `*Transition` (com `SizeTransition`),
   `TweenAnimationBuilder`, `AnimatedList`,
