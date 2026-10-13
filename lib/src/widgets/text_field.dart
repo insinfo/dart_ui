@@ -34,8 +34,15 @@ import '../platform/native_window.dart';
 import '../platform/text_input.dart';
 import '../rendering/text/font_registry.dart';
 import '../semantics/semantics.dart';
+import '../text/bidi.dart' show BidiClass, bidiClassOf;
 import '../text/paragraph.dart'
-    show Paragraph, ParagraphStyle, TextBox, TextLine;
+    show
+        Paragraph,
+        ParagraphStyle,
+        TextAffinity,
+        TextBox,
+        TextLine,
+        TextPosition;
 import '../text/shaper.dart' show UnsupportedScriptException;
 import '../text/typeface.dart' show ScaledTypeface;
 import 'context_menu.dart';
@@ -86,11 +93,12 @@ export 'text_editing.dart';
 ///
 /// ## Limits, stated out loud
 ///
-///  * **Motion is logical.** Left means "toward offset zero", not "toward the
-///    left edge of the screen". In bidirectional text those differ, and the
-///    caret will jump across a direction boundary rather than sliding along it.
-///    Visual-order motion needs the reordered runs of a laid-out line; see
-///    `text_editing.dart`.
+///  * **Motion is logical here.** [moveCaret] means "toward offset zero",
+///    not "toward the left edge of the screen". The field's Left and Right
+///    keys do not call it directly for text with a right-to-left character:
+///    `RenderTextField` steps on the screen instead, through the laid-out
+///    line, so the caret slides across a direction boundary rather than
+///    jumping. Word motion (Ctrl+arrows) is still logical.
 ///  * **No line motion.** Up, Down and wrap-aware Home/End need the line array
 ///    of a `Paragraph`. Home and End here go to the ends of the whole value.
 ///  * **The undo stack is unbounded and per-edit.** No coalescing of runs of
@@ -1310,6 +1318,93 @@ final class RenderTextField extends RenderBox
     }
   }
 
+  /// Left and Right: one character toward that edge of the *screen*.
+  ///
+  /// In text that runs one way only, that is one cluster back or forward in
+  /// the string - backward for Left in left-to-right text, forward for Left
+  /// in Hebrew or Arabic. In mixed text it is neither: the string order and
+  /// the screen order part at every direction boundary, and stepping through
+  /// the string makes the caret jump across a run instead of sliding along
+  /// it. So the step is chosen on the screen: of the caret positions on the
+  /// caret's line, the nearest one in the direction pressed, by x.
+  ///
+  /// Text with no right-to-left character takes the string step without
+  /// measuring anything, which is every field most applications have.
+  void _moveCaretVisually(int direction, {required bool extend}) {
+    final String text = displayText;
+    final Paragraph? laid = _hasRightToLeft(text) ? paragraph : null;
+    if (laid == null) {
+      _controller.moveCaret(direction, extend: extend);
+      return;
+    }
+    double xOf(int offset, [TextAffinity affinity = TextAffinity.downstream]) =>
+        laid.getCaretRect(TextPosition(offset, affinity: affinity)).left;
+    if (_controller.hasSelection && !extend) {
+      // Collapses to the end of the selection on the side pressed, which in
+      // mixed text need not be the logical start or end.
+      final int a = _controller.selectionStart;
+      final int b = _controller.selectionEnd;
+      final bool aFirst = direction < 0 ? xOf(a) <= xOf(b) : xOf(a) >= xOf(b);
+      _controller.collapseTo(aFirst ? a : b);
+      return;
+    }
+    final int caret = _controller.selectionEnd;
+    final TextAffinity affinity = _controller.affinity;
+    final double from = xOf(caret, affinity);
+    final int lineIndex = laid.lineIndexAt(caret, affinity);
+    final TextLine line = laid.lines[lineIndex];
+    final int last = lineIndex + 1 < laid.lines.length
+        ? laid.lines[lineIndex + 1].start
+        : text.length;
+    // Every caret stop on the line: an offset at a direction boundary is two
+    // places on the screen - the end of one run (upstream) and the start of
+    // the next (downstream) - and both have to be reachable.
+    int? best;
+    TextAffinity bestAffinity = TextAffinity.downstream;
+    double bestDistance = double.infinity;
+    void consider(int offset, TextAffinity side) {
+      final double distance = (xOf(offset, side) - from) * direction;
+      if (distance <= 0.5) return;
+      // Nearest on the screen; between two at the same place, the one
+      // nearer in the string, which is where typing is least surprising.
+      final bool nearer = distance < bestDistance - 0.5;
+      final bool tie = !nearer &&
+          distance < bestDistance + 0.5 &&
+          (offset - caret).abs() < (best! - caret).abs();
+      if (!nearer && !tie) return;
+      best = offset;
+      bestAffinity = side;
+      bestDistance = distance;
+    }
+
+    for (int offset = line.start;;) {
+      if (offset < last) consider(offset, TextAffinity.downstream);
+      if (offset > line.start) consider(offset, TextAffinity.upstream);
+      if (offset >= last) break;
+      offset = TextMotion.nextCluster(text, offset);
+    }
+    final int? target = best;
+    if (target == null) {
+      // Past the line's edge: on to the neighbouring line in reading order,
+      // which is the string step the way the line's own direction runs.
+      final bool rtl = laid.baseDirection.isRightToLeft;
+      _controller.moveCaret(rtl ? -direction : direction, extend: extend);
+      return;
+    }
+    _controller.setSelection(
+        extend ? _controller.selectionStart : target, target,
+        affinity: bestAffinity);
+  }
+
+  static bool _hasRightToLeft(String text) {
+    for (final int rune in text.runes) {
+      if (rune < 0x0590) continue;
+      final BidiClass bidi = bidiClassOf(rune);
+      if (bidi == BidiClass.r || bidi == BidiClass.al) return true;
+    }
+    return false;
+  }
+
   /// The I-beam every platform shows over editable text.
   @override
   SystemCursor? cursorFor(PointerEvent event) =>
@@ -1839,10 +1934,10 @@ final class RenderTextField extends RenderBox
         onSubmitted!(_controller.value);
         return true;
       case logicalKeyArrowLeft:
-        _controller.moveCaret(-1, extend: shift);
+        _moveCaretVisually(-1, extend: shift);
         return true;
       case logicalKeyArrowRight:
-        _controller.moveCaret(1, extend: shift);
+        _moveCaretVisually(1, extend: shift);
         return true;
       case logicalKeyHome:
         _controller.moveCaretToStart(extend: shift);

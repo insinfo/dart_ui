@@ -4940,10 +4940,14 @@ framework — nenhum hospeda controle nativo — e todos estão exportados por
 - [x] **MenuBar** existe (`menu_anchor.dart`, API no formato do Flutter, com `SubmenuButton`/`MenuItemButton`): clique abre, passar o mouse troca de menu com um aberto, Esquerda/Direita andam pela barra, Escape devolve o teclado. Desde 12/10/2026, **F10 e Alt sozinho** (apertado e solto sem outra tecla no meio) dão o teclado à barra com o primeiro menu destacado, de onde quer que o foco esteja, e a mesma tecla ou Escape o devolvem — por `BuildOwner.addWindowKeyHandler`/`addKeyObserver`, a etapa da janela entre o mapa de atalhos e a travessia. Desligado na convenção do Mac, onde o menu é o do sistema e Option sozinho é metade de um acento. Testes em `menu_anchor_test.dart` (grupo "MenuBar from the keyboard"). Mnemônicos desde 12/10/2026: `MenuAcceleratorLabel('&Arquivo')` (nome e grafia do Flutter; `&&` é o `&` literal) desenha a letra sublinhada no Windows e no Linux, Alt+letra abre o menu de qualquer lugar da janela, e a letra sozinha escolhe a linha do menu que tem o teclado; o rótulo de acessibilidade continua "Arquivo". O sublinhado aparece sempre, não só com Alt apertado como no Windows;
 - [x] **StatusBar** (12/10/2026, `widgets/status_bar.dart`): faixa com régua no topo e altura do tema (três quartos de um controle, nunca menos que uma linha de legenda), `StatusBarItem` com ícone, texto `labelSmall`, separador, largura fixa opcional (para os vizinhos não andarem quando os dígitos mudam) e dica, e `StatusBarItem.message` que ocupa o que sobra. Sem papel de acessibilidade próprio (`SemanticsRole` não tem `status`; o texto é lido como texto). O editor vetorial de exemplo ainda usa a barra dele.
 
-Lacunas de comportamento que valem registro, porque cada uma já é bug em algum
-toolkit: o caret **não se move corretamente em texto bidirecional** (salta em
-texto de direção mista), e um menu mais alto que a tela é **encostado no topo**
-sem rolagem, de modo que os itens abaixo da borda ficam inalcançáveis.
+Lacunas de comportamento que valiam registro, porque cada uma já é bug em algum
+toolkit, e que foram fechadas: o caret **agora anda na ordem da tela em texto
+bidirecional** (13/10/2026: Esquerda e Direita escolhem, entre as paradas do
+caret na linha, as duas afinidades de cada fronteira de direção, a mais
+próxima em x; em hebraico puro Esquerda avança na string; texto sem caractere
+RTL continua no passo da string, sem medir nada; o movimento por palavra
+continua lógico), e um menu mais alto que a janela **rola dentro dela**
+(12/10/2026).
 
 ## 29.3 Estados de um Button
 
