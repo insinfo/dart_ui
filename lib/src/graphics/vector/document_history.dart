@@ -118,6 +118,12 @@ final class DocumentHistory {
   /// Consecutive commits with the same non-null [coalesce] key become one
   /// step - typing into a field is one undo, not one per key.
   void commit(String label, {Object? coalesce}) {
+    // Inside [group] the steps are folded into the group's one: the baseline
+    // stays where the group began, and [group] commits once at its end.
+    if (_groupDepth > 0) {
+      _groupChanged = true;
+      return;
+    }
     final DocumentState after = DocumentState.capture(root);
     if (coalesce != null &&
         coalesce == _lastCoalesce &&
@@ -135,9 +141,41 @@ final class DocumentHistory {
 
   Object? _lastCoalesce;
 
+  int _groupDepth = 0;
+
+  /// Whether anything inside the running group recorded a step.
+  bool _groupChanged = false;
+
+  /// Whether a [group] is running.
+  bool get isGrouping => _groupDepth > 0;
+
+  /// Runs [body] as **one** step named [label], however many steps the
+  /// operations inside it record - a batch of commands, a script, a macro.
+  ///
+  /// Groups nest; only the outermost commits. Nothing is recorded when no
+  /// operation inside recorded anything. Undo and redo are refused while a group runs:
+  /// they would move the baseline the group is measured from.
+  T group<T>(String label, T Function() body) {
+    if (_groupDepth == 0) _groupChanged = false;
+    _groupDepth++;
+    try {
+      return body();
+    } finally {
+      _groupDepth--;
+      if (_groupDepth == 0) _commitIfChanged(label);
+    }
+  }
+
+  void _commitIfChanged(String label) {
+    if (!_groupChanged) return;
+    _groupChanged = false;
+    _lastCoalesce = null;
+    commit(label);
+  }
+
   /// Puts the document back to the previous step; false when there is none.
   bool undo() {
-    if (_undo.isEmpty) return false;
+    if (_undo.isEmpty || _groupDepth > 0) return false;
     final _HistoryStep step = _undo.removeLast();
     _lastCoalesce = null;
     step.before.restore();
@@ -148,7 +186,7 @@ final class DocumentHistory {
 
   /// Re-applies the step [undo] took back; false when there is none.
   bool redo() {
-    if (_redo.isEmpty) return false;
+    if (_redo.isEmpty || _groupDepth > 0) return false;
     final _HistoryStep step = _redo.removeLast();
     _lastCoalesce = null;
     step.after.restore();
