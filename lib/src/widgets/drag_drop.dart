@@ -566,7 +566,11 @@ final class RenderDropTarget extends RenderSingleChildBox
 /// A builder rather than a value because the payload is a function of *when*:
 /// a list that drags its selection has to serialise the selection the user had
 /// when they started pulling, not the one it had when the widget was built.
-typedef DragPayloadBuilder = DragData Function();
+///
+/// Null means "nothing to drag after all" and the gesture ends there: a list
+/// that wraps all its rows in one source learns only at this moment whether
+/// the press landed on an item or on the empty space below them.
+typedef DragPayloadBuilder = DragData? Function();
 
 /// Builds the picture that follows the cursor, when the platform can show one.
 typedef DragFeedbackBuilder = DragFeedbackImage? Function();
@@ -717,13 +721,15 @@ final class DragSourceState extends State<DragSource> {
       );
       return;
     }
+    final DragData? data = widget.data();
+    if (data == null) return;
     _dragging = true;
     widget.onDragStarted?.call();
     try {
       final DragAction performed = await backend.startDrag(
         DragRequest(
           window: window,
-          data: widget.data(),
+          data: data,
           allowedActions: widget.allowedActions,
           preferredAction: widget.preferredAction,
           feedback: widget.feedback?.call(),

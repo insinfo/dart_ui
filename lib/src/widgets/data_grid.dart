@@ -46,6 +46,7 @@ import 'basic.dart';
 import 'context_menu_area.dart';
 import 'control.dart';
 import 'directionality.dart';
+import 'drag_drop.dart';
 import 'element.dart';
 import 'focus.dart';
 import 'focus_scope.dart';
@@ -125,6 +126,12 @@ final class DataGrid extends StatefulWidget {
     this.decorated = true,
     this.headerMenu,
     this.columnFitWidth,
+    this.rowDragData,
+    this.rowDragActions = const <DragAction>{DragAction.copy, DragAction.move},
+    this.onRowDragEnd,
+    this.rowDropResponse,
+    this.onRowDrop,
+    this.rowAcceptsDrops,
   });
 
   final List<DataGridColumn> columns;
@@ -178,6 +185,44 @@ final class DataGrid extends StatefulWidget {
 
   final ScrollPosition? controller;
 
+  /// What dragging rows out carries - the selection as file paths, as text -
+  /// or null when these rows cannot be dragged at all.
+  ///
+  /// A drag starts from a row, never from the empty space below them: a
+  /// press there is the start of nothing. It carries the selection when the
+  /// press was on a selected row, and that row alone otherwise, which is
+  /// what the press is about to make the selection anyway. Returning null
+  /// from the callback cancels the drag.
+  ///
+  /// The drag is the platform's, so the rows can land in another
+  /// application - a file manager's files on the desktop - as well as in
+  /// this one.
+  final DragData? Function(Set<int> rows)? rowDragData;
+
+  /// What a drag of the rows lets its destination do.
+  final Set<DragAction> rowDragActions;
+
+  /// A drag of the rows ended, with what the destination did.
+  final void Function(DragAction action)? onRowDragEnd;
+
+  /// Whether a drag over [row] - null below the last row - may be dropped,
+  /// and as what; null makes the grid refuse every drop.
+  ///
+  /// Called on every move of the pointer, so it must be cheap and must not
+  /// wait. The row it accepts is drawn as the target: a file manager's
+  /// folder row, lit while a file hovers over it.
+  final DropResponse Function(int? row, DropDetails details)? rowDropResponse;
+
+  /// Performs a drop on [row] (null below the rows), answering with what was
+  /// really done.
+  final Future<DragAction> Function(int? row, DropDetails details)? onRowDrop;
+
+  /// Which rows a drop can go *into* - a file manager's folders, not its
+  /// files - or null for every row. A drag over a row that cannot take it
+  /// is a drag over the list itself: [rowDropResponse] and [onRowDrop] hear
+  /// null, and no row is lit.
+  final bool Function(int row)? rowAcceptsDrops;
+
   /// Whether it draws its own surface and outline. False for one placed
   /// on a pane or a card that already has them - a file manager's
   /// details list, a grid inside a rounded card - where a second box
@@ -190,6 +235,13 @@ final class DataGrid extends StatefulWidget {
 
 final class _DataGridState extends State<DataGrid> {
   late final ScrollPosition _position = widget.controller ?? ScrollPosition();
+
+  /// The row the last primary press landed on, -1 for empty space: where a
+  /// drag of the rows starts from.
+  int _pressedRow = -1;
+
+  /// The row a drop would land on, drawn as the target; null for none.
+  int? _dropRow;
   late final FocusNode _focusNode = FocusNode(debugLabel: 'DataGrid');
   double _viewportExtent = 0;
 
@@ -300,6 +352,7 @@ final class _DataGridState extends State<DataGrid> {
   void _handlePress(int index, Set<KeyModifier> modifiers,
       {PointerButton button = PointerButton.primary, int clickCount = 1}) {
     final bool onRow = index >= 0 && index < widget.rowCount;
+    if (button == PointerButton.primary) _pressedRow = onRow ? index : -1;
     switch (button) {
       case PointerButton.primary:
         if (!onRow) {
@@ -462,7 +515,7 @@ final class _DataGridState extends State<DataGrid> {
           },
         )),
         Expanded(
-          child: FocusAttachment(
+          child: _withDragAndDrop(FocusAttachment(
             node: _focusNode,
             child: _DataGridBodyWidget(
               decorated: widget.decorated,
@@ -490,6 +543,7 @@ final class _DataGridState extends State<DataGrid> {
                     extent: _rowExtent,
                     widths: widths,
                     selected: widget.selectedRows.contains(row),
+                    dropTarget: _dropRow == row,
                     textDirection: direction,
                     theme: theme,
                     children: <Widget>[
@@ -512,10 +566,76 @@ final class _DataGridState extends State<DataGrid> {
                   ),
               ],
             ),
-          ),
+          )),
         ),
       ],
     );
+  }
+
+  /// The row a drag at [local] - in the body's space - is over, or null
+  /// below the last row.
+  int? _rowAtBody(Offset local) {
+    final double contentY = local.dy + _position.pixels;
+    final ListVirtualization virtualization = _virtualization;
+    if (contentY < 0 || contentY >= virtualization.totalExtent) return null;
+    final int index = virtualization.indexAt(contentY);
+    if (index < 0 || index >= widget.rowCount) return null;
+    final bool Function(int)? accepts = widget.rowAcceptsDrops;
+    return accepts == null || accepts(index) ? index : null;
+  }
+
+  void _setDropRow(int? row) {
+    if (row == _dropRow) return;
+    setState(() => _dropRow = row);
+  }
+
+  DropResponse _dropResponse(DropDetails details) {
+    final DropResponse Function(int?, DropDetails)? respond =
+        widget.rowDropResponse;
+    if (respond == null) return const DropResponse.reject();
+    final int? row = _rowAtBody(details.localPosition);
+    final DropResponse response = respond(row, details);
+    // Lit only when the drop would go *into* the row; a drop accepted on
+    // the empty space, or refused, lights nothing.
+    _setDropRow(response.isAccepted ? row : null);
+    return response;
+  }
+
+  /// [body] as a drag source of the rows and a drop target, as configured.
+  Widget _withDragAndDrop(Widget body) {
+    Widget result = body;
+    if (widget.rowDragData != null) {
+      result = DragSource(
+        data: () {
+          final int pressed = _pressedRow;
+          if (pressed < 0 || pressed >= widget.rowCount) return null;
+          final Set<int> rows = widget.selectedRows.contains(pressed)
+              ? widget.selectedRows
+              : <int>{pressed};
+          return widget.rowDragData!(rows);
+        },
+        allowedActions: widget.rowDragActions,
+        preferredAction: widget.rowDragActions.contains(DragAction.move)
+            ? DragAction.move
+            : DragAction.copy,
+        opaque: true,
+        onDragEnd: widget.onRowDragEnd,
+        child: result,
+      );
+    }
+    if (widget.rowDropResponse != null) {
+      result = DropTarget(
+        accepts: _dropResponse,
+        onDragLeave: () => _setDropRow(null),
+        onDrop: (DropDetails details) async {
+          final int? row = _rowAtBody(details.localPosition);
+          _setDropRow(null);
+          return await widget.onRowDrop?.call(row, details) ?? DragAction.none;
+        },
+        child: result,
+      );
+    }
+    return result;
   }
 }
 
@@ -858,12 +978,14 @@ final class _DataGridRowWidget extends MultiChildRenderObjectWidget {
     required this.textDirection,
     required this.theme,
     required super.children,
+    this.dropTarget = false,
   });
 
   final int index;
   final double extent;
   final List<double> widths;
   final bool selected;
+  final bool dropTarget;
   final TextDirection textDirection;
   final ThemeData theme;
 
@@ -874,6 +996,7 @@ final class _DataGridRowWidget extends MultiChildRenderObjectWidget {
         ..extent = extent
         ..widths = widths
         ..selected = selected
+        ..dropTarget = dropTarget
         ..textDirection = textDirection
         ..theme = theme;
 
@@ -887,6 +1010,7 @@ final class _DataGridRowWidget extends MultiChildRenderObjectWidget {
       ..extent = extent
       ..widths = widths
       ..selected = selected
+      ..dropTarget = dropTarget
       ..textDirection = textDirection
       ..theme = theme;
   }
@@ -929,6 +1053,16 @@ final class RenderDataGridRow extends RenderBoxContainer<BoxParentData>
   set selected(bool value) {
     if (value == _selected) return;
     _selected = value;
+    markNeedsPaint();
+  }
+
+  /// Whether a drag is over this row and would drop into it.
+  bool get dropTarget => _dropTarget;
+  bool _dropTarget = false;
+
+  set dropTarget(bool value) {
+    if (value == _dropTarget) return;
+    _dropTarget = value;
     markNeedsPaint();
   }
 
@@ -997,6 +1131,12 @@ final class RenderDataGridRow extends RenderBoxContainer<BoxParentData>
         rect,
         _selected ? theme.selection : theme.hoverSurface,
       );
+    }
+    if (_dropTarget) {
+      // The row a drop goes into: the accent, quietly - a fill and an
+      // outline - so it reads as "here" over a selection too.
+      paintFill(list, rect, theme.accentSubtle);
+      paintRoundedBorder(list, rect.deflate(0.5), theme.accent, 2);
     }
     paintFill(
       list,
