@@ -200,11 +200,12 @@ class FolderView extends StatelessWidget {
             : iconSize < 64
                 ? 96
                 : iconSize + 32;
+    // Files' Large icons: a 128 px cell, the name on one line under it.
     final double cellHeight = list
         ? 28
         : tiles
             ? 72
-            : iconSize + 52;
+            : iconSize + 44;
     return GestureDetector(
       behavior: GestureHitTestBehavior.opaque,
       // A click between the items drops the selection, as in Explorer.
@@ -252,15 +253,21 @@ class FolderView extends StatelessWidget {
           padding: const EdgeInsets.all(2),
           child: DecoratedBox(
             decoration: BoxDecoration(
+              // Files marks a selected icon with an accent outline on a
+              // white tile; a row of List or Tiles with a tint.
               color: selected
-                  ? theme.selection
+                  ? (list || tiles ? theme.selection : theme.surfaceAlternate)
                   : hovered
                       ? theme.hoverSurface
                       : null,
               border: selected
-                  ? BoxBorder(color: theme.accent.withAlpha(0x80), width: 1)
+                  ? BoxBorder(
+                      color: list || tiles
+                          ? theme.accent.withAlpha(0x80)
+                          : theme.accent,
+                      width: list || tiles ? 1 : 2)
                   : null,
-              radius: theme.cornerRadius,
+              radius: 4,
             ),
             child: list || tiles
                 ? Padding(
@@ -298,11 +305,9 @@ class FolderView extends StatelessWidget {
                             _shownName(entry),
                             style: theme.textTheme.bodyMedium,
                             color: theme.foreground,
-                            softWrap: true,
-                            maxLines: 2,
+                            maxLines: 1,
                             ellipsis: '…',
                             textAlign: TextAlign.center,
-                            breakWords: true,
                           ),
                       ],
                     ),

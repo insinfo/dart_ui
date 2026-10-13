@@ -37,6 +37,16 @@ List<MenuSpecEntry> viewMenu(ExplorerStrings strings) => <MenuSpecEntry>[
       ]),
     ];
 
+/// Settings, at the foot of the sidebar: what Windows keeps in Folder
+/// Options - what is shown, and how.
+List<MenuSpecEntry> settingsMenu(ExplorerStrings strings) => <MenuSpecEntry>[
+      const CommandItem('view.hiddenItems'),
+      const CommandItem('view.extensions'),
+      _,
+      const CommandItem('view.navigationPane'),
+      const CommandItem('view.detailsPane'),
+    ];
+
 /// ··· - what does not fit on the bar.
 const List<MenuSpecEntry> kMoreMenu = <MenuSpecEntry>[
   CommandItem('select.all'),

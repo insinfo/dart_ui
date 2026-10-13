@@ -18,6 +18,8 @@ class BarButton extends StatelessWidget {
     this.chevron = false,
     this.selected = false,
     this.iconColor,
+    this.iconSize,
+    this.compact = false,
   });
 
   final IconData icon;
@@ -34,6 +36,12 @@ class BarButton extends StatelessWidget {
   final bool chevron;
   final bool selected;
   final Color? iconColor;
+
+  /// The glyph's size; null for the theme's.
+  final double? iconSize;
+
+  /// Tighter padding, for a button inside another control.
+  final bool compact;
 
   @override
   Widget build(BuildContext context) {
@@ -69,12 +77,14 @@ class BarButton extends StatelessWidget {
           ),
           child: Padding(
             padding: EdgeInsets.symmetric(
-                horizontal: label == null ? 8 : 10, vertical: 6),
+                horizontal: compact ? 6 : (label == null ? 9 : 10),
+                vertical: compact ? 4 : 6),
             child: Row(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.center,
               children: <Widget>[
                 Icon(icon,
+                    size: iconSize,
                     color: enabled
                         ? iconColor ?? theme.foreground
                         : theme.disabledForeground),
@@ -106,12 +116,17 @@ class MenuBarButton extends StatelessWidget {
     required this.menu,
     this.label,
     this.tooltip,
+    this.chevron,
   });
 
   final IconData icon;
   final List<Widget> Function() menu;
   final String? label;
   final String? tooltip;
+
+  /// Whether a small chevron says the button opens a menu; by default when
+  /// it has a label.
+  final bool? chevron;
 
   @override
   Widget build(BuildContext context) => MenuAnchor(
@@ -121,7 +136,7 @@ class MenuBarButton extends StatelessWidget {
           icon: icon,
           label: label,
           tooltip: tooltip ?? label,
-          chevron: label != null,
+          chevron: chevron ?? label != null,
           selected: controller.isOpen,
           onTap: () =>
               controller.isOpen ? controller.close() : controller.open(),

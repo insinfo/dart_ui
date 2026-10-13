@@ -25,8 +25,10 @@ class FileExplorerApp extends StatelessWidget {
   Widget build(BuildContext context) => Directionality(
         textDirection: TextDirection.leftToRight,
         child: Theme(
+          // Files and Windows 11 set their text at 14 px.
           data: (dark ? ThemeData.fluentDark : ThemeData.fluentLight)
-              .adaptedToPlatform(),
+              .adaptedToPlatform()
+              .copyWith(fontSize: 14),
           child: ExplorerWindow(
             model: model,
             onReady: onReady,

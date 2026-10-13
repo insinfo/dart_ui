@@ -195,6 +195,7 @@ final class ExplorerStrings {
       'See more': 'Ver mais',
       'Details': 'Detalhes',
       'Open': 'Abrir',
+      'Close': 'Fechar',
       'Unpin from Quick access': 'Desafixar do Acesso rápido',
     },
     commandLabels: <String, String>{

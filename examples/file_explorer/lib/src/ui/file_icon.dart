@@ -92,14 +92,19 @@ void paintFileIcon(DisplayList list, FileKind kind, double s) {
 void _paintFolder(DisplayList list, double s, {bool zip = false}) {
   final double r = s * 0.07;
   // The back panel and its tab, darker, behind the front.
-  _fill(list, s * .06, s * .16, s * .46, s * .34, _folderBack, radius: r);
-  _fill(list, s * .06, s * .24, s * .94, s * .84, _folderBack, radius: r);
-  _fill(list, s * .06, s * .34, s * .94, s * .86, _folderFront, radius: r);
-  _fill(list, s * .06, s * .34, s * .94, s * .38, _folderEdge);
+  // Windows 11's proportions: a little wider than tall, the tab a third
+  // of the width, the front panel taking most of the height.
+  final double l = s * (s >= 32 ? .14 : .06);
+  final double rr = s * (s >= 32 ? .86 : .94);
+  final double w = rr - l;
+  _fill(list, l, s * .22, l + w * .42, s * .36, _folderBack, radius: r);
+  _fill(list, l, s * .28, rr, s * .78, _folderBack, radius: r);
+  _fill(list, l, s * .36, rr, s * .80, _folderFront, radius: r);
+  _fill(list, l, s * .36, rr, s * .395, _folderEdge);
   if (zip) {
     // A zipped folder: the zipper down the middle.
     final double x = s * .5;
-    for (double y = s * .38; y < s * .80; y += s * .08) {
+    for (double y = s * .40; y < s * .76; y += s * .08) {
       _fill(list, x - s * .05, y, x, y + s * .04, const Color(0xFF6B4E0E));
       _fill(list, x, y + s * .04, x + s * .05, y + s * .08,
           const Color(0xFF6B4E0E));
