@@ -24,6 +24,7 @@ void main() {
     'neutral-light': ThemeData.neutralLight,
     'neutral-dark': ThemeData.neutralDark,
     'studio-dark': ThemeData.studioDark,
+    'studio-light': ThemeData.studioLight,
     'modern-light': ThemeData.modernLight,
     'modern-dark': ThemeData.modernDark,
     'material-light': ThemeData.materialLight,

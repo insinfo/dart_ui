@@ -1,6 +1,8 @@
 /// What a widget may ask of the window it is in.
 library;
 
+import '../geometry/offset.dart';
+import '../geometry/size.dart';
 import '../platform/native_window.dart';
 import 'widget.dart';
 
@@ -22,6 +24,35 @@ abstract interface class WindowController {
 
   /// Changes the pointer shape while it is over this window.
   void setCursor(SystemCursor cursor);
+
+  /// [local] (a position in this window, logical pixels) on the screen.
+  Offset toScreen(Offset local);
+
+  /// Opens a window that belongs to this one - a floating panel, a tool
+  /// palette - showing [child], on every platform.
+  ///
+  /// It stays with this window (closing this one closes it) and is
+  /// non-modal. [position] is in screen coordinates; null lets the platform
+  /// place it. [onClosed] runs once when it goes away, whoever closed it.
+  /// [child] is a new widget tree: wrap it in the same [Theme] the panel
+  /// would have had here, and rebuild it from shared state with a listener.
+  Future<ChildWindow> openChildWindow({
+    required Widget child,
+    String? title,
+    Size size = const Size(320, 480),
+    Offset? position,
+    void Function()? onClosed,
+  });
+}
+
+/// A window opened with [WindowController.openChildWindow].
+abstract interface class ChildWindow {
+  bool get isOpen;
+
+  /// Closes it; [WindowController.openChildWindow]'s `onClosed` then runs.
+  void close();
+
+  void setTitle(String title);
 }
 
 /// Provides the [WindowController] of the window the subtree is in.

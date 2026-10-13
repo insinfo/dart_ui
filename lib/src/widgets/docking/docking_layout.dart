@@ -131,6 +131,9 @@ class DockingItem extends DockingArea implements DropArea {
     this.closable = true,
     this.maximizable,
     this.leading,
+    this.draggable = true,
+    this.floatable = true,
+    this.showHeader = true,
     bool maximized = false,
     super.size,
     super.weight,
@@ -144,6 +147,16 @@ class DockingItem extends DockingArea implements DropArea {
   bool closable;
   bool? maximizable;
   Widget? leading;
+
+  /// Whether its header or tab can be dragged to another place.
+  bool draggable;
+
+  /// Whether it can leave the layout as a window of its own.
+  bool floatable;
+
+  /// Whether it draws a title bar when it stands alone (not in tabs). The
+  /// document area of an editor has none.
+  bool showHeader;
   bool _maximized;
 
   bool get maximized => _maximized;
@@ -272,6 +285,17 @@ class DockingTabs extends DockingParentArea implements DropArea {
 
   @override
   DockingAreaType get type => DockingAreaType.tabs;
+}
+
+/// Where an item was: next to [neighbour] (an item id) on [position].
+final class DockingPlacement {
+  const DockingPlacement(this.neighbour, this.position, {this.size});
+
+  final Object? neighbour;
+  final DropPosition position;
+
+  /// Its size along the split it was in, in pixels, when it had one.
+  final double? size;
 }
 
 /// Owns a docking tree and emits a revision whenever it changes.
@@ -452,6 +476,83 @@ class DockingLayout extends ValueNotifier<int> {
       dropPosition ?? DropPosition.center,
       dropIndex,
     );
+    _maximizedArea = null;
+    _changed();
+  }
+
+  /// Moves [item] to one edge of the whole layout - beside everything else.
+  void moveItemToRoot({
+    required DockingItem item,
+    required DropPosition position,
+  }) {
+    _requireMember(item);
+    if (position == DropPosition.center) return;
+    _remove(item);
+    _refreshHierarchy();
+    _wrapRoot(item, position);
+    _maximizedArea = null;
+    _changed();
+  }
+
+  void _wrapRoot(DockingItem item, DropPosition position) {
+    final DockingArea? root = _root;
+    if (root == null) {
+      _root = item;
+      return;
+    }
+    final horizontal =
+        position == DropPosition.left || position == DropPosition.right;
+    final before =
+        position == DropPosition.left || position == DropPosition.top;
+    final children =
+        before ? <DockingArea>[item, root] : <DockingArea>[root, item];
+    _root = horizontal ? DockingRow(children) : DockingColumn(children);
+  }
+
+  /// Where [item] sits, as a neighbour and a side - enough to put it back
+  /// after it was floated in a window and the layout changed meanwhile.
+  DockingPlacement placementOf(DockingItem item) {
+    _requireMember(item);
+    final parent = item.parent;
+    if (parent == null) return const DockingPlacement(null, DropPosition.right);
+    if (parent is DockingTabs) {
+      for (final DockingArea sibling in parent._children) {
+        if (!identical(sibling, item)) {
+          return DockingPlacement(sibling.id, DropPosition.center);
+        }
+      }
+    }
+    final int index = parent.indexOf(item);
+    final bool row = parent is DockingRow;
+    final DockingArea neighbour =
+        index > 0 ? parent.childAt(index - 1) : parent.childAt(index + 1);
+    final Object? anchor = _firstItemId(neighbour);
+    final DropPosition side = index > 0
+        ? (row ? DropPosition.right : DropPosition.bottom)
+        : (row ? DropPosition.left : DropPosition.top);
+    return DockingPlacement(anchor, side, size: item.size);
+  }
+
+  Object? _firstItemId(DockingArea area) {
+    if (area is DockingItem) return area.id;
+    if (area is DockingTabs) return area.childAt(0).id;
+    if (area is DockingParentArea) return _firstItemId(area.childAt(0));
+    return null;
+  }
+
+  /// Puts [item] (not in the layout) back where [placement] says, or on the
+  /// right edge when its neighbour has gone.
+  void restoreItem(DockingItem item, DockingPlacement placement) {
+    if (item.layoutId == id) return;
+    item.size = placement.size ?? item.size;
+    final DockingItem? anchor = placement.neighbour == null
+        ? null
+        : findDockingItem(placement.neighbour);
+    if (anchor == null) {
+      _wrapRoot(item, DropPosition.right);
+    } else {
+      _insert(item, anchor, placement.position, null);
+    }
     _maximizedArea = null;
     _changed();
   }

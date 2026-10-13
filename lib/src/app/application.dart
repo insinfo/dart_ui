@@ -171,6 +171,7 @@ import '../scheduler/manual_dispatcher.dart';
 import '../semantics/accessibility.dart';
 import '../text/shaper.dart' show TextDirection;
 import '../widgets/client_decoration.dart';
+import '../widgets/combo_box.dart' show ComboBoxScope;
 import '../widgets/context_menu.dart' show ContextMenuScope;
 import '../widgets/control.dart';
 import '../widgets/controls.dart' show ClipboardScope, TextInputScope;
@@ -1122,6 +1123,9 @@ final class ApplicationWindow with DisposableMixin {
   /// window is the thing whose lifetime it describes.
   void Function()? _onPopupWindowRetired;
 
+  /// Runs once when this window is retired - a child window's `onClosed`.
+  void Function()? _onRetired;
+
   final DisposableBag _resources;
 
   Widget _rootWidget;
@@ -1467,14 +1471,21 @@ final class ApplicationWindow with DisposableMixin {
                       // Inside the app so the bar takes the theme. The frame
                       // draws nothing until the window system declines to
                       // decorate the window - see [ClientDecoratedWindow].
-                      home: switch (nativeWindow) {
-                        final ClientDecoratedWindow window =>
-                          ClientDecorationFrame(
-                            window: window,
-                            child: _rootWidget,
-                          ),
-                        _ => _rootWidget,
-                      },
+                      // Every window gets a combo-box layer: a drop-down needs
+                      // one high in the tree, and a window opened later - a
+                      // floating panel, a dialog - must not fail to build one
+                      // because nobody thought to wrap it. An inner scope
+                      // still wins for its subtree.
+                      home: ComboBoxScope(
+                        child: switch (nativeWindow) {
+                          final ClientDecoratedWindow window =>
+                            ClientDecorationFrame(
+                              window: window,
+                              child: _rootWidget,
+                            ),
+                          _ => _rootWidget,
+                        },
+                      ),
                     ),
                   ),
                 ),
@@ -3641,6 +3652,11 @@ final class Application with DisposableMixin {
     // during teardown still owes its opener the callback it promised exactly
     // once, and a `PopupHandle` left believing it is open would answer
     // `isOpen` true for a window that no longer exists.
+    final void Function()? retired = window._onRetired;
+    if (retired != null) {
+      window._onRetired = null;
+      retired();
+    }
     final void Function()? popupRetired = window._onPopupWindowRetired;
     if (popupRetired != null) {
       window._onPopupWindowRetired = null;
@@ -4530,4 +4546,47 @@ final class _ApplicationWindowController implements WindowController {
 
   @override
   void setCursor(SystemCursor cursor) => _window.nativeWindow.setCursor(cursor);
+
+  @override
+  Offset toScreen(Offset local) => _window.nativeWindow.clientToScreen(local);
+
+  @override
+  Future<ChildWindow> openChildWindow({
+    required Widget child,
+    String? title,
+    Size size = const Size(320, 480),
+    Offset? position,
+    void Function()? onClosed,
+  }) async {
+    final ApplicationWindow window = await _window.application.openWindow(
+      rootWidget: child,
+      title: title,
+      size: size,
+      position: position,
+      owner: _window.id,
+      kind: WindowKind.dialog,
+      focus: true,
+    );
+    window._onRetired = onClosed;
+    return _ApplicationChildWindow(window);
+  }
+}
+
+final class _ApplicationChildWindow implements ChildWindow {
+  _ApplicationChildWindow(this._window);
+
+  final ApplicationWindow _window;
+
+  @override
+  bool get isOpen => !_window.isDisposed;
+
+  @override
+  void close() {
+    if (!_window.isDisposed) _window.close();
+  }
+
+  @override
+  void setTitle(String title) {
+    if (!_window.isDisposed) _window.nativeWindow.setTitle(title);
+  }
 }

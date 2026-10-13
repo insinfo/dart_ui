@@ -1053,6 +1053,47 @@ final class ThemeData {
     ),
   );
 
+  /// The light half of [studioDark]: the same neutral greys turned over,
+  /// the same compact density and a cyan accent dark enough to read on
+  /// white.
+  static const ThemeData studioLight = ThemeData(
+    name: 'studio-light',
+    accent: Color(0xFF0072B8),
+    accentHovered: Color(0xFF00649F),
+    accentPressed: Color(0xFF005A91),
+    accentSubtle: Color(0xFFD6EBF8),
+    surfaceBase: Color(0xFFE4E4E4),
+    surfaceSunken: Color(0xFFCDCDCD),
+    surface: Color(0xFFF2F2F2),
+    surfaceAlternate: Color(0xFFE9E9E9),
+    surfaceRaised: Color(0xFFFFFFFF),
+    borderSubtle: Color(0xFFDADADA),
+    border: Color(0xFFC4C4C4),
+    borderStrong: Color(0xFF7A7A7A),
+    foreground: Color(0xFF1E1E1E),
+    foregroundSecondary: Color(0xFF555555),
+    disabledForeground: Color(0xFF8E8E8E),
+    disabledSurface: Color(0xFFE4E4E4),
+    hoverSurface: Color(0xFFE0E0E0),
+    pressedSurface: Color(0xFFD2D2D2),
+    focusRing: Color(0xFF0072B8),
+    selection: Color(0xFFCFE6F6),
+    colorScheme: ColorScheme.light(
+      primary: Color(0xFF0072B8),
+      onPrimary: Color(0xFFFFFFFF),
+      surface: Color(0xFFF2F2F2),
+      onSurface: Color(0xFF1E1E1E),
+      surfaceContainer: Color(0xFFE9E9E9),
+      outline: Color(0xFFC4C4C4),
+    ),
+    textTheme: TextTheme(base: 12),
+    iconTheme: IconThemeData(color: Color(0xFF333333), size: 16),
+    density: ThemeDensity.compact,
+    cornerRadius: 4,
+    controlHeight: 26,
+    controlPadding: 8,
+  );
+
   /// dart_ui's own modern defaults: rounder, roomier, 14 px text. Not
   /// Material - that is [materialLight]; until 12/10/2026 this one carried
   /// the name.
