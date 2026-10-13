@@ -149,6 +149,20 @@ enum SelectDrag {
 
   /// Drawing a rubber band over the page.
   marquee,
+
+  /// Moving a guide line.
+  guide,
+}
+
+/// A guide the Pick tool dragged: which, and from where to where. The
+/// guide is already at [to]; whoever records the step puts it back at
+/// [from] first, or removes it when it was dropped off the page.
+final class GuideEdit {
+  const GuideEdit(this.guide, this.from, this.to);
+
+  final VectorGuide guide;
+  final double from;
+  final double to;
 }
 
 /// sK1's SELECT, MOVE and RESIZE controllers, as one state machine.
@@ -185,6 +199,35 @@ class SelectToolController extends ToolController {
   Rect? _marquee;
   SelectionTransaction? _transaction;
   SelectionEdit? _edit;
+  VectorGuide? _guide;
+  double _guideFrom = 0;
+  GuideEdit? _guideEdit;
+
+  /// Takes the guide move the gesture just finished, once.
+  GuideEdit? takeGuideEdit() {
+    final GuideEdit? edit = _guideEdit;
+    _guideEdit = null;
+    return edit;
+  }
+
+  /// The guide within grab distance of [point], on a visible, editable guide
+  /// layer of [page] - topmost first, since guides sit above the artwork.
+  VectorGuide? guideAt(Offset point, VectorPage page) {
+    final double tolerance = SelectionManager.handleGrabPixels * onePixel;
+    for (final DocumentObject child in page.children.reversed) {
+      if (child is! GuideLayer || !child.isVisible || !child.isEditable) {
+        continue;
+      }
+      for (final DocumentObject g in child.children.reversed) {
+        if (g is VectorGuide &&
+            ((g.isHorizontal ? point.dy : point.dx) - g.position).abs() <=
+                tolerance) {
+          return g;
+        }
+      }
+    }
+    return null;
+  }
 
   /// The pivot as it was when a pivot drag started, so the drag is applied to
   /// the press state rather than accumulated - the same rule every other
@@ -295,6 +338,16 @@ class SelectToolController extends ToolController {
     }
     _handle = null;
 
+    // A guide over the artwork is grabbed before the artwork: it is the top
+    // layer, and the only way to move one.
+    final VectorGuide? guide = isShiftHeld ? null : guideAt(point, page);
+    if (guide != null) {
+      _guide = guide;
+      _guideFrom = guide.position;
+      _drag = SelectDrag.guide;
+      return;
+    }
+
     final SelectableObject? hit =
         selection.hitTest(point, page, tolerance: _objectTolerance);
     // Shift over an object still means "band select": sK1's MoveController
@@ -394,6 +447,11 @@ class SelectToolController extends ToolController {
         selection.rotationPivot = moved + _snapCorrection(asPoint, page, null);
       case SelectDrag.marquee:
         _marquee = Rect.fromPoints(press, point);
+      case SelectDrag.guide:
+        final VectorGuide? guide = _guide;
+        if (guide == null) return;
+        guide.position =
+            _guideFrom + (guide.isHorizontal ? delta.dy : delta.dx);
       case SelectDrag.none:
         break;
     }
@@ -449,9 +507,15 @@ class SelectToolController extends ToolController {
         // and pushing an entry for it would stop Ctrl+Z meaning "undo the last
         // change to the drawing".
         break;
+      case SelectDrag.guide:
+        final VectorGuide? guide = _guide;
+        if (guide != null && guide.position != _guideFrom) {
+          _guideEdit = GuideEdit(guide, _guideFrom, guide.position);
+        }
       case SelectDrag.none:
         break;
     }
+    _guide = null;
     _drag = SelectDrag.none;
     _handle = null;
     _marquee = null;
@@ -467,6 +531,9 @@ class SelectToolController extends ToolController {
     // which is free now that the press state is a snapshot.
     _transaction?.reset();
     if (_drag == SelectDrag.pivot) selection.rotationPivot = _pivotAtPress;
+    if (_drag == SelectDrag.guide) _guide?.position = _guideFrom;
+    _guide = null;
+    _guideEdit = null;
     _drag = SelectDrag.none;
     _handle = null;
     _marquee = null;

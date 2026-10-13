@@ -7,16 +7,16 @@
 
 | | feitas | parciais | faltam | total | cobertura |
 |---|---|---|---|---|---|
-| P0 | 54 | 9 | 0 | 63 | 93% |
+| P0 | 55 | 8 | 0 | 63 | 94% |
 | P1 | 7 | 2 | 35 | 44 | 18% |
 | P2 | 1 | 0 | 67 | 68 | 1% |
-| **todas** | 62 | 11 | 102 | 175 | 39% |
+| **todas** | 63 | 10 | 102 | 175 | 39% |
 
 Cobertura = (feitas + metade das parciais) / total.
 
 Menus do editor: 82 de 97 linhas têm comando registrado; as outras aparecem desabilitadas.
 
-Comandos registrados: 117.
+Comandos registrados: 118.
 
 ## Por área
 
@@ -30,7 +30,7 @@ Comandos registrados: 117.
 | Alinhar e distribuir (teclas) | 5 | 1 | 2 | 8 | 69% |
 | Menus | 3 | 1 | 4 | 8 | 44% |
 | Edição de nós | 10 | 0 | 4 | 14 | 71% |
-| Encaixe, guias, réguas e grade | 3 | 1 | 3 | 7 | 50% |
+| Encaixe, guias, réguas e grade | 4 | 0 | 3 | 7 | 57% |
 | Página e documento | 3 | 0 | 5 | 8 | 38% |
 | Formatos de arquivo | 0 | 0 | 4 | 4 | 0% |
 
@@ -238,7 +238,7 @@ Comandos registrados: 117.
 | ❌ | Snap off (Alt+Q) | P1 |  | tudo |
 | ❌ | Dynamic / alignment guides | P1 |  | tudo |
 | ✅ | Rulers | P0 | teste: "both rulers are mounted, one per axis" |  |
-| 🟡 | Guides | P0 | `view.guides`, `guide.add`, `guide.clear` | dragged out of a ruler; not yet moved or removed by dragging the guide itself |
+| ✅ | Guides | P0 | `view.guides`, `guide.add`, `guide.move`, `guide.delete`, `guide.clear` |  |
 | ✅ | Grid | P1 | `view.grid` |  |
 | ❌ | Master page | P2 |  | tudo |
 

@@ -201,6 +201,21 @@ class _MeasuredCanvas extends StatelessWidget {
           },
           onTransformCommitted: model.commitTransform,
           onNodesEdited: model.nodesEdited,
+          // A guide dragged with the Pick tool: put back, then moved - or,
+          // let go on a ruler, deleted - by a command, so it is one undo
+          // step and the same as the menus and the CLI would do.
+          onGuideDragged: (GuideEdit edit, {required bool outside}) {
+            final CommandRegistry? registry = scope?.registry;
+            edit.guide.position = edit.from;
+            if (registry == null) return;
+            registry.execute(
+                outside ? 'guide.delete' : 'guide.move', <String, Object?>{
+              'orientation':
+                  edit.guide.isHorizontal ? 'horizontal' : 'vertical',
+              'position': edit.from,
+              if (!outside) 'to': edit.to,
+            });
+          },
           onTextCommitted: model.commitTextEdit,
           onHint: (String hint) => model.refresh(hint),
         ),

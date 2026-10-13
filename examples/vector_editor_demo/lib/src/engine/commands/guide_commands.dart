@@ -67,6 +67,30 @@ List<CommandSpec> guideCommands(EditorContext context) {
       },
     ),
     CommandSpec(
+      id: 'guide.move',
+      label: 'Move guide',
+      params: <CommandParam>[
+        ..._where,
+        const CommandParam('to', CommandParamType.number,
+            required: true, description: 'the new position, in points'),
+      ],
+      when: (CommandArgs args) {
+        final String? document = context.needsDocument(args);
+        if (document != null) return document;
+        if (!args.has('orientation') || !args.has('position')) return null;
+        return model.guideAt(horizontal(args), args.number('position')) == null
+            ? 'no guide there'
+            : null;
+      },
+      run: (CommandArgs args) {
+        final VectorGuide guide =
+            model.guideAt(horizontal(args), args.number('position'))!;
+        final double to = args.number('to');
+        model.edit('Move guide', () => guide.position = to);
+        return null;
+      },
+    ),
+    CommandSpec(
       id: 'guide.clear',
       label: 'Clear guides',
       when: (CommandArgs args) =>

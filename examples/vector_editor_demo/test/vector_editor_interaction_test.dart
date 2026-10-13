@@ -531,6 +531,36 @@ void main() {
       harness.dispose();
     });
 
+    test('the Pick tool moves a guide, and a ruler takes it away', () {
+      final harness = _Harness()..withoutSnapping();
+      harness.windowState.registry.execute('guide.add',
+          <String, Object?>{'orientation': 'horizontal', 'position': 300});
+      harness.frame();
+      // Off the artwork, on the guide.
+      harness.dragDocument(const Offset(500, 300), const Offset(500, 340));
+      expect(harness.model.guides.single.position, closeTo(340, 0.5));
+      harness.model.undo();
+      expect(harness.model.guides.single.position, 300,
+          reason: 'the move is one undo step');
+
+      // Dragged up onto the top ruler: gone.
+      RenderRuler? top;
+      void walk(RenderBox node) {
+        if (node is RenderRuler && !node.isVertical) top = node;
+        node.visitChildren(walk);
+      }
+
+      walk(harness.owner.renderRoot!);
+      final Offset ruler =
+          top!.localToGlobal(Offset(top!.size.width / 2, top!.size.height / 2));
+      harness.dragGlobal(
+          harness.toGlobal(const Offset(500, 300)), Offset(ruler.dx, ruler.dy));
+      expect(harness.model.guides, isEmpty);
+      harness.model.undo();
+      expect(harness.model.guides, hasLength(1));
+      harness.dispose();
+    });
+
     test('the outline is drawn with its caps, joins and dashes', () {
       final harness = _Harness()..withoutSnapping();
       final rectangle = harness.rectangle;

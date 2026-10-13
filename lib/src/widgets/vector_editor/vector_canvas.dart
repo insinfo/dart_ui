@@ -131,6 +131,7 @@ class VectorCanvas extends StatefulWidget {
     this.onTextCommitted,
     this.onHint,
     this.onNodesEdited,
+    this.onGuideDragged,
   });
 
   final VectorDocument doc;
@@ -176,6 +177,11 @@ class VectorCanvas extends StatefulWidget {
   /// editor records one undo entry for the whole drag instead of one per
   /// pointer move - or, as before, none at all.
   final void Function(SelectionEdit edit)? onTransformCommitted;
+
+  /// The Pick tool dragged a guide. The guide is where it was dropped;
+  /// [outside] says it was let go off the canvas - back on a ruler, which is
+  /// how CorelDRAW deletes one. The editor records the step.
+  final void Function(GuideEdit edit, {required bool outside})? onGuideDragged;
 
   /// An in-canvas text edit was committed, with the string it replaced.
   final void Function(VectorText object, String before, String after)?
@@ -558,6 +564,11 @@ class VectorCanvasState extends State<VectorCanvas>
     if (controller is SelectToolController) {
       final SelectionEdit? edit = controller.takeEdit();
       if (edit != null) widget.onTransformCommitted?.call(edit);
+      final GuideEdit? guide = controller.takeGuideEdit();
+      if (guide != null) {
+        widget.onGuideDragged
+            ?.call(guide, outside: !_viewport.rect.contains(global));
+      }
     } else if (controller is ShapeToolController && controller.takeEdited()) {
       edited = true;
       widget.onNodesEdited?.call();
