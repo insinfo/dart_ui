@@ -5,6 +5,7 @@ import '../../foundation/lru_cache.dart';
 import '../../geometry/path.dart';
 import '../../geometry/rect.dart';
 import '../../geometry/size.dart';
+import '../../geometry/stroke.dart';
 import '../../geometry/transform2d.dart';
 import '../display_list_opcodes.dart';
 import '../xml/xml.dart';
@@ -32,6 +33,11 @@ final class SvgDrawPath {
     this.strokeColor,
     this.strokeWidth = 1,
     this.fillRule = pathFillRuleNonZero,
+    this.strokeCap = StrokeCap.butt,
+    this.strokeJoin = StrokeJoin.miter,
+    this.miterLimit = kDefaultMiterLimit,
+    this.dashArray,
+    this.dashOffset = 0,
   });
 
   final Path path;
@@ -43,6 +49,16 @@ final class SvgDrawPath {
   final int? strokeColor;
   final double strokeWidth;
   final int fillRule;
+
+  /// `stroke-linecap`, `stroke-linejoin`, `stroke-miterlimit`.
+  final StrokeCap strokeCap;
+  final StrokeJoin strokeJoin;
+  final double miterLimit;
+
+  /// `stroke-dasharray`, null for `none`, in the path's units; and
+  /// `stroke-dashoffset`.
+  final List<double>? dashArray;
+  final double dashOffset;
 }
 
 /// Parsed SVG geometry, independent from CPU/GPU rasterization.
@@ -238,6 +254,11 @@ final class _SvgCollector {
             _applyOpacity(style.stroke, style.opacity * style.strokeOpacity),
         strokeWidth: style.strokeWidth,
         fillRule: style.fillRule,
+        strokeCap: style.strokeCap,
+        strokeJoin: style.strokeJoin,
+        miterLimit: style.miterLimit,
+        dashArray: style.dashArray,
+        dashOffset: style.dashOffset,
       ),
     );
   }
@@ -254,6 +275,11 @@ final class _SvgStyle {
     required this.currentColor,
     required this.visible,
     required this.fillRule,
+    this.strokeCap = StrokeCap.butt,
+    this.strokeJoin = StrokeJoin.miter,
+    this.miterLimit = kDefaultMiterLimit,
+    this.dashArray,
+    this.dashOffset = 0,
   });
 
   factory _SvgStyle.initial(int currentColor) => _SvgStyle(
@@ -277,6 +303,11 @@ final class _SvgStyle {
   final int currentColor;
   final bool visible;
   final int fillRule;
+  final StrokeCap strokeCap;
+  final StrokeJoin strokeJoin;
+  final double miterLimit;
+  final List<double>? dashArray;
+  final double dashOffset;
 }
 
 _SvgStyle _styleFor(_SvgStyle parent, XmlElement element) {
@@ -292,6 +323,11 @@ _SvgStyle _styleFor(_SvgStyle parent, XmlElement element) {
     'display',
     'visibility',
     'fill-rule',
+    'stroke-linecap',
+    'stroke-linejoin',
+    'stroke-miterlimit',
+    'stroke-dasharray',
+    'stroke-dashoffset',
   ];
   for (final String name in names) {
     final String? value = element.getAttribute(name);
@@ -339,7 +375,48 @@ _SvgStyle _styleFor(_SvgStyle parent, XmlElement element) {
               throw SvgParseException('unsupported fill-rule "$value"'),
           }
         : parent.fillRule,
+    // Unknown keywords keep what was inherited, as a browser does with a
+    // value it cannot parse.
+    strokeCap: switch (values['stroke-linecap']?.toLowerCase()) {
+      'butt' => StrokeCap.butt,
+      'round' => StrokeCap.round,
+      'square' => StrokeCap.square,
+      _ => parent.strokeCap,
+    },
+    strokeJoin: switch (values['stroke-linejoin']?.toLowerCase()) {
+      // SVG 2's miter-clip and arcs fall back to a miter, as SVG 2 says a
+      // renderer without them should.
+      'miter' || 'miter-clip' || 'arcs' => StrokeJoin.miter,
+      'round' => StrokeJoin.round,
+      'bevel' => StrokeJoin.bevel,
+      _ => parent.strokeJoin,
+    },
+    miterLimit: values.containsKey('stroke-miterlimit')
+        ? (double.tryParse(values['stroke-miterlimit']!) ?? parent.miterLimit)
+        : parent.miterLimit,
+    dashArray: values.containsKey('stroke-dasharray')
+        ? _dashes(values['stroke-dasharray']!)
+        : parent.dashArray,
+    dashOffset: values.containsKey('stroke-dashoffset')
+        ? (parseSvgLength(values['stroke-dashoffset']) ?? parent.dashOffset)
+        : parent.dashOffset,
   );
+}
+
+/// A `stroke-dasharray`: `none`, or lengths separated by commas or spaces.
+/// What the pen does with an odd count or a bad entry is `StrokeExtras`'s
+/// business; here only the list is read.
+List<double>? _dashes(String value) {
+  final String trimmed = value.trim();
+  if (trimmed.isEmpty || trimmed.toLowerCase() == 'none') return null;
+  final List<double> out = <double>[];
+  for (final String part in trimmed.split(RegExp(r'[\s,]+'))) {
+    if (part.isEmpty) continue;
+    final double? length = parseSvgLength(part);
+    if (length == null) return null;
+    out.add(length);
+  }
+  return out.isEmpty ? null : out;
 }
 
 double _number(XmlElement element, String name, double fallback) =>

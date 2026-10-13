@@ -235,6 +235,26 @@ void main() {
       expect(middle.dy, closeTo(20, 1e-9));
     });
 
+    test('a stroke keeps its cap, join, miter limit and dashes', () {
+      final LottieAnimation animation = parseLottieJson(_composition('''
+[{"ty": 4, "ind": 1, "nm": "L", "ip": 0, "op": 60, "st": 0, "sr": 1, "ks": {},
+  "shapes": [{"ty": "st", "nm": "s", "c": {"a": 0, "k": [0, 0, 0, 1]},
+              "o": {"a": 0, "k": 100}, "w": {"a": 0, "k": 2},
+              "lc": 1, "lj": 3, "ml": 10,
+              "d": [{"n": "d", "nm": "dash", "v": {"a": 0, "k": 5}},
+                    {"n": "g", "nm": "gap", "v": {"a": 0, "k": 3}},
+                    {"n": "o", "nm": "offset", "v": {"a": 0, "k": 2}}]}]}]
+'''));
+      final LottieShapeStroke stroke =
+          animation.layers.single.shapes.single as LottieShapeStroke;
+      expect(stroke.lineCap, 1);
+      expect(stroke.lineJoin, 3);
+      expect(stroke.miterLimit, 10);
+      expect(<String>[for (final LottieDash d in stroke.dashes) d.kind],
+          <String>['d', 'g', 'o']);
+      expect(stroke.dashes[1].value.valueAt(0), 3);
+    });
+
     test('colours normalise whichever scale they were written in', () {
       LottieColor colorOf(String k) {
         final LottieAnimation animation = parseLottieJson(_composition('''

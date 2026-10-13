@@ -32,6 +32,7 @@ import 'dart:math' as math;
 import '../../geometry/offset.dart';
 import '../../geometry/path.dart';
 import '../../geometry/rect.dart';
+import '../../geometry/stroke.dart';
 import '../../geometry/transform2d.dart';
 import '../display_list.dart';
 import '../display_list_geometry.dart';
@@ -526,6 +527,27 @@ final class LottiePainter {
                 ),
             style: paintStyleStroke,
             strokeWidth: width,
+            strokeCap: switch (stroke.lineCap) {
+              1 => StrokeCap.butt,
+              3 => StrokeCap.square,
+              _ => StrokeCap.round,
+            },
+            strokeJoin: switch (stroke.lineJoin) {
+              1 => StrokeJoin.miter,
+              3 => StrokeJoin.bevel,
+              _ => StrokeJoin.round,
+            },
+            miterLimit: stroke.miterLimit,
+            dashArray: stroke.dashes.isEmpty
+                ? null
+                : <double>[
+                    for (final LottieDash dash in stroke.dashes)
+                      if (dash.kind != 'o') dash.value.valueAt(frame),
+                  ],
+            dashOffset: <double>[
+              for (final LottieDash dash in stroke.dashes)
+                if (dash.kind == 'o') dash.value.valueAt(frame),
+            ].fold(0.0, (double a, double b) => a + b),
           ),
         );
       }

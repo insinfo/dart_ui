@@ -348,6 +348,15 @@ final class _Parser {
           _doubleProperty(raw['w'], 1),
           lineCap: _double(raw['lc'], 2).toInt(),
           lineJoin: _double(raw['lj'], 2).toInt(),
+          miterLimit: _double(raw['ml'], 4),
+          dashes: <LottieDash>[
+            if (raw['d'] case final List<Object?> entries)
+              for (final Object? entry in entries)
+                if (entry case final Map<String, Object?> dash
+                    when dash['n'] is String)
+                  LottieDash(
+                      dash['n']! as String, _doubleProperty(dash['v'], 0)),
+          ],
         );
       case 'tr':
         return LottieShapeTransform(name, _transform(raw));

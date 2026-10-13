@@ -1,4 +1,5 @@
 import 'package:dart_ui/src/geometry/rect.dart';
+import 'package:dart_ui/src/geometry/stroke.dart';
 import 'package:dart_ui/src/graphics/svg/svg_picture.dart';
 import 'package:test/test.dart';
 
@@ -84,5 +85,34 @@ void main() {
       ),
       throwsA(isA<FormatException>()),
     );
+  });
+
+  test('stroke caps, joins, miter limits and dashes are read and inherited',
+      () {
+    final SvgPicture picture = SvgPicture.parse('''
+      <svg width="40" height="40">
+        <g stroke="black" stroke-linecap="round" stroke-dasharray="4 2"
+           stroke-linejoin="bevel">
+          <line x1="0" y1="0" x2="40" y2="0"/>
+          <path d="M0 10 L40 10" style="stroke-linejoin: round;
+             stroke-dasharray: 3, 1, 2; stroke-dashoffset: 1.5;
+             stroke-miterlimit: 8; stroke-linecap: square"/>
+          <polyline points="0 20 40 20" stroke-dasharray="none"
+             stroke-linecap="wobbly"/>
+        </g>
+      </svg>
+    ''');
+    final List<SvgDrawPath> paths = picture.paths;
+    expect(paths[0].strokeCap, StrokeCap.round, reason: 'inherited');
+    expect(paths[0].strokeJoin, StrokeJoin.bevel);
+    expect(paths[0].dashArray, <double>[4, 2]);
+    expect(paths[1].strokeCap, StrokeCap.square, reason: 'the inline wins');
+    expect(paths[1].strokeJoin, StrokeJoin.round);
+    expect(paths[1].dashArray, <double>[3, 1, 2]);
+    expect(paths[1].dashOffset, 1.5);
+    expect(paths[1].miterLimit, 8);
+    expect(paths[2].dashArray, isNull, reason: 'none');
+    expect(paths[2].strokeCap, StrokeCap.round,
+        reason: 'an unknown keyword keeps what was inherited');
   });
 }

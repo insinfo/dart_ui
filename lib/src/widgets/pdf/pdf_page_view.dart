@@ -8,6 +8,7 @@ import '../../geometry/offset.dart';
 import '../../geometry/path.dart';
 import '../../geometry/rect.dart';
 import '../../geometry/size.dart';
+import '../../geometry/stroke.dart';
 import '../../geometry/transform2d.dart';
 import '../../graphics/color.dart';
 import '../../graphics/display_list.dart';
@@ -646,13 +647,34 @@ final class _PdfDisplayListOutputDevice extends PdfOutputDevice {
     final Path transformed = path.transform(transform);
     list.drawPath(
       list.addPath(transformed),
-      list.addPaint(
-        colorArgb: _withOpacity(state.strokeColor, state.strokeAlpha),
-        style: paintStyleStroke,
-        strokeWidth: state.lineWidth * (sx + sy) / 2,
-      ),
+      _strokePaint(state, (sx + sy) / 2),
     );
   }
+
+  /// The pen the graphics state describes - width, cap (J), join (j),
+  /// miter limit (M) and dash (d) - in device units: the path is stroked
+  /// after it is transformed, so every length is scaled the way the width
+  /// is.
+  int _strokePaint(PdfGfxState state, double scale) => list.addPaint(
+        colorArgb: _withOpacity(state.strokeColor, state.strokeAlpha),
+        style: paintStyleStroke,
+        strokeWidth: state.lineWidth * scale,
+        strokeCap: switch (state.lineCap) {
+          PdfLineCap.butt => StrokeCap.butt,
+          PdfLineCap.round => StrokeCap.round,
+          PdfLineCap.projectingSquare => StrokeCap.square,
+        },
+        strokeJoin: switch (state.lineJoin) {
+          PdfLineJoin.miter => StrokeJoin.miter,
+          PdfLineJoin.round => StrokeJoin.round,
+          PdfLineJoin.bevel => StrokeJoin.bevel,
+        },
+        miterLimit: state.miterLimit,
+        dashArray: state.dashPattern.isEmpty
+            ? null
+            : <double>[for (final double d in state.dashPattern) d * scale],
+        dashOffset: state.dashPhase * scale,
+      );
 
   @override
   void drawText(
@@ -725,11 +747,7 @@ final class _PdfDisplayListOutputDevice extends PdfOutputDevice {
         text,
         font,
         baseline,
-        list.addPaint(
-          colorArgb: _withOpacity(state.strokeColor, state.strokeAlpha),
-          style: paintStyleStroke,
-          strokeWidth: state.lineWidth * (sx + sy) / 2,
-        ),
+        _strokePaint(state, (sx + sy) / 2),
       );
     }
   }

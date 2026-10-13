@@ -232,6 +232,11 @@ final class RenderSvg extends RenderBox {
             style: paintStyleStroke,
             strokeWidth: draw.strokeWidth,
             antiAlias: true,
+            strokeCap: draw.strokeCap,
+            strokeJoin: draw.strokeJoin,
+            miterLimit: draw.miterLimit,
+            dashArray: draw.dashArray,
+            dashOffset: draw.dashOffset,
           ),
         );
       }

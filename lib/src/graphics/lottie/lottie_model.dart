@@ -583,11 +583,20 @@ final class LottieShapeStroke extends LottieShapeElement {
     this.width, {
     this.lineCap = 2,
     this.lineJoin = 2,
+    this.miterLimit = 4,
+    this.dashes = const <LottieDash>[],
   });
 
   final LottieProperty<LottieColor> color;
   final LottieProperty<double> opacity;
   final LottieProperty<double> width;
+
+  /// Lottie's `ml`.
+  final double miterLimit;
+
+  /// Lottie's `d`: dash and gap lengths in order, and at most one offset,
+  /// each animatable.
+  final List<LottieDash> dashes;
 
   /// Lottie's `lc`: 1 butt, 2 round, 3 square.
   final int lineCap;
@@ -597,6 +606,17 @@ final class LottieShapeStroke extends LottieShapeElement {
 
   @override
   LottieShapeKind get kind => LottieShapeKind.stroke;
+}
+
+/// One entry of a stroke's `d`: a dash, a gap, or the pattern's offset.
+final class LottieDash {
+  const LottieDash(this.kind, this.value);
+
+  /// `n`: `d` for a dash, `g` for a gap, `o` for the offset.
+  final String kind;
+
+  /// `v`.
+  final LottieProperty<double> value;
 }
 
 /// A `tr` inside a group.
