@@ -6,10 +6,16 @@ library;
 import '../commands/command.dart';
 import '../commands/command_registry.dart';
 import '../commands/menu_spec.dart' show guardCommandState;
+import '../graphics/color.dart';
 import '../layout/box_constraints.dart';
 import '../layout/edge_insets.dart';
+import 'basic.dart';
+import 'gesture_detector.dart';
 import 'icon.dart';
 import 'icon_button.dart';
+import 'proxy.dart';
+import 'theme.dart';
+import 'tooltip.dart';
 import 'widget.dart';
 
 /// An [IconButton] that runs [command] through [registry].
@@ -79,6 +85,67 @@ final class CommandIconButton extends StatelessWidget {
       constraints: BoxConstraints(minWidth: minSize, minHeight: minSize),
       tooltip: tooltipOf(registry, command, params: params, label: label),
       onPressed: enabled ? () => registry.execute(command, params) : null,
+    );
+  }
+}
+
+/// A text chip that runs [command] through [registry] - one of a set of
+/// choices (a line cap, a fill rule) where a word says more than an icon.
+///
+/// Selected while the command reports itself checked with [params]; greyed
+/// and inert, with the reason in its tooltip, while it cannot run.
+final class CommandChip extends StatelessWidget {
+  const CommandChip({
+    super.key,
+    required this.registry,
+    required this.command,
+    required this.label,
+    this.params = const <String, Object?>{},
+  });
+
+  final CommandRegistry registry;
+  final String command;
+  final String label;
+  final Map<String, Object?> params;
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final CommandSpec? spec = registry[command];
+    final CommandArgs args = CommandArgs(params);
+    final bool enabled = spec != null &&
+        guardCommandState(() => spec.isEnabledWith(args), false);
+    final bool selected = spec != null &&
+        (guardCommandState(() => spec.isCheckedWith(args), null) ?? false);
+    final Color text = !enabled
+        ? theme.disabledForeground
+        : selected
+            ? theme.accent
+            : theme.foregroundSecondary;
+    return Tooltip(
+      message: CommandIconButton.tooltipOf(registry, command,
+          params: params, label: label),
+      child: GestureDetector(
+        onTap: enabled ? () => registry.execute(command, params) : null,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 2),
+          child: DecoratedBox(
+            decoration: BoxDecoration(
+              color: selected && enabled ? theme.accentSubtle : null,
+              border: BoxBorder(
+                color: selected && enabled ? theme.accent : theme.border,
+                width: 1,
+              ),
+              radius: theme.cornerRadiusSmall,
+            ),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              child:
+                  Text(label, style: theme.textTheme.labelSmall, color: text),
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
