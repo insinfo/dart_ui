@@ -36,7 +36,8 @@ Future<void> main(List<String> args) async {
       ),
     ),
   );
-  owner.updateRoot(const VectorEditorApp());
+  owner.updateRoot(
+      PopupScope(host: InTreePopupHost(), child: const VectorEditorApp()));
 
   DisplayList settle() {
     var list = DisplayList();
@@ -61,7 +62,7 @@ Future<void> main(List<String> args) async {
           .firstWhere(test);
 
   if (scenario.startsWith('menu:')) {
-    state.model.openMenu = int.parse(scenario.substring(5));
+    state.model.menuControllers[int.parse(scenario.substring(5))].open();
     state.model.refresh();
   } else if (scenario == 'select') {
     state.model.selectAll();

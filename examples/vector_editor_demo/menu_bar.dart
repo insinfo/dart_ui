@@ -1,10 +1,7 @@
-/// The application menu bar and its drop-downs.
-///
-/// The bar itself is a row of headers; the open drop-down is *not* a child of
-/// its header. It is returned separately so the window can put it in a [Stack]
-/// above everything else - a menu painted inside the bar would be clipped by
-/// the bar's own 24 px and painted under every widget that follows it, which is
-/// the same ordering trap the canvas used to fall into.
+/// The application menu bar: the framework's [MenuBar], fed from the
+/// command catalog, so every menu has submenus, keyboard navigation (Alt or
+/// F10, the arrows, mnemonics), hover switching between menus, icons, check
+/// marks and the platform's shortcut notation.
 library;
 
 import 'package:dart_ui/dart_ui.dart';
@@ -12,160 +9,47 @@ import 'package:dart_ui/dart_ui.dart';
 import 'commands.dart';
 import 'metrics.dart';
 
-/// The row of menu headers.
+/// The row of menus.
 class EditorMenuBar extends StatelessWidget {
   const EditorMenuBar({
     super.key,
     required this.menus,
-    required this.openIndex,
-    required this.onOpen,
+    this.controllers = const <MenuController>[],
   });
 
   final List<EditorMenu> menus;
 
-  /// The open drop-down's index, or -1.
-  final int openIndex;
-
-  /// Reports the header the user pressed. -1 means "close whatever is open".
-  final void Function(int index) onOpen;
-
-  /// The width a header with [label] occupies.
-  ///
-  /// Shared with [dropdownLeftFor] so the drop-down lines up with the header it
-  /// belongs to without either of them measuring text.
-  static double headerWidth(String label) =>
-      label.length * ChromeMetrics.menuHeaderCharacterWidth +
-      ChromeMetrics.menuHeaderPadding * 2;
-
-  /// The x a drop-down for menu [index] opens at.
-  static double dropdownLeftFor(List<EditorMenu> menus, int index) {
-    var left = 0.0;
-    for (var i = 0; i < index && i < menus.length; i++) {
-      left += headerWidth(menus[i].label);
-    }
-    return left;
-  }
+  /// One per menu, when something outside the bar needs to open one - a
+  /// screenshot tool, a test.
+  final List<MenuController> controllers;
 
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
     return SizedBox(
       height: ChromeMetrics.menuBarHeight,
-      child: DecoratedBox(
-        decoration: BoxDecoration(
-          color: theme.surfaceAlternate,
-          border: BoxBorder(color: theme.border, width: 1),
-        ),
-        child: Row(
+      child: ColoredBox(
+        color: theme.surfaceAlternate,
+        child: MenuBar(
           children: <Widget>[
-            for (var index = 0; index < menus.length; index++)
-              _MenuHeader(
-                label: menus[index].label,
-                open: index == openIndex,
-                onTap: () => onOpen(index == openIndex ? -1 : index),
+            for (var i = 0; i < menus.length; i++)
+              SubmenuButton(
+                controller: i < controllers.length ? controllers[i] : null,
+                menuChildren: menuWidgets(menus[i].items),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(horizontal: 6),
+                  child: Text(menus[i].label),
+                ),
               ),
           ],
         ),
       ),
     );
   }
-}
 
-class _MenuHeader extends StatelessWidget {
-  const _MenuHeader({
-    required this.label,
-    required this.open,
-    required this.onTap,
-  });
-
-  final String label;
-  final bool open;
-  final void Function() onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return GestureDetector(
-      behavior: GestureHitTestBehavior.opaque,
-      onTap: onTap,
-      child: SizedBox(
-        // Explicit, because a header is a click target: an intrinsically sized
-        // label leaves the gaps between words unclickable.
-        width: EditorMenuBar.headerWidth(label),
-        height: ChromeMetrics.menuBarHeight,
-        child: ColoredBox(
-          color: open ? theme.accent : theme.surfaceAlternate,
-          child: Center(
-            child: Text(
-              label,
-              // A menu header is a control label, so it is `labelLarge`: the
-              // theme's own base size at medium weight. It was 12 px, two
-              // under the 13 px base, which is why the menu bar read as a
-              // smaller-typed strip glued to the top of a differently typed
-              // window.
-              style: theme.textTheme.labelLarge,
-              color: open ? theme.colorScheme.onPrimary : theme.foreground,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-/// The open drop-down, positioned under its header.
-///
-/// Returned by the window rather than built by the bar so it can be stacked
-/// over the whole window. Tapping anywhere outside closes it.
-class EditorMenuOverlay extends StatelessWidget {
-  const EditorMenuOverlay({
-    super.key,
-    required this.menus,
-    required this.openIndex,
-    required this.onDismiss,
-  });
-
-  final List<EditorMenu> menus;
-  final int openIndex;
-  final void Function() onDismiss;
-
-  @override
-  Widget build(BuildContext context) {
-    if (openIndex < 0 || openIndex >= menus.length) return const SizedBox();
-    final menu = menus[openIndex];
-    return Stack(
-      children: <Widget>[
-        // The dismiss barrier: a click anywhere else closes the menu without
-        // reaching the widget under it, which is what makes an open menu modal.
-        Positioned.fill(
-          child: GestureDetector(
-            behavior: GestureHitTestBehavior.opaque,
-            onTap: onDismiss,
-            child: const SizedBox(),
-          ),
-        ),
-        Positioned(
-          left: EditorMenuBar.dropdownLeftFor(menus, openIndex),
-          top: ChromeMetrics.menuBarHeight,
-          child: Menu(
-            items: <MenuItem>[
-              for (final item in menu.toMenuItems())
-                item.isSeparator
-                    ? item
-                    : MenuItem(
-                        label: item.label,
-                        shortcut: item.shortcut,
-                        enabled: item.enabled,
-                        disabledReason: item.disabledReason,
-                        onSelected: () {
-                          item.onSelected?.call();
-                          onDismiss();
-                        },
-                      ),
-            ],
-          ),
-        ),
-      ],
-    );
-  }
+  /// [items] as menu widgets: commands, separators (`null`) and submenus.
+  static List<Widget> menuWidgets(List<EditorCommand?> items) => <Widget>[
+        for (final EditorCommand? item in items)
+          if (item == null) const MenuDivider() else item.toMenuWidget(),
+      ];
 }

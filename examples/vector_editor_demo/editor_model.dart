@@ -211,6 +211,10 @@ class EditorModel {
   /// The menu whose drop-down is open, by index, or -1.
   int openMenu = -1;
 
+  /// One per menu of the menu bar, so a tool or a test can open one.
+  final List<MenuController> menuControllers =
+      List<MenuController>.generate(12, (_) => MenuController());
+
   /// The free-text message at the right of the status bar.
   String status = 'Ready';
 

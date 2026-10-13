@@ -451,11 +451,7 @@ class MainWindowState extends State<MainWindow> {
                     children: <Widget>[
                       EditorMenuBar(
                         menus: menus,
-                        openIndex: model.openMenu,
-                        onOpen: (int index) {
-                          model.openMenu = index;
-                          model.refresh();
-                        },
+                        controllers: model.menuControllers,
                       ),
                       StandardToolbar(commands: catalog.standardToolbar),
                       ContextPanel(model: model),
@@ -522,17 +518,6 @@ class MainWindowState extends State<MainWindow> {
                     ],
                   ),
                 ),
-                if (model.openMenu >= 0)
-                  Positioned.fill(
-                    child: EditorMenuOverlay(
-                      menus: menus,
-                      openIndex: model.openMenu,
-                      onDismiss: () {
-                        model.openMenu = -1;
-                        model.refresh();
-                      },
-                    ),
-                  ),
               ],
             ),
           ),

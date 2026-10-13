@@ -215,6 +215,7 @@ export 'src/widgets/callback_shortcuts.dart';
 export 'src/widgets/client_decoration.dart';
 export 'src/widgets/color_picker.dart';
 export 'src/widgets/combo_box.dart';
+export 'src/widgets/context_menu_area.dart';
 export 'src/widgets/control.dart';
 export 'src/widgets/controls.dart';
 export 'src/widgets/dart_ui_app.dart';

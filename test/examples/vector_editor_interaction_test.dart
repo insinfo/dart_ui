@@ -1220,7 +1220,8 @@ final class _Harness {
         rootConstraints: BoxConstraints.tight(kWindowSize),
       ),
     );
-    owner.updateRoot(const VectorEditorApp());
+    owner.updateRoot(
+        PopupScope(host: InTreePopupHost(), child: const VectorEditorApp()));
     frame();
     // Every test below starts from the select tool with nothing selected.
     model

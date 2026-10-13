@@ -485,7 +485,8 @@ final class _Harness {
         rootConstraints: BoxConstraints.tight(kWindowSize),
       ),
     );
-    owner.updateRoot(const VectorEditorApp());
+    owner.updateRoot(
+        PopupScope(host: InTreePopupHost(), child: const VectorEditorApp()));
     frame();
   }
 

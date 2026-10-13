@@ -64,6 +64,7 @@ class EditorCommand {
     this.enabled = true,
     this.disabledReason,
     this.checked,
+    this.children,
   });
 
   final String id;
@@ -81,6 +82,40 @@ class EditorCommand {
 
   /// Non-null for a toggle, which the menu marks with a leading tick.
   final bool? checked;
+
+  /// A submenu's commands; `null` entries are separators.
+  final List<EditorCommand?>? children;
+
+  /// This command as a row of a framework menu: an icon or a check mark,
+  /// the label, and the shortcut in the platform's notation. A submenu when
+  /// it has [children].
+  Widget toMenuWidget() {
+    final IconData? glyph = icon;
+    final Widget leading = checked != null
+        ? (checked!
+            ? const Icon(PhosphorIcons.check, size: 14)
+            : const SizedBox(width: 14))
+        : glyph == null
+            ? const SizedBox(width: 14)
+            : Icon(glyph, size: 14);
+    final List<EditorCommand?>? sub = children;
+    if (sub != null) {
+      return SubmenuButton(
+        leadingIcon: leading,
+        menuChildren: <Widget>[
+          for (final EditorCommand? item in sub)
+            if (item == null) const MenuDivider() else item.toMenuWidget(),
+        ],
+        child: Text(label),
+      );
+    }
+    return MenuItemButton(
+      leadingIcon: leading,
+      shortcut: shortcut?.label(),
+      onPressed: enabled ? onInvoke : null,
+      child: Text(label),
+    );
+  }
 
   MenuItem toMenuItem() => MenuItem(
         label: checked == null ? label : '${checked! ? '✓ ' : '   '}$label',
