@@ -16,6 +16,8 @@
 /// `controls.dart` re-exports this file, so no existing import changes.
 library;
 
+import 'dart:math' as math;
+
 import '../foundation/diagnostics.dart' show UnsupportedCapabilityError;
 import '../foundation/value_notifier.dart';
 import '../geometry/offset.dart';
@@ -23,6 +25,7 @@ import '../geometry/rect.dart';
 import '../geometry/size.dart';
 import '../graphics/color.dart';
 import '../graphics/display_list.dart';
+import '../graphics/display_list_geometry.dart';
 import '../layout/render_box.dart';
 import '../platform/clipboard.dart';
 import '../platform/editing_convention.dart';
@@ -31,7 +34,8 @@ import '../platform/native_window.dart';
 import '../platform/text_input.dart';
 import '../rendering/text/font_registry.dart';
 import '../semantics/semantics.dart';
-import '../text/paragraph.dart' show Paragraph, TextBox;
+import '../text/paragraph.dart'
+    show Paragraph, ParagraphStyle, TextBox, TextLine;
 import '../text/shaper.dart' show UnsupportedScriptException;
 import '../text/typeface.dart' show ScaledTypeface;
 import 'context_menu.dart';
@@ -776,7 +780,23 @@ final class TextField extends StatefulWidget {
     this.editingConvention,
     this.onSubmitted,
     this.decorated = true,
-  });
+    this.maxLines = 1,
+    this.minLines,
+  })  : assert(maxLines == null || maxLines > 0, 'maxLines is at least 1'),
+        assert(minLines == null || minLines > 0, 'minLines is at least 1'),
+        assert(
+          minLines == null || maxLines == null || minLines <= maxLines,
+          'minLines cannot exceed maxLines',
+        );
+
+  /// How many lines the field shows before it scrolls: 1, the default, is a
+  /// single-line field; more makes a text area, where Enter starts a new
+  /// line, the arrows move between lines and a paste keeps its line breaks;
+  /// null grows with the text without limit.
+  final int? maxLines;
+
+  /// How many lines a text area shows even when it holds fewer; null is one.
+  final int? minLines;
 
   final TextEditingController controller;
 
@@ -886,6 +906,8 @@ final class _TextFieldState extends State<TextField> {
           editingConvention: widget.editingConvention,
           onSubmitted: widget.onSubmitted,
           decorated: widget.decorated,
+          maxLines: widget.maxLines,
+          minLines: widget.minLines,
           theme: Theme.of(context),
           // Read where the theme is read, and for the same reason: the field
           // must not be handed a clipboard by its parent, and must not reach
@@ -915,6 +937,8 @@ final class _TextFieldRenderWidget extends RenderObjectWidget {
     required this.editingConvention,
     required this.onSubmitted,
     required this.decorated,
+    required this.maxLines,
+    required this.minLines,
     required this.theme,
     required this.clipboard,
     required this.contextMenu,
@@ -931,6 +955,8 @@ final class _TextFieldRenderWidget extends RenderObjectWidget {
   final EditingConvention? editingConvention;
   final void Function(String value)? onSubmitted;
   final bool decorated;
+  final int? maxLines;
+  final int? minLines;
   final ThemeData theme;
   final Clipboard clipboard;
   final ContextMenuController? contextMenu;
@@ -951,6 +977,8 @@ final class _TextFieldRenderWidget extends RenderObjectWidget {
         ..editingConvention = editingConvention
         ..onSubmitted = onSubmitted
         ..decorated = decorated
+        ..maxLines = maxLines
+        ..minLines = minLines
         ..theme = theme
         ..clipboard = clipboard
         ..contextMenu = contextMenu
@@ -974,6 +1002,8 @@ final class _TextFieldRenderWidget extends RenderObjectWidget {
       ..editingConvention = editingConvention
       ..onSubmitted = onSubmitted
       ..decorated = decorated
+      ..maxLines = maxLines
+      ..minLines = minLines
       ..theme = theme
       ..clipboard = clipboard
       ..contextMenu = contextMenu
@@ -1015,8 +1045,47 @@ final class RenderTextField extends RenderBox
   EditingConvention get _convention =>
       editingConvention ?? platformEditingConvention;
 
-  /// Called on a plain Enter; see [TextField.onSubmitted].
+  /// Called on a plain Enter; see [TextField.onSubmitted]. In a text area
+  /// Enter is a new line, and Ctrl+Enter (Cmd+Enter on a Mac) submits.
   void Function(String value)? onSubmitted;
+
+  int? _maxLines = 1;
+
+  /// See [TextField.maxLines].
+  int? get maxLines => _maxLines;
+
+  set maxLines(int? value) {
+    if (value == _maxLines) return;
+    _maxLines = value;
+    _scrollY = 0;
+    markNeedsLayout();
+  }
+
+  int? _minLines;
+
+  /// See [TextField.minLines].
+  int? get minLines => _minLines;
+
+  set minLines(int? value) {
+    if (value == _minLines) return;
+    _minLines = value;
+    markNeedsLayout();
+  }
+
+  /// Whether this is a text area: more than one line, wrapped.
+  bool get isMultiline => _maxLines != 1;
+
+  /// How far a text area's content is scrolled up, in pixels.
+  double _scrollY = 0;
+
+  /// The wrap width of a text area: the box less its padding.
+  double _innerWidth = double.infinity;
+
+  /// The x a run of Up and Down presses keeps to, so the caret comes back
+  /// to its column after crossing a shorter line. Forgotten on any other
+  /// move or edit.
+  double? _goalX;
+  bool _movingVertically = false;
 
   /// See [TextField.decorated].
   bool get decorated => _decorated;
@@ -1228,7 +1297,14 @@ final class RenderTextField extends RenderBox
     final ScaledTypeface? font = labelFont;
     if (font == null) return null;
     try {
-      return uiTextPainter.layout(displayText, font);
+      return isMultiline
+          ? uiTextPainter.layout(
+              displayText,
+              font,
+              maxWidth: _innerWidth,
+              style: const ParagraphStyle(breakWords: true),
+            )
+          : uiTextPainter.layout(displayText, font);
     } on UnsupportedScriptException {
       return null;
     }
@@ -1240,9 +1316,56 @@ final class RenderTextField extends RenderBox
       enabled ? SystemCursor.text : null;
 
   @override
-  void performLayout() => size = constraints.constrain(
-        Size(200, theme.effectiveControlHeight),
-      );
+  void performLayout() {
+    if (!isMultiline) {
+      size = constraints.constrain(Size(200, theme.effectiveControlHeight));
+      return;
+    }
+    final double width =
+        constraints.hasBoundedWidth ? constraints.maxWidth : 200;
+    _innerWidth =
+        math.max(0, width - theme.effectiveControlPadding * 2).toDouble();
+    final Paragraph? laid = paragraph;
+    final int lines = laid == null ? 1 : math.max(1, laid.lines.length);
+    final int least = _minLines ?? 1;
+    final int most = _maxLines ?? math.max(lines, least);
+    final int shown = lines.clamp(least, math.max(least, most));
+    size = constraints.constrain(
+      Size(width, shown * _lineHeight(laid) + _verticalPadding * 2),
+    );
+    _clampScroll(laid);
+  }
+
+  /// The height of one line of a text area.
+  double _lineHeight(Paragraph? laid) => laid != null && laid.lines.isNotEmpty
+      ? laid.lines.first.height
+      : labelLineHeight;
+
+  /// Above and below a text area's lines: what centres one line in a
+  /// single-line field, so a one-line area and a field look the same.
+  double get _verticalPadding =>
+      math.max(2.0, (theme.effectiveControlHeight - labelLineHeight) / 2);
+
+  double get _viewportHeight =>
+      math.max(0.0, size.height - _verticalPadding * 2);
+
+  void _clampScroll(Paragraph? laid) {
+    final double content = laid?.height ?? 0;
+    _scrollY = _scrollY.clamp(0.0, math.max(0.0, content - _viewportHeight));
+  }
+
+  /// Scrolls a text area just enough to show the caret.
+  void _revealCaret(Paragraph laid) {
+    final Rect caret = laid.getCaretRect(
+        TextPosition(_controller.selectionEnd, affinity: _controller.affinity));
+    final double view = _viewportHeight;
+    if (caret.top < _scrollY) {
+      _scrollY = caret.top;
+    } else if (caret.bottom > _scrollY + view) {
+      _scrollY = caret.bottom - view;
+    }
+    _clampScroll(laid);
+  }
 
   @override
   bool hitTestSelf(Offset position) => true;
@@ -1287,6 +1410,14 @@ final class RenderTextField extends RenderBox
         _onSelectionPointerDown(event);
       case PointerDownEvent(button: PointerButton.secondary):
         _onContextMenuPointerDown(event);
+      case PointerScrollEvent() when isMultiline:
+        final Paragraph? laid = paragraph;
+        final double delta = event.scrollDeltaUnit == ScrollDeltaUnit.lines
+            ? event.scrollDelta.dy * _lineHeight(laid)
+            : event.scrollDelta.dy;
+        _scrollY += delta;
+        _clampScroll(laid);
+        markNeedsPaint();
       case PointerMoveEvent() when _dragging:
         // The pointer is captured by [ControlBehavior], so this arrives even
         // when it has left the field - which is exactly when a selection drag
@@ -1424,8 +1555,11 @@ final class RenderTextField extends RenderBox
     _clipboardWork = _clipboardWork.then((void _) async {
       try {
         final String? text = await _clipboard.readText();
-        _clipboardHasText =
-            text != null && PastedText.forSingleLine(text).isNotEmpty;
+        _clipboardHasText = text != null &&
+            (isMultiline
+                    ? PastedText.forMultiline(text)
+                    : PastedText.forSingleLine(text))
+                .isNotEmpty;
       } on Object {
         _clipboardHasText = null;
       }
@@ -1569,7 +1703,10 @@ final class RenderTextField extends RenderBox
       // boundary was hit, so a click on the right half of an emoji lands after
       // it rather than between its surrogates, and the affinity it returns is
       // what puts the caret on the correct side of a direction change.
-      return laid.getPositionForOffset(Offset(x, 0));
+      return laid.getPositionForOffset(Offset(
+        x,
+        isMultiline ? local.dy - _verticalPadding + _scrollY : 0,
+      ));
     }
     return TextPosition(
       labelIndexAtOffset(displayText, x).clamp(0, _controller.value.length),
@@ -1589,6 +1726,11 @@ final class RenderTextField extends RenderBox
     // PC, Cmd on a Mac. The backends report what was held; what a chord means
     // is decided here, once. See `editing_convention.dart`.
     final bool control = event.modifiers.contains(convention.commandModifier);
+    if (isMultiline) {
+      final bool? handled =
+          _multilineKey(event, shift: shift, control: control, mac: mac);
+      if (handled != null) return handled;
+    }
     if (mac && !control && event.modifiers.contains(convention.wordModifier)) {
       // Option is the Mac's word modifier. Only the four editing keys are
       // claimed: Option with a letter is how a Mac keyboard types accents, and
@@ -2005,6 +2147,16 @@ final class RenderTextField extends RenderBox
   /// toolkit that computed them in two places.
   Rect _localCaretRect() {
     final double padding = theme.effectiveControlPadding;
+    if (isMultiline) {
+      final Paragraph? laid = paragraph;
+      if (laid != null) {
+        final Rect caret = laid.getCaretRect(TextPosition(
+            _controller.selectionEnd,
+            affinity: _controller.affinity));
+        return Rect.fromLTWH(padding + caret.left,
+            _verticalPadding + caret.top - _scrollY, 1, caret.height);
+      }
+    }
     final double lineHeight = labelLineHeight;
     final double textTop = ((size.height - lineHeight) / 2).roundToDouble();
     final Paragraph? laid = paragraph;
@@ -2217,7 +2369,9 @@ final class RenderTextField extends RenderBox
     }
     final String? raw = await _read();
     if (raw == null) return false;
-    final String text = PastedText.forSingleLine(raw);
+    final String text = isMultiline
+        ? PastedText.forMultiline(raw)
+        : PastedText.forSingleLine(raw);
     if (text.isEmpty) {
       return _refuse(
         'paste',
@@ -2438,6 +2592,10 @@ final class RenderTextField extends RenderBox
         width: looksFocused ? 1.5 : 1,
       );
     }
+    if (isMultiline) {
+      _paintMultiline(list, rect, fillColor, looksFocused);
+      return;
+    }
     final double padding = theme.effectiveControlPadding;
     final double textTop = labelTopIn(rect);
     final String text = displayText;
@@ -2573,6 +2731,206 @@ final class RenderTextField extends RenderBox
     }
   }
 
+  /// A text area's content: the lines wrapped to the box, scrolled to keep
+  /// the caret in view, clipped to the padding. Selection, composition and
+  /// caret all come from the one paragraph the text is drawn from, so on
+  /// every line they agree about where a character is.
+  void _paintMultiline(
+    DisplayList list,
+    Rect rect,
+    Color fillColor,
+    bool looksFocused,
+  ) {
+    final double padding = theme.effectiveControlPadding;
+    final double vertical = _verticalPadding;
+    final Rect inner = Rect.fromLTRB(rect.left + padding, rect.top + vertical,
+        rect.right - padding, rect.bottom - vertical);
+    final Paragraph? laid = paragraph;
+    final String text = displayText;
+    if (laid != null && looksFocused) _revealCaret(laid);
+    final Offset origin = Offset(inner.left, inner.top - _scrollY);
+    list
+      ..save()
+      ..clipRectangle(Rect.fromLTRB(
+          rect.left + 1, inner.top, rect.right - 1, inner.bottom));
+    if (text.isEmpty && _label.isNotEmpty) {
+      paintLabel(
+        list,
+        _label,
+        Offset(inner.left, inner.top),
+        theme.foregroundSecondary,
+        maxWidth: inner.width,
+      );
+    } else if (laid != null) {
+      final Color? selectionColor = _controller.hasSelection && !_obscure
+          ? selectionColorFor(background: fillColor)
+          : null;
+      if (selectionColor != null) {
+        final ({int start, int end}) range = _controller.orderedSelection;
+        for (final TextBox box
+            in laid.getBoxesForSelection(range.start, range.end)) {
+          paintFill(list, box.rect.shift(origin), selectionColor);
+        }
+      }
+      uiTextPainter.paintParagraph(
+        list,
+        laid,
+        origin,
+        list.addPaint(colorArgb: foregroundColor().value, antiAlias: true),
+      );
+      if (_controller.isComposing && !_obscure) {
+        for (final _CompositionRun run
+            in _compositionRuns(_controller.composing)) {
+          for (final TextBox box
+              in laid.getBoxesForSelection(run.start, run.end)) {
+            final Rect r = box.rect.shift(origin);
+            paintFill(
+              list,
+              Rect.fromLTWH(
+                  r.left, r.bottom - run.thickness, r.width, run.thickness),
+              run.color(theme),
+            );
+          }
+        }
+      }
+    }
+    if (looksFocused &&
+        !_controller.hasSelection &&
+        !_hidesCompositionCaret &&
+        laid != null) {
+      final Rect caret = laid.getCaretRect(TextPosition(
+          _controller.selectionEnd,
+          affinity: _controller.affinity));
+      paintFill(
+        list,
+        Rect.fromLTWH(
+            origin.dx + caret.left, origin.dy + caret.top, 1, caret.height),
+        theme.foreground,
+      );
+    }
+    list.restore();
+  }
+
+  // --- a text area's keys ------------------------------------------------------
+
+  /// The keys a text area answers differently from a field, or null to let
+  /// the field's handling run: Enter is a new line, the arrows cross lines
+  /// keeping their column, Home and End stay on the line.
+  bool? _multilineKey(KeyEvent event,
+      {required bool shift, required bool control, required bool mac}) {
+    final bool alt = event.modifiers.contains(KeyModifier.alt);
+    switch (event.logicalKey) {
+      case logicalKeyEnter:
+        if (_controller.isComposing) return null;
+        if (control) {
+          if (onSubmitted == null) return false;
+          onSubmitted!(_controller.value);
+          return true;
+        }
+        if (alt) return null;
+        if (!_readOnly) _controller.replaceSelection('\n');
+        return true;
+      case logicalKeyArrowUp || logicalKeyArrowDown:
+        final bool up = event.logicalKey == logicalKeyArrowUp;
+        if (control) {
+          // Cmd+Up and Down go to the ends of the text on a Mac, as
+          // Ctrl+Home and End do on a PC.
+          if (!mac) return null;
+          up
+              ? _controller.moveCaretToStart(extend: shift)
+              : _controller.moveCaretToEnd(extend: shift);
+          return true;
+        }
+        if (alt) return null;
+        return _moveVertically(up ? -1 : 1, extend: shift);
+      case logicalKeyArrowLeft || logicalKeyArrowRight when control && mac:
+        _moveToLineEdge(
+            end: event.logicalKey == logicalKeyArrowRight, extend: shift);
+        return true;
+      case logicalKeyHome || logicalKeyEnd:
+        final bool end = event.logicalKey == logicalKeyEnd;
+        if (control) {
+          end
+              ? _controller.moveCaretToEnd(extend: shift)
+              : _controller.moveCaretToStart(extend: shift);
+          return true;
+        }
+        _moveToLineEdge(end: end, extend: shift);
+        return true;
+      case logicalKeyPageUp || logicalKeyPageDown:
+        final Paragraph? laid = paragraph;
+        final int lines = laid == null
+            ? 1
+            : math.max(1, (_viewportHeight / _lineHeight(laid)).floor() - 1);
+        return _moveVertically(
+            event.logicalKey == logicalKeyPageUp ? -lines : lines,
+            extend: shift);
+      default:
+        return null;
+    }
+  }
+
+  /// Moves the caret [lines] lines up (negative) or down, keeping to the
+  /// column the run of vertical moves started from; past the first line is
+  /// the start of the text, past the last its end.
+  bool _moveVertically(int lines, {required bool extend}) {
+    final Paragraph? laid = paragraph;
+    if (laid == null) return false;
+    final Rect caret = laid.getCaretRect(
+        TextPosition(_controller.selectionEnd, affinity: _controller.affinity));
+    final double x = _goalX ??= caret.left;
+    final double step = caret.height == 0 ? _lineHeight(laid) : caret.height;
+    final double y = lines < 0
+        ? caret.top + step * (lines + 0.5)
+        : caret.bottom + step * (lines - 0.5);
+    final TextPosition target = y < 0
+        ? const TextPosition(0)
+        : y > laid.height
+            ? TextPosition(_controller.value.length)
+            : laid.getPositionForOffset(Offset(x, y));
+    _movingVertically = true;
+    try {
+      if (extend) {
+        _controller.setSelection(_controller.selectionStart, target.offset,
+            affinity: target.affinity);
+      } else {
+        _controller.collapseToPosition(target);
+      }
+    } finally {
+      _movingVertically = false;
+    }
+    return true;
+  }
+
+  /// Moves the caret to the start or end of the line it is on - the visual
+  /// line, wrapped or not; a hard break's newline stays after it.
+  void _moveToLineEdge({required bool end, required bool extend}) {
+    final Paragraph? laid = paragraph;
+    if (laid == null) {
+      end
+          ? _controller.moveCaretToEnd(extend: extend)
+          : _controller.moveCaretToStart(extend: extend);
+      return;
+    }
+    final String text = _controller.value;
+    final TextLine line = laid.lines[
+        laid.lineIndexAt(_controller.selectionEnd, _controller.affinity)];
+    int target = end ? line.endIncludingWhitespace : line.start;
+    if (end && target > line.start && text.codeUnitAt(target - 1) == 0x0A) {
+      target--;
+    }
+    // The end of a wrapped line is the start of the next: upstream keeps
+    // the caret on this one.
+    final TextAffinity affinity =
+        end ? TextAffinity.upstream : TextAffinity.downstream;
+    if (extend) {
+      _controller.setSelection(_controller.selectionStart, target,
+          affinity: affinity);
+    } else {
+      _controller.collapseToPosition(TextPosition(target, affinity: affinity));
+    }
+  }
+
   /// The preedit split into the runs the input method described, in document
   /// offsets.
   ///
@@ -2608,6 +2966,9 @@ final class RenderTextField extends RenderBox
 
   void _onValueChanged(String value) {
     markNeedsPaint();
+    if (!_movingVertically) _goalX = null;
+    // A text area grows and shrinks with its lines.
+    if (isMultiline) markNeedsLayout();
     // The caret rectangle and the surrounding text are both functions of this
     // value, so an edit is exactly when the input method needs to hear about
     // them - the candidate window follows the caret, and contextual conversion

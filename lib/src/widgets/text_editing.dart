@@ -597,9 +597,10 @@ final class TextMotion {
 ///
 /// ## The line-break policy, chosen and stated
 ///
-/// Every field in this framework is single-line: there is no `maxLines`, and
-/// `RenderTextField` lays out one line's worth of height. Pasting `a\r\nb` has
-/// three plausible answers and this one takes the third:
+/// A single-line field - `TextField(maxLines: 1)`, the default - lays out one
+/// line's worth of height (a text area pastes through [forMultiline], which
+/// keeps the breaks). Pasting `a\r\nb` into a field has three plausible
+/// answers and this one takes the third:
 ///
 ///  1. **Truncate at the first break.** What the classic Win32 single-line edit
 ///    control does. Rejected: it silently drops text the user explicitly asked
@@ -671,6 +672,43 @@ final class PastedText {
       }
       // A low surrogate reaching here has no high half before it, because a
       // valid pair was consumed whole above.
+      if (unit >= 0xDC00 && unit <= 0xDFFF) continue;
+      if (unit < 0x20 || (unit >= 0x7F && unit <= 0x9F)) continue;
+      out.writeCharCode(unit);
+    }
+    return out.toString();
+  }
+
+  /// [text] for a field of several lines: every kind of line break
+  /// becomes one `\n` - a CRLF pair one, not two - tabs are kept, and the
+  /// rest of the non-text is dropped by [forSingleLine]'s rules.
+  static String forMultiline(String text) {
+    final StringBuffer out = StringBuffer();
+    for (int i = 0; i < text.length; i++) {
+      final int unit = text.codeUnitAt(i);
+      if (unit == 0x0D) {
+        if (i + 1 < text.length && text.codeUnitAt(i + 1) == 0x0A) i++;
+        out.write('\n');
+        continue;
+      }
+      if (_isBreak(unit)) {
+        out.write('\n');
+        continue;
+      }
+      if (unit == 0x09) {
+        out.writeCharCode(unit);
+        continue;
+      }
+      if (unit >= 0xD800 && unit <= 0xDBFF) {
+        final int next = i + 1 < text.length ? text.codeUnitAt(i + 1) : 0;
+        if (next >= 0xDC00 && next <= 0xDFFF) {
+          out
+            ..writeCharCode(unit)
+            ..writeCharCode(next);
+          i++;
+        }
+        continue;
+      }
       if (unit >= 0xDC00 && unit <= 0xDFFF) continue;
       if (unit < 0x20 || (unit >= 0x7F && unit <= 0x9F)) continue;
       out.writeCharCode(unit);
