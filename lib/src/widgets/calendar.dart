@@ -22,9 +22,8 @@
 ///     `localizations.dart` provides for exactly this.
 ///
 /// [DatePicker] is the field form: a button showing the formatted date that
-/// opens the calendar inline below itself. Inline rather than floating: the
-/// popup machinery a floating dropdown needs is `combo_box.dart`'s overlay,
-/// and borrowing it here is future work noted there.
+/// opens the calendar in a [Flyout] below itself - floating over what is
+/// below, closed by a click outside, by Escape, or by choosing a day.
 library;
 
 import '../geometry/offset.dart';
@@ -43,6 +42,7 @@ import 'control.dart';
 import 'controls.dart';
 import 'directionality.dart';
 import 'element.dart';
+import 'flyout.dart';
 import 'focus.dart';
 import 'focus_scope.dart';
 import 'icon.dart';
@@ -132,10 +132,15 @@ final class Calendar extends StatefulWidget {
     this.today,
     this.firstDate,
     this.lastDate,
+    this.autofocus = false,
   });
 
   final DateTime? selectedDate;
   final void Function(DateTime date)? onDateSelected;
+
+  /// Whether the day grid takes the keyboard when it appears - what a date
+  /// picker's popup wants, so the arrows move the day at once.
+  final bool autofocus;
 
   /// The month shown first; defaults to the selected date's month, then to
   /// [today]'s, then to [firstDate]'s, then to January 2001 - an arbitrary
@@ -292,75 +297,84 @@ final class _CalendarState extends State<Calendar> {
     final TextDirection direction = Directionality.of(context);
     final ThemeData theme = Theme.of(context);
     final List<DateTime> days = _gridDays(strings);
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: <Widget>[
-        // The month strip: the title is the loud thing, and the two arrows are
-        // navigation. Filled accent buttons here - which is what `Button` gives
-        // - made "previous month" the most emphatic control on a date picker.
-        Padding(
-          padding: const EdgeInsets.symmetric(
-            horizontal: Spacing.xs,
-            vertical: Spacing.xs,
-          ),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.center,
-            children: <Widget>[
-              IconButton(
-                icon: const Chevron(direction: ChevronDirection.back),
-                tooltip: 'Previous month',
-                onPressed: () => _movePage(-1),
-              ),
-              Expanded(
-                child: Align(
-                  child: Text(
-                    strings.monthTitle(_month),
-                    style: theme.textTheme.titleSmall,
+    // The grid's width and the content's height: a calendar is a fixed-size
+    // control, and one that stretched would push its month arrows away from
+    // the days, or fill a whole popup.
+    return SizedBox(
+      width: theme.effectiveControlHeight * 7,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: <Widget>[
+          // The month strip: the title is the loud thing, and the two arrows are
+          // navigation. Filled accent buttons here - which is what `Button` gives
+          // - made "previous month" the most emphatic control on a date picker.
+          Padding(
+            padding: const EdgeInsets.symmetric(
+              horizontal: Spacing.xs,
+              vertical: Spacing.xs,
+            ),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: <Widget>[
+                IconButton(
+                  icon: const Chevron(direction: ChevronDirection.back),
+                  tooltip: 'Previous month',
+                  onPressed: () => _movePage(-1),
+                ),
+                Expanded(
+                  child: Align(
+                    child: Text(
+                      strings.monthTitle(_month),
+                      style: theme.textTheme.titleSmall,
+                    ),
                   ),
                 ),
-              ),
-              IconButton(
-                icon: const Chevron(direction: ChevronDirection.forward),
-                tooltip: 'Next month',
-                onPressed: () => _movePage(1),
-              ),
-            ],
-          ),
-        ),
-        FocusAttachment(
-          node: _focusNode,
-          child: _CalendarGridWidget(
-            theme: theme,
-            focusNode: _focusNode,
-            weekdayAbbreviations: <String>[
-              for (int i = 0; i < 7; i++)
-                strings
-                    .weekdayAbbreviations[(strings.firstDayOfWeek - 1 + i) % 7],
-            ],
-            textDirection: direction,
-            monthTitle: strings.monthTitle(_month),
-            onKeyEvent: (KeyEvent event) =>
-                _handleKey(event, direction, strings),
-            children: <Widget>[
-              for (final DateTime day in days)
-                _CalendarDayWidget(
-                  key: ValueKey<String>('${day.year}-${day.month}-${day.day}'),
-                  day: day,
-                  outsideMonth: day.month != _month.month,
-                  selected: _sameDay(day, widget.selectedDate),
-                  today: _sameDay(day, widget.today),
-                  focused: _sameDay(day, _focusedDay),
-                  enabled: !_isDisabled(day) && widget.onDateSelected != null,
-                  theme: theme,
-                  onActivate: () {
-                    _focusNode.requestFocus(FocusChangeReason.pointer);
-                    _select(day);
-                  },
+                IconButton(
+                  icon: const Chevron(direction: ChevronDirection.forward),
+                  tooltip: 'Next month',
+                  onPressed: () => _movePage(1),
                 ),
-            ],
+              ],
+            ),
           ),
-        ),
-      ],
+          FocusAttachment(
+            node: _focusNode,
+            autofocus: widget.autofocus,
+            child: _CalendarGridWidget(
+              theme: theme,
+              focusNode: _focusNode,
+              weekdayAbbreviations: <String>[
+                for (int i = 0; i < 7; i++)
+                  strings.weekdayAbbreviations[
+                      (strings.firstDayOfWeek - 1 + i) % 7],
+              ],
+              textDirection: direction,
+              monthTitle: strings.monthTitle(_month),
+              onKeyEvent: (KeyEvent event) =>
+                  _handleKey(event, direction, strings),
+              children: <Widget>[
+                for (final DateTime day in days)
+                  _CalendarDayWidget(
+                    key:
+                        ValueKey<String>('${day.year}-${day.month}-${day.day}'),
+                    day: day,
+                    outsideMonth: day.month != _month.month,
+                    selected: _sameDay(day, widget.selectedDate),
+                    today: _sameDay(day, widget.today),
+                    focused: _sameDay(day, _focusedDay),
+                    enabled: !_isDisabled(day) && widget.onDateSelected != null,
+                    theme: theme,
+                    onActivate: () {
+                      _focusNode.requestFocus(FocusChangeReason.pointer);
+                      _select(day);
+                    },
+                  ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
@@ -733,37 +747,41 @@ final class DatePicker extends StatefulWidget {
 }
 
 final class _DatePickerState extends State<DatePicker> {
-  bool _open = false;
+  final FlyoutController _flyout = FlyoutController();
+
+  @override
+  void dispose() {
+    _flyout.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     final CalendarLocalizations strings =
         CalendarLocalizations.resolve(context);
     final DateTime? selected = widget.selectedDate;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: <Widget>[
-        Button(
-          label: selected == null
-              ? widget.placeholder
-              : strings.formatDate(selected),
-          onPressed:
-              widget.enabled ? () => setState(() => _open = !_open) : null,
-        ),
-        if (_open)
-          Calendar(
-            selectedDate: widget.selectedDate,
-            today: widget.today,
-            firstDate: widget.firstDate,
-            lastDate: widget.lastDate,
-            onDateSelected: (DateTime date) {
-              // Choosing a date is the end of the interaction: the calendar
-              // closes, which is what makes the button the picker's identity.
-              setState(() => _open = false);
-              widget.onDateSelected?.call(date);
-            },
-          ),
-      ],
+    return Flyout(
+      controller: _flyout,
+      autofocus: false,
+      builder: (BuildContext context, FlyoutController flyout) => Button(
+        label: selected == null
+            ? widget.placeholder
+            : strings.formatDate(selected),
+        onPressed: widget.enabled ? flyout.toggle : null,
+      ),
+      content: (BuildContext context, FlyoutController flyout) => Calendar(
+        selectedDate: widget.selectedDate,
+        today: widget.today,
+        firstDate: widget.firstDate,
+        lastDate: widget.lastDate,
+        autofocus: true,
+        onDateSelected: (DateTime date) {
+          // Choosing a date is the end of the interaction: the calendar
+          // closes, which is what makes the button the picker's identity.
+          flyout.close();
+          widget.onDateSelected?.call(date);
+        },
+      ),
     );
   }
 }

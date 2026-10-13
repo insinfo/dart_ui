@@ -541,7 +541,7 @@ final class _MenuAnchorState extends State<MenuAnchor>
     final Widget? built = widget.builder == null
         ? widget.child
         : widget.builder!(context, effectiveController, widget.child);
-    return _AnchorProbe(
+    return AnchorProbe(
       anchor: anchorBox,
       // A MenuAnchor with neither a builder nor a child is legal in Flutter and
       // means "an anchor with no visible part that a controller can still open
@@ -572,25 +572,25 @@ final class _MenuAnchorState extends State<MenuAnchor>
 /// A pass-through box rather than a hook on the anchor's own render object,
 /// because the anchor is whatever the application handed to [MenuAnchor.child]
 /// and this framework does not get to demand an interface of it.
-final class _AnchorProbe extends SingleChildRenderObjectWidget {
-  const _AnchorProbe({required this.anchor, required super.child});
+final class AnchorProbe extends SingleChildRenderObjectWidget {
+  const AnchorProbe({super.key, required this.anchor, required super.child});
 
   final MenuAnchorBox anchor;
 
   @override
-  _RenderAnchorProbe createRenderObject(BuildContext context) =>
-      _RenderAnchorProbe(anchor: anchor);
+  RenderAnchorProbe createRenderObject(BuildContext context) =>
+      RenderAnchorProbe(anchor: anchor);
 
   @override
   void updateRenderObject(
     BuildContext context,
-    covariant _RenderAnchorProbe object,
+    covariant RenderAnchorProbe renderObject,
   ) =>
-      object.anchor = anchor;
+      renderObject.anchor = anchor;
 }
 
-final class _RenderAnchorProbe extends RenderSingleChildBox {
-  _RenderAnchorProbe({required MenuAnchorBox anchor}) : _anchor = anchor {
+final class RenderAnchorProbe extends RenderSingleChildBox {
+  RenderAnchorProbe({required MenuAnchorBox anchor}) : _anchor = anchor {
     anchor.render = this;
   }
 
@@ -2455,7 +2455,7 @@ final class _MenuBarState extends State<MenuBar> {
       holder: _holder,
       horizontal: true,
       passThrough: () => _barBox.globalRect,
-      child: _AnchorProbe(
+      child: AnchorProbe(
         anchor: _barBox,
         child: _MenuPanel(
           horizontal: true,

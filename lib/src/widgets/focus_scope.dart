@@ -71,7 +71,8 @@ final class FocusAttachment extends StatefulWidget {
   final Widget child;
 
   /// Whether this node takes focus when it is first attached and nothing else
-  /// holds it.
+  /// in its scope holds it - so a control in a popup that just opened takes
+  /// the keyboard from the button that opened it.
   final bool autofocus;
 
   @override
@@ -102,7 +103,7 @@ final class _FocusAttachmentState extends State<FocusAttachment> {
     if (widget.node.parent != null) return;
     scope.add(widget.node);
     _attachedTo = widget.node;
-    if (widget.autofocus && scope.manager?.primaryFocus == null) {
+    if (widget.autofocus && !scope.hasFocus) {
       widget.node.requestFocus();
     }
   }

@@ -265,6 +265,7 @@ export 'src/widgets/element.dart';
 export 'src/widgets/errors.dart';
 export 'src/widgets/expander.dart';
 export 'src/widgets/fluent_icons.dart';
+export 'src/widgets/flyout.dart';
 export 'src/widgets/focus.dart';
 export 'src/widgets/focus_scope.dart';
 export 'src/widgets/gesture_detector.dart';

@@ -109,11 +109,19 @@ final class BuildOwner {
   ///
   /// [modalDepth] is the dialog the handler lives in, 0 for the window
   /// itself; see [BuildOwner.modalDepth].
+  ///
+  /// Handlers are offered keys in the order they were added, except that a
+  /// [first] one goes ahead of every handler already there: a popup opened
+  /// over a dialog takes Escape before the dialog layer does, so Escape
+  /// closes the popup, not the dialog under it.
   void addWindowKeyHandler(
     bool Function(KeyEvent event) handler, {
     int modalDepth = 0,
+    bool first = false,
   }) =>
-      _windowKeyHandlers.add((handler, modalDepth));
+      first
+          ? _windowKeyHandlers.insert(0, (handler, modalDepth))
+          : _windowKeyHandlers.add((handler, modalDepth));
 
   void removeWindowKeyHandler(bool Function(KeyEvent event) handler) =>
       _windowKeyHandlers.removeWhere(

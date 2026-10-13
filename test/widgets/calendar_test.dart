@@ -201,6 +201,40 @@ void main() {
       expect(harness.button.label, 'March 10, 2026');
       harness.dispose();
     });
+
+    test('the calendar floats below the button and takes the keyboard', () {
+      final harness = _PickerHarness();
+      harness.frame();
+      final double buttonHeight = harness.button.size.height;
+      harness.button.activate();
+      harness.frame();
+      final RenderCalendarGrid grid = harness.findGrid()!;
+      expect(grid.localToGlobal(Offset.zero).dy, greaterThan(buttonHeight),
+          reason: 'below the anchor');
+      expect(harness.button.size.height, buttonHeight,
+          reason: 'floating: the button did not grow to hold the calendar');
+      expect(harness.owner.focusManager.primaryFocus?.debugLabel, 'Calendar',
+          reason: 'the grid, not the "previous month" arrow');
+      harness.owner.dispatchKeyEvent(_key(logicalKeyArrowRight));
+      harness.owner.dispatchKeyEvent(_key(logicalKeyEnter));
+      harness.frame();
+      expect(harness.picked, DateTime(2026, 3, 16));
+      expect(harness.findGrid(), isNull);
+      harness.dispose();
+    });
+
+    test('Escape closes the calendar without choosing', () {
+      final harness = _PickerHarness();
+      harness.frame();
+      harness.button.activate();
+      harness.frame();
+      expect(harness.findGrid(), isNotNull);
+      expect(harness.owner.dispatchKeyEvent(_key(logicalKeyEscape)), isTrue);
+      harness.frame();
+      expect(harness.findGrid(), isNull);
+      expect(harness.picked, isNull);
+      harness.dispose();
+    });
   });
 }
 
@@ -306,11 +340,16 @@ final class _PickerHarness {
 
   void _mount() => owner.updateRoot(Directionality(
         textDirection: TextDirection.leftToRight,
-        child: DatePicker(
-          selectedDate: picked,
-          // A picker opened in a test must land on a known month.
-          today: DateTime(2026, 3, 15),
-          onDateSelected: (DateTime date) => picked = date,
+        child: PopupScope(
+          child: Align(
+            alignment: Alignment.topLeft,
+            child: DatePicker(
+              selectedDate: picked,
+              // A picker opened in a test must land on a known month.
+              today: DateTime(2026, 3, 15),
+              onDateSelected: (DateTime date) => picked = date,
+            ),
+          ),
         ),
       ));
 
