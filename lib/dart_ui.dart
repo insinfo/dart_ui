@@ -291,6 +291,7 @@ export 'src/widgets/routes.dart';
 export 'src/widgets/safe_area.dart';
 export 'src/widgets/scroll_view.dart';
 export 'src/widgets/scrollbar.dart';
+export 'src/widgets/semantics_widgets.dart';
 export 'src/widgets/signal_visualization.dart';
 export 'src/widgets/sizing.dart';
 export 'src/widgets/split_view.dart';
