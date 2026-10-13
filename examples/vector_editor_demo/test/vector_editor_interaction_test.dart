@@ -34,6 +34,8 @@
 ///     registered for the wheel signal.
 library;
 
+import 'dart:math' as math;
+
 import 'package:dart_ui/dart_ui.dart';
 import 'package:test/test.dart';
 import 'package:vector_editor_demo/src/engine/editor_model.dart';
@@ -489,6 +491,43 @@ void main() {
       // A quarter turn swaps the box's width and height.
       expect(after.width, closeTo(before.height, 1.5));
       expect(after.height, closeTo(before.width, 1.5));
+      harness.dispose();
+    });
+
+    test('Ctrl keeps a move on one axis', () {
+      final harness = _Harness()..withoutSnapping();
+      final rectangle = harness.rectangle;
+      final Rect before = rectangle.cacheBbox;
+      harness.tapDocument(before.center);
+      harness.dragDocument(before.center, before.center + const Offset(60, 15),
+          modifiers: const <KeyModifier>{KeyModifier.control});
+      final Rect after = rectangle.cacheBbox;
+      expect(after.center.dx, closeTo(before.center.dx + 60, 0.5));
+      expect(after.center.dy, closeTo(before.center.dy, 0.01),
+          reason: 'the smaller part of the drag is dropped');
+      harness.dispose();
+    });
+
+    test('Ctrl turns in 15 degree steps', () {
+      final harness = _Harness()..withoutSnapping();
+      final rectangle = harness.rectangle;
+      final Rect before = rectangle.cacheBbox;
+      harness
+        ..tapDocument(before.center)
+        ..tapDocument(before.center);
+      final Offset pivot = before.center;
+      final Offset from = Offset(before.right, before.top);
+      // 22 degrees: Ctrl makes it 15 (the nearer step under 22.5).
+      const double turn = 22 * math.pi / 180;
+      final Offset arm = from - pivot;
+      final Offset to = pivot +
+          Offset(arm.dx * math.cos(turn) - arm.dy * math.sin(turn),
+              arm.dx * math.sin(turn) + arm.dy * math.cos(turn));
+      harness.dragDocument(from, to,
+          modifiers: const <KeyModifier>{KeyModifier.control});
+      final List<double> t = rectangle.trafo;
+      final double degrees = math.atan2(t[1], t[0]) * 180 / math.pi;
+      expect(degrees.abs(), closeTo(15, 0.01));
       harness.dispose();
     });
 

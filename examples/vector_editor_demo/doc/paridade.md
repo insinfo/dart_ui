@@ -7,10 +7,10 @@
 
 | | feitas | parciais | faltam | total | cobertura |
 |---|---|---|---|---|---|
-| P0 | 52 | 10 | 1 | 63 | 90% |
+| P0 | 53 | 9 | 1 | 63 | 91% |
 | P1 | 7 | 2 | 35 | 44 | 18% |
 | P2 | 1 | 0 | 67 | 68 | 1% |
-| **todas** | 60 | 12 | 103 | 175 | 38% |
+| **todas** | 61 | 11 | 103 | 175 | 38% |
 
 Cobertura = (feitas + metade das parciais) / total.
 
@@ -23,7 +23,7 @@ Comandos registrados: 114.
 | área | feitas | parciais | faltam | total | cobertura |
 |---|---|---|---|---|---|
 | Caixa de ferramentas | 10 | 3 | 47 | 60 | 19% |
-| Interações no canvas | 8 | 2 | 3 | 13 | 69% |
+| Interações no canvas | 9 | 1 | 3 | 13 | 73% |
 | Barra de propriedades | 5 | 2 | 9 | 16 | 38% |
 | Dockers | 4 | 0 | 11 | 15 | 27% |
 | Operações de objeto | 10 | 2 | 10 | 22 | 50% |
@@ -113,7 +113,7 @@ Comandos registrados: 114.
 | ❌ | Right-drag: copy here | P1 |  | tudo |
 | 🟡 | Numpad +: duplicate in place | P1 | `edit.duplicate` | Ctrl+D duplicates; the numpad key is not bound |
 | ✅ | Arrows: nudge | P0 | `object.nudge` |  |
-| 🟡 | Ctrl while dragging: constrain | P0 | teste: "Ctrl draws a circle, Shift grows it from the press point" | constrains creation; moving is not constrained |
+| ✅ | Ctrl while dragging: constrain | P0 | teste: "Ctrl keeps a move on one axis" |  |
 | ✅ | Shift while resizing | P0 | teste: "Shift keeps the aspect ratio while resizing" |  |
 | ✅ | Delete | P0 | `edit.delete` |  |
 

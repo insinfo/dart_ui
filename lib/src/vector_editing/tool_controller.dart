@@ -57,7 +57,12 @@ abstract class ToolController {
   double get onePixel => zoom == 0 ? 1.0 : 1.0 / zoom;
 
   bool get isShiftHeld => modifiers.contains(KeyModifier.shift);
-  bool get isControlHeld => modifiers.contains(KeyModifier.control);
+
+  /// Ctrl - or Command, the Mac's: CorelDRAW's constraint key is the one
+  /// the platform's shortcuts use.
+  bool get isControlHeld =>
+      modifiers.contains(KeyModifier.control) ||
+      modifiers.contains(KeyModifier.meta);
   bool get isAltHeld => modifiers.contains(KeyModifier.alt);
 
   /// The object this tool just finished creating, consumed once.
@@ -375,7 +380,9 @@ class SelectToolController extends ToolController {
           _pivotAtPress ?? selection.pivot,
           press,
           point,
-          constrain: isShiftHeld,
+          // Ctrl turns in 15 degree steps, as CorelDRAW does; Shift too, as
+          // Inkscape and Illustrator do.
+          constrain: isControlHeld || isShiftHeld,
         );
         if (trafo != null) transaction.apply(trafo);
       case SelectDrag.pivot:
