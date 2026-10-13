@@ -58,6 +58,10 @@ final class _CMTime extends Struct {
   external int epoch;
 }
 
+typedef _ObjcFloatNative = Float Function(Pointer<Void>, Pointer<Void>);
+typedef _ObjcFloatDart = double Function(Pointer<Void>, Pointer<Void>);
+typedef _ObjcCMTimeNative = _CMTime Function(Pointer<Void>, Pointer<Void>);
+typedef _ObjcCMTimeDart = _CMTime Function(Pointer<Void>, Pointer<Void>);
 typedef _ObjcNoArgNative = Pointer<Void> Function(
   Pointer<Void>,
   Pointer<Void>,
@@ -171,6 +175,15 @@ final class _MacVideoBindings {
     _void = send.cast<NativeFunction<_ObjcVoidNative>>().asFunction();
     _voidPtr = send.cast<NativeFunction<_ObjcVoidPtrNative>>().asFunction();
     _cstring = send.cast<NativeFunction<_ObjcCStringNative>>().asFunction();
+    _float = send.cast<NativeFunction<_ObjcFloatNative>>().asFunction();
+    // A CMTime is 24 bytes, returned through memory. arm64 objc_msgSend
+    // handles that itself; x86-64 has a separate entry point for it.
+    _cmTime = (Abi.current() == Abi.macosX64
+            ? _objc
+                .lookup<NativeFunction<Void Function()>>('objc_msgSend_stret')
+            : send)
+        .cast<NativeFunction<_ObjcCMTimeNative>>()
+        .asFunction();
 
     _sampleImageBuffer = _coreMedia.lookupFunction<
         Pointer<Void> Function(Pointer<Void>),
@@ -222,6 +235,8 @@ final class _MacVideoBindings {
   late final _ObjcVoidDart _void;
   late final _ObjcVoidPtrDart _voidPtr;
   late final _ObjcCStringDart _cstring;
+  late final _ObjcCMTimeDart _cmTime;
+  late final _ObjcFloatDart _float;
 
   late final Pointer<Void> Function(Pointer<Void>) _sampleImageBuffer;
   late final _CMTime Function(Pointer<Void>) _sampleTimestamp;
@@ -292,12 +307,17 @@ final class _MacVideoBindings {
           height: first.height,
           bytesPerPixel: 4,
         );
+        final double seconds =
+            _timeSeconds(_cmTime(asset, _sel('duration', arena)));
+        final double frameRate = _nominalFrameRate(asset, arena);
         return _MacNativeVideoDecoder._(
           this,
           options,
           asset,
           session,
           first,
+          seconds.isFinite && seconds > 0 ? _duration(seconds) : Duration.zero,
+          frameRate.isFinite && frameRate > 0 ? frameRate : null,
         );
       } finally {
         _void(pool, _sel('drain', arena));
@@ -312,7 +332,7 @@ final class _MacVideoBindings {
     }
   }
 
-  _ReaderSession _newReader(Pointer<Void> asset, NativeArena arena) {
+  Pointer<Void> _firstVideoTrack(Pointer<Void> asset, NativeArena arena) {
     // `tracksWithMediaType:` takes one argument; use the actual AV media-type
     // string rather than relying on a data-symbol lookup across SDK versions.
     final Pointer<Void> video = _cstring(
@@ -329,8 +349,15 @@ final class _MacVideoBindings {
         'the asset contains no video track',
       );
     }
-    final Pointer<Void> track =
-        _index(videoTracks, _sel('objectAtIndex:', arena), 0);
+    return _index(videoTracks, _sel('objectAtIndex:', arena), 0);
+  }
+
+  /// The container's own figure, which decoded frames often leave out.
+  double _nominalFrameRate(Pointer<Void> asset, NativeArena arena) =>
+      _float(_firstVideoTrack(asset, arena), _sel('nominalFrameRate', arena));
+
+  _ReaderSession _newReader(Pointer<Void> asset, NativeArena arena) {
+    final Pointer<Void> track = _firstVideoTrack(asset, arena);
 
     final Pointer<Void> number = _integerObject(
       _cls('NSNumber', arena),
@@ -554,15 +581,19 @@ final class _MacNativeVideoDecoder implements VideoDecoder {
     this._asset,
     this._session,
     _NativeDecodedFrame first,
+    Duration duration,
+    double? frameRate,
   )   : _streamId = _nextStreamId++,
         _ring = first.ring,
         info = VideoStreamInfo(
           width: first.width,
           height: first.height,
-          frameRate: first.duration > Duration.zero
-              ? Duration.microsecondsPerSecond / first.duration.inMicroseconds
-              : 30,
-          duration: Duration.zero,
+          frameRate: frameRate ??
+              (first.duration > Duration.zero
+                  ? Duration.microsecondsPerSecond /
+                      first.duration.inMicroseconds
+                  : 30),
+          duration: duration,
           codec: 'avfoundation',
           backend: 'AVFoundation / VideoToolbox',
           hardwareAcceleration: true,

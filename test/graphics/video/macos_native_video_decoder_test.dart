@@ -29,4 +29,37 @@ void main() {
       ),
     );
   });
+
+  test('reports the container duration and decodes every frame', () async {
+    // 2 s of 160x96 H.264 at 10 fps, written by AVAssetWriter.
+    final VideoDecoder decoder = await openMacosNativeVideoDecoder(
+      'test/data/tiny_h264.mp4',
+      const VideoDecoderOptions(),
+    );
+    expect(decoder.info.width, 160);
+    expect(decoder.info.height, 96);
+    expect(decoder.info.duration, const Duration(seconds: 2));
+    expect(decoder.info.frameRate, closeTo(10, 0.01));
+    var frames = 0;
+    for (VideoSample? sample = await decoder.readFrame();
+        sample != null;
+        sample = await decoder.readFrame()) {
+      frames++;
+      sample.release();
+    }
+    expect(frames, 20);
+    await decoder.close();
+  }, skip: Platform.isMacOS ? null : 'AVFoundation is macOS-only');
+
+  test('seek lands on the requested time', () async {
+    final VideoDecoder decoder = await openMacosNativeVideoDecoder(
+      'test/data/tiny_h264.mp4',
+      const VideoDecoderOptions(),
+    );
+    await decoder.seek(const Duration(milliseconds: 1500));
+    final VideoSample sample = (await decoder.readFrame())!;
+    expect(sample.timestamp.inMilliseconds, closeTo(1500, 100));
+    sample.release();
+    await decoder.close();
+  }, skip: Platform.isMacOS ? null : 'AVFoundation is macOS-only');
 }
