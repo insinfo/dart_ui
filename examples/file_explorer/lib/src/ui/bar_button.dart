@@ -117,10 +117,15 @@ class MenuBarButton extends StatelessWidget {
     this.label,
     this.tooltip,
     this.chevron,
+    this.enabled = true,
   });
 
   final IconData icon;
   final List<Widget> Function() menu;
+
+  /// Off greys the button out and keeps its menu shut - New where nothing
+  /// can be made, as on Home or in search results.
+  final bool enabled;
   final String? label;
   final String? tooltip;
 
@@ -138,8 +143,9 @@ class MenuBarButton extends StatelessWidget {
           tooltip: tooltip ?? label,
           chevron: chevron ?? label != null,
           selected: controller.isOpen,
-          onTap: () =>
-              controller.isOpen ? controller.close() : controller.open(),
+          onTap: enabled
+              ? () => controller.isOpen ? controller.close() : controller.open()
+              : null,
         ),
       );
 }

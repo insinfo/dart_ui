@@ -97,6 +97,21 @@ void main() {
     h.dispose();
   });
 
+  test('New is greyed out where nothing can be made', () async {
+    final _Harness h = _Harness();
+    await h.settle();
+    Color newColor() => h
+        .renders<RenderText>()
+        .firstWhere((RenderText t) => t.text == 'New')
+        .color;
+    final Color inFolder = newColor();
+    h.registry.execute('nav.home');
+    await h.settle();
+    expect(newColor(), isNot(inFolder), reason: 'Home makes nothing');
+    expect(h.registry.isEnabled('file.newFolder'), isFalse);
+    h.dispose();
+  });
+
   test('Ctrl+T opens a Home tab; Ctrl+W closes it; the last closes the window',
       () async {
     final _Harness h = _Harness();

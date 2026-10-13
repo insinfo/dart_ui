@@ -577,6 +577,8 @@ class ExplorerWindowState extends State<ExplorerWindow>
               icon: FluentIcons.addCircle,
               label: t('New'),
               chevron: false,
+              enabled: registry.isEnabled('file.newFolder') ||
+                  registry.isEnabled('file.newTextDocument'),
               menu: () => menus.widgets(kNewMenu),
             ),
             divider(),
