@@ -178,6 +178,24 @@ final class CommandSpec {
   /// [CommandError] to refuse with a reason.
   final Object? Function(CommandArgs args) run;
 
+  /// This command with another [label] or [description] - a translation:
+  /// the id, the keys and the behaviour stay, so a script written against
+  /// one language runs in every other.
+  CommandSpec copyWith({String? label, String? description}) => CommandSpec(
+        id: id,
+        label: label ?? this.label,
+        run: run,
+        description: description ?? this.description,
+        shortcut: shortcut,
+        alsoShortcuts: alsoShortcuts,
+        params: params,
+        when: when,
+        enabled: enabled,
+        disabledReason: disabledReason,
+        checked: checked,
+        currentLabel: currentLabel,
+      );
+
   bool get isEnabled => isEnabledWith(CommandArgs.empty);
   bool? get isChecked => isCheckedWith(CommandArgs.empty);
   String get labelNow => labelWith(CommandArgs.empty);
