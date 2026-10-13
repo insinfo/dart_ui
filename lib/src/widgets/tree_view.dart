@@ -44,6 +44,7 @@ import '../graphics/display_list.dart';
 import '../layout/box_constraints.dart';
 import '../layout/render_box.dart';
 import '../layout/render_viewport.dart';
+import '../platform/editing_convention.dart';
 import '../platform/input_events.dart';
 import '../semantics/semantics.dart';
 import '../text/shaper.dart' show TextDirection;
@@ -112,6 +113,9 @@ final class TreeView extends StatefulWidget {
     this.onToggle,
     this.selectedId,
     this.onSelected,
+    this.selectionMode = TreeViewSelectionMode.single,
+    this.selectedIds = const <Object>{},
+    this.onSelectionChanged,
     this.rowExtent,
     this.cacheExtent = 48.0,
     this.controller,
@@ -130,7 +134,23 @@ final class TreeView extends StatefulWidget {
   /// The identity of the selected node, or null for no selection.
   final Object? selectedId;
 
+  /// The node the user moved to. In [TreeViewSelectionMode.single] that is
+  /// the selection; in [TreeViewSelectionMode.multiple] it is the current
+  /// row - the one the arrows move from and a details pane shows - and the
+  /// selection is [selectedIds].
   final void Function(TreeNode node)? onSelected;
+
+  /// One node at a time ([selectedId]), or a set ([selectedIds]) built with
+  /// Shift for a range and Ctrl - Cmd on a Mac - for one more.
+  final TreeViewSelectionMode selectionMode;
+
+  /// The identities of the selected nodes, in
+  /// [TreeViewSelectionMode.multiple].
+  final Set<Object> selectedIds;
+
+  /// The new selection, in [TreeViewSelectionMode.multiple]. The owner
+  /// stores it and rebuilds, as with [onSelected].
+  final void Function(Set<Object> ids)? onSelectionChanged;
 
   /// The height of one row, or null for the theme's.
   ///
@@ -150,6 +170,19 @@ final class TreeView extends StatefulWidget {
 
   @override
   State<TreeView> createState() => _TreeViewState();
+}
+
+/// How many nodes a [TreeView] selects.
+enum TreeViewSelectionMode {
+  /// One, through [TreeView.selectedId].
+  single,
+
+  /// A set, through [TreeView.selectedIds]: Shift extends a range from the
+  /// last plain click, Ctrl or Cmd adds and removes one, Ctrl+A takes every
+  /// visible row, and Ctrl or Cmd with the arrows moves without selecting,
+  /// then Ctrl+Space toggles - the Explorer and Finder conventions. A range
+  /// is over the rows as shown: a collapsed folder's children are not in it.
+  multiple,
 }
 
 /// One flattened, visible row: the node plus where it sits in the hierarchy.
@@ -172,6 +205,13 @@ final class _TreeViewState extends State<TreeView> {
   late final FocusNode _focusNode = FocusNode(debugLabel: 'TreeView');
   double _viewportExtent = 0;
   List<_FlatRow> _rows = const <_FlatRow>[];
+
+  /// The current row and the start of a Shift range, by identity so that an
+  /// expand above them does not move them; multiple mode only.
+  Object? _cursorId;
+  Object? _anchorId;
+
+  bool get _multiple => widget.selectionMode == TreeViewSelectionMode.multiple;
 
   @override
   void initState() {
@@ -208,21 +248,83 @@ final class _TreeViewState extends State<TreeView> {
     return rows;
   }
 
-  int get _selectedIndex {
-    final Object? selected = widget.selectedId;
-    if (selected == null) return -1;
+  int _indexOf(Object? identity) {
+    if (identity == null) return -1;
     for (int i = 0; i < _rows.length; i++) {
-      if (_rows[i].node.identity == selected) return i;
+      if (_rows[i].node.identity == identity) return i;
     }
     return -1;
   }
 
-  void _select(int index) {
+  int get _selectedIndex => _indexOf(widget.selectedId);
+
+  /// The row the keyboard is on: the selection in single mode; in multiple
+  /// mode the last row moved to, else the first selected one shown.
+  int get _cursorIndex {
+    if (!_multiple) return _selectedIndex;
+    final int cursor = _indexOf(_cursorId);
+    if (cursor >= 0) return cursor;
+    for (int i = 0; i < _rows.length; i++) {
+      if (widget.selectedIds.contains(_rows[i].node.identity)) return i;
+    }
+    return -1;
+  }
+
+  bool _isSelected(int index) => _multiple
+      ? widget.selectedIds.contains(_rows[index].node.identity)
+      : index == _selectedIndex;
+
+  /// Moves to row [index]. In multiple mode [extend] makes the selection the
+  /// range from the anchor, and [keep] leaves it alone (Ctrl with an arrow).
+  void _select(int index, {bool extend = false, bool keep = false}) {
     if (index < 0 || index >= _rows.length) return;
     final TreeNode node = _rows[index].node;
     if (!node.enabled) return;
-    if (node.identity != widget.selectedId) widget.onSelected?.call(node);
+    if (!_multiple) {
+      if (node.identity != widget.selectedId) widget.onSelected?.call(node);
+      _reveal(index);
+      return;
+    }
+    final Object? before = _cursorId;
+    _cursorId = node.identity;
+    if (extend) {
+      final int anchor = _indexOf(_anchorId);
+      _emit(_rangeIds(anchor < 0 ? index : anchor, index));
+    } else if (!keep) {
+      _anchorId = node.identity;
+      _emit(<Object>{node.identity});
+    }
+    if (node.identity != before) widget.onSelected?.call(node);
     _reveal(index);
+    if (mounted) setState(() {});
+  }
+
+  /// Ctrl or Cmd on row [index]: in or out of the selection, and the anchor
+  /// of the next Shift range.
+  void _toggleSelected(int index) {
+    if (index < 0 || index >= _rows.length) return;
+    final TreeNode node = _rows[index].node;
+    if (!node.enabled) return;
+    final Set<Object> next = <Object>{...widget.selectedIds};
+    if (!next.remove(node.identity)) next.add(node.identity);
+    final Object? before = _cursorId;
+    _cursorId = _anchorId = node.identity;
+    _emit(next);
+    if (node.identity != before) widget.onSelected?.call(node);
+    if (mounted) setState(() {});
+  }
+
+  Set<Object> _rangeIds(int a, int b) => <Object>{
+        for (int i = a < b ? a : b; i <= (a > b ? a : b); i++)
+          if (_rows[i].node.enabled) _rows[i].node.identity,
+      };
+
+  void _emit(Set<Object> ids) {
+    if (ids.length == widget.selectedIds.length &&
+        ids.containsAll(widget.selectedIds)) {
+      return;
+    }
+    widget.onSelectionChanged?.call(ids);
   }
 
   /// Keyboard selection must bring the row into view, or a screen reader
@@ -265,30 +367,44 @@ final class _TreeViewState extends State<TreeView> {
   bool _handleKey(KeyEvent event, TextDirection direction) {
     if (event is! KeyDownEvent) return false;
     if (_rows.isEmpty) return false;
-    final int current = _selectedIndex;
+    final int current = _cursorIndex;
     final bool rtl = direction.isRightToLeft;
+    final bool shift = _multiple && event.modifiers.contains(KeyModifier.shift);
+    final bool command = _multiple &&
+        (event.modifiers.contains(KeyModifier.control) ||
+            event.modifiers
+                .contains(platformEditingConvention.commandModifier));
+    void move(int index) => _select(index, extend: shift, keep: command);
     // In a right-to-left locale the arrows swap so that "toward the content"
     // still expands, which is what the hand expects there.
     final int expandKey = rtl ? logicalKeyArrowLeft : logicalKeyArrowRight;
     final int collapseKey = rtl ? logicalKeyArrowRight : logicalKeyArrowLeft;
     final int key = event.logicalKey;
     if (key == logicalKeyArrowDown) {
-      _select(current + 1 >= _rows.length ? _rows.length - 1 : current + 1);
+      move(current + 1 >= _rows.length ? _rows.length - 1 : current + 1);
       return true;
     }
     if (key == logicalKeyArrowUp) {
-      _select(current <= 0 ? 0 : current - 1);
+      move(current <= 0 ? 0 : current - 1);
       return true;
     }
     if (key == logicalKeyHome) {
-      _select(0);
+      move(0);
       return true;
     }
     if (key == logicalKeyEnd) {
-      _select(_rows.length - 1);
+      move(_rows.length - 1);
+      return true;
+    }
+    if (command && key == _keyA) {
+      _emit(_rangeIds(0, _rows.length - 1));
       return true;
     }
     if (current < 0) return false;
+    if (command && key == logicalKeySpace) {
+      _toggleSelected(current);
+      return true;
+    }
     final _FlatRow row = _rows[current];
     final bool expanded = widget.expandedIds.contains(row.node.identity);
     if (key == expandKey) {
@@ -338,9 +454,22 @@ final class _TreeViewState extends State<TreeView> {
     final double toggleEnd = toggleStart + RenderTreeItem.toggleExtent;
     if (row.node.isExpandable && dx >= toggleStart && dx < toggleEnd) {
       _toggle(index, !widget.expandedIds.contains(row.node.identity));
-    } else {
-      _select(index);
+      return;
     }
+    if (_multiple) {
+      final BuildOwner? owner = (context as Element).owner;
+      final Set<KeyModifier> held =
+          owner?.keyModifiers ?? const <KeyModifier>{};
+      if (held.contains(KeyModifier.shift)) {
+        _select(index, extend: true);
+        return;
+      }
+      if (held.contains(KeyModifier.control) || (owner?.commandHeld ?? false)) {
+        _toggleSelected(index);
+        return;
+      }
+    }
+    _select(index);
   }
 
   /// The resolved row height, refreshed by every build.
@@ -378,7 +507,7 @@ final class _TreeViewState extends State<TreeView> {
         theme: theme,
         virtualization: virtualization,
         range: range,
-        selectedIndex: _selectedIndex,
+        selectedIndex: _cursorIndex,
         onKeyEvent: (KeyEvent event) => _handleKey(event, direction),
         onRowPressed: (int index, double dx, double width) =>
             _handleRowPress(index, dx, width, direction),
@@ -405,7 +534,12 @@ final class _TreeViewState extends State<TreeView> {
               extent: _rowExtent,
               expandable: _rows[index].node.isExpandable,
               expanded: widget.expandedIds.contains(_rows[index].node.identity),
-              selected: index == _selectedIndex,
+              selected: _isSelected(index),
+              // The keyboard's row, outlined when it is not the only one
+              // selected: with a set, the fill no longer says where it is.
+              current: _multiple &&
+                  index == _cursorIndex &&
+                  !(widget.selectedIds.length == 1 && _isSelected(index)),
               enabled: _rows[index].node.enabled,
               textDirection: direction,
               theme: theme,
@@ -432,6 +566,7 @@ final class _TreeItemWidget extends RenderObjectWidget {
     required this.expandable,
     required this.expanded,
     required this.selected,
+    this.current = false,
     required this.enabled,
     required this.textDirection,
     required this.theme,
@@ -446,6 +581,7 @@ final class _TreeItemWidget extends RenderObjectWidget {
   final bool expandable;
   final bool expanded;
   final bool selected;
+  final bool current;
   final bool enabled;
   final TextDirection textDirection;
   final ThemeData theme;
@@ -464,6 +600,7 @@ final class _TreeItemWidget extends RenderObjectWidget {
     ..expandable = expandable
     ..expanded = expanded
     ..selected = selected
+    ..current = current
     ..textDirection = textDirection
     ..theme = theme
     ..enabled = enabled;
@@ -483,6 +620,7 @@ final class _TreeItemWidget extends RenderObjectWidget {
       ..expandable = expandable
       ..expanded = expanded
       ..selected = selected
+      ..current = current
       ..textDirection = textDirection
       ..theme = theme
       ..enabled = enabled;
@@ -589,6 +727,17 @@ final class RenderTreeItem extends RenderBox with ControlBehavior {
     markNeedsPaint();
   }
 
+  /// Whether this is the keyboard's row in a multiple selection, drawn as an
+  /// outline.
+  bool get current => _current;
+  bool _current = false;
+
+  set current(bool value) {
+    if (value == _current) return;
+    _current = value;
+    markNeedsPaint();
+  }
+
   TextDirection get textDirection => _textDirection;
 
   set textDirection(TextDirection value) {
@@ -630,6 +779,14 @@ final class RenderTreeItem extends RenderBox with ControlBehavior {
         list,
         Rect.fromLTWH(rect.left + 2, rect.top, rect.width - 4, rect.height),
         _selected ? theme.selection : theme.hoverSurface,
+        theme.cornerRadiusSmall,
+      );
+    }
+    if (_current) {
+      paintRoundedBorder(
+        list,
+        Rect.fromLTWH(rect.left + 2, rect.top, rect.width - 4, rect.height),
+        theme.focusRing,
         theme.cornerRadiusSmall,
       );
     }
@@ -1040,3 +1197,5 @@ final class RenderTreeView extends RenderBoxContainer<BoxParentData>
         },
       );
 }
+
+const int _keyA = 0x41;

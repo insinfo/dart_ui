@@ -279,6 +279,98 @@ void main() {
       harness.dispose();
     });
   });
+  group('TreeView multiple selection', () {
+    const Set<KeyModifier> shift = <KeyModifier>{KeyModifier.shift};
+    const Set<KeyModifier> control = <KeyModifier>{KeyModifier.control};
+
+    _TreeHarness open() {
+      debugEditingConventionOverride = EditingConvention.pc;
+      addTearDown(() => debugEditingConventionOverride = null);
+      final harness = _TreeHarness(nodes: _fileTree(), multiple: true);
+      harness.expanded.addAll(<Object>['src', 'widgets']);
+      harness.frame();
+      // src, widgets, tree_view.dart, data_grid.dart, rendering, assets,
+      // README: 20 px each.
+      return harness;
+    }
+
+    /// A click on row [row]'s label with [modifiers] held.
+    void click(_TreeHarness harness, int row,
+        [Set<KeyModifier> modifiers = const <KeyModifier>{}]) {
+      // The window learns what is held from the key events it sees.
+      harness.owner.dispatchKeyEvent(_key(0x10, modifiers: modifiers));
+      harness.tree.handlePointerEvent(_press(Offset(120, row * 20 + 10)));
+      harness.frame();
+    }
+
+    test('a plain click selects one; Shift+click a range of shown rows', () {
+      final harness = open();
+      click(harness, 1);
+      expect(harness.selection, <Object>{'widgets'});
+      click(harness, 4, shift);
+      expect(harness.selection, <Object>{
+        'widgets',
+        'tree_view.dart',
+        'data_grid.dart',
+        'rendering',
+      });
+      click(harness, 0, shift);
+      expect(harness.selection, <Object>{'src', 'widgets'},
+          reason: 'the range re-forms from the same anchor');
+      harness.dispose();
+    });
+
+    test('Ctrl+click adds and removes one, and moves the anchor', () {
+      final harness = open();
+      click(harness, 0);
+      click(harness, 2, control);
+      click(harness, 6, control);
+      expect(harness.selection, <Object>{'src', 'tree_view.dart', 'README'});
+      click(harness, 2, control);
+      expect(harness.selection, <Object>{'src', 'README'});
+      click(harness, 4, shift);
+      expect(harness.selection,
+          <Object>{'tree_view.dart', 'data_grid.dart', 'rendering'},
+          reason: 'from the last Ctrl+click');
+      harness.dispose();
+    });
+
+    test('Shift+arrows extend; Ctrl+arrows move; Ctrl+Space toggles', () {
+      final harness = open();
+      click(harness, 1);
+      harness.tree.handleKeyEvent(_key(logicalKeyArrowDown, modifiers: shift));
+      harness.tree.handleKeyEvent(_key(logicalKeyArrowDown, modifiers: shift));
+      harness.frame();
+      expect(harness.selection,
+          <Object>{'widgets', 'tree_view.dart', 'data_grid.dart'});
+      harness.tree
+          .handleKeyEvent(_key(logicalKeyArrowDown, modifiers: control));
+      harness.tree
+          .handleKeyEvent(_key(logicalKeyArrowDown, modifiers: control));
+      harness.frame();
+      expect(harness.selection.length, 3, reason: 'moving is not selecting');
+      final RenderTreeItem assets = harness.tree.childAt(5) as RenderTreeItem;
+      expect(assets.current, isTrue, reason: 'the keyboard row is outlined');
+      expect(assets.selected, isFalse);
+      harness.tree.handleKeyEvent(_key(logicalKeySpace, modifiers: control));
+      harness.frame();
+      expect(harness.selection, contains('assets'));
+      expect(harness.selected, 'assets', reason: 'onSelected: current row');
+      harness.dispose();
+    });
+
+    test('Ctrl+A takes every shown row; a plain arrow narrows to one', () {
+      final harness = open();
+      click(harness, 0);
+      harness.tree.handleKeyEvent(_key(0x41, modifiers: control));
+      harness.frame();
+      expect(harness.selection, hasLength(7));
+      harness.tree.handleKeyEvent(_key(logicalKeyArrowDown));
+      harness.frame();
+      expect(harness.selection, <Object>{'widgets'});
+      harness.dispose();
+    });
+  });
 }
 
 /// A small file-explorer shaped tree: two expandable roots and a leaf.
@@ -299,7 +391,11 @@ List<TreeNode> _fileTree() => const <TreeNode>[
 final class _TreeHarness {
   /// [height] defaults to room for twenty rows, so structure tests see every
   /// row of a small tree; virtualization tests pass a short viewport.
-  _TreeHarness({required this.nodes, double height = 400}) {
+  _TreeHarness({
+    required this.nodes,
+    double height = 400,
+    this.multiple = false,
+  }) {
     owner = BuildOwner(
       pipelineOwner: PipelineOwner(
         rootConstraints: BoxConstraints.tight(Size(200, height)),
@@ -309,8 +405,10 @@ final class _TreeHarness {
   }
 
   List<TreeNode> nodes;
+  final bool multiple;
   final Set<Object> expanded = <Object>{};
   Object? selected;
+  Set<Object> selection = <Object>{};
   final ScrollPosition scroll = ScrollPosition();
   late final BuildOwner owner;
 
@@ -323,6 +421,11 @@ final class _TreeHarness {
           controller: scroll,
           expandedIds: expanded,
           selectedId: selected,
+          selectionMode: multiple
+              ? TreeViewSelectionMode.multiple
+              : TreeViewSelectionMode.single,
+          selectedIds: selection,
+          onSelectionChanged: (Set<Object> ids) => selection = ids,
           onToggle: (TreeNode node, bool expand) {
             if (expand) {
               expanded.add(node.identity);
@@ -366,12 +469,15 @@ final class _TreeHarness {
   void dispose() => owner.dispose();
 }
 
-KeyDownEvent _key(int logicalKey) => KeyDownEvent(
+KeyDownEvent _key(int logicalKey,
+        {Set<KeyModifier> modifiers = const <KeyModifier>{}}) =>
+    KeyDownEvent(
       windowId: const NativeWindowId(1),
       generation: 1,
       timestamp: Duration.zero,
       physicalKey: logicalKey,
       logicalKey: logicalKey,
+      modifiers: modifiers,
     );
 
 PointerDownEvent _press(Offset position) => PointerDownEvent(
