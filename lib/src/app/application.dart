@@ -184,6 +184,7 @@ import '../widgets/popup.dart';
 import '../widgets/popup_host.dart';
 import '../widgets/theme.dart';
 import '../widgets/widget.dart';
+import '../widgets/window_scope.dart';
 import 'application_info.dart';
 import 'frame_loop.dart';
 import 'window_host.dart';
@@ -1431,47 +1432,50 @@ final class ApplicationWindow with DisposableMixin {
     _mountedMediaQueryData = media;
     return MediaQuery(
       data: media,
-      child: ApplicationInfo(
-        data: runtimeInfo,
-        child: ClipboardScope(
-          clipboard: application.clipboard,
-          child: DragDropScope(
-            dragAndDrop: application.dragAndDrop,
-            // The window as well as the backend: starting a drag needs an
-            // origin, and this is the only place in the tree that knows what
-            // window it is in. See [DragDropScope.window].
-            window: nativeWindow,
-            child: TextInputScope(
-              textInput: application.textInput,
-              // The window again, and for a stronger reason than the drag's:
-              // a composition belongs to one HWND or one wl_surface, so a
-              // field that could not name its window would have nothing to
-              // attach an input method to.
+      child: WindowScope(
+        controller: _windowController,
+        child: ApplicationInfo(
+          data: runtimeInfo,
+          child: ClipboardScope(
+            clipboard: application.clipboard,
+            child: DragDropScope(
+              dragAndDrop: application.dragAndDrop,
+              // The window as well as the backend: starting a drag needs an
+              // origin, and this is the only place in the tree that knows what
+              // window it is in. See [DragDropScope.window].
               window: nativeWindow,
-              child: MeshSceneScope(
-                surface: _meshSceneSurface,
-                unavailable: _meshUnavailable,
-                child: ContextMenuScope(
-                  child: DartUiApp(
-                    theme: application.options.theme,
-                    textDirection: application.options.textDirection,
-                    frameScheduler: scheduler,
-                    // Null on a backend with no popup windows, and null is not a
-                    // degraded answer: `PopupScope` then owns an
-                    // `InTreePopupHost` and every menu still opens, composited
-                    // into this window's own surface. See [popupHost].
-                    popupHost: popupHost,
-                    // Inside the app so the bar takes the theme. The frame
-                    // draws nothing until the window system declines to
-                    // decorate the window - see [ClientDecoratedWindow].
-                    home: switch (nativeWindow) {
-                      final ClientDecoratedWindow window =>
-                        ClientDecorationFrame(
-                          window: window,
-                          child: _rootWidget,
-                        ),
-                      _ => _rootWidget,
-                    },
+              child: TextInputScope(
+                textInput: application.textInput,
+                // The window again, and for a stronger reason than the drag's:
+                // a composition belongs to one HWND or one wl_surface, so a
+                // field that could not name its window would have nothing to
+                // attach an input method to.
+                window: nativeWindow,
+                child: MeshSceneScope(
+                  surface: _meshSceneSurface,
+                  unavailable: _meshUnavailable,
+                  child: ContextMenuScope(
+                    child: DartUiApp(
+                      theme: application.options.theme,
+                      textDirection: application.options.textDirection,
+                      frameScheduler: scheduler,
+                      // Null on a backend with no popup windows, and null is not a
+                      // degraded answer: `PopupScope` then owns an
+                      // `InTreePopupHost` and every menu still opens, composited
+                      // into this window's own surface. See [popupHost].
+                      popupHost: popupHost,
+                      // Inside the app so the bar takes the theme. The frame
+                      // draws nothing until the window system declines to
+                      // decorate the window - see [ClientDecoratedWindow].
+                      home: switch (nativeWindow) {
+                        final ClientDecoratedWindow window =>
+                          ClientDecorationFrame(
+                            window: window,
+                            child: _rootWidget,
+                          ),
+                        _ => _rootWidget,
+                      },
+                    ),
                   ),
                 ),
               ),
@@ -1481,6 +1485,9 @@ final class ApplicationWindow with DisposableMixin {
       ),
     );
   }
+
+  late final WindowController _windowController =
+      _ApplicationWindowController(this);
 
   /// Replaces only the framework-owned root wrappers when window metrics move.
   ///
@@ -4495,4 +4502,29 @@ final class Application with DisposableMixin {
   String toString() => 'Application(state: ${_state.name}, '
       'backend: ${backend.name}, windows: ${_windows.length}, '
       'frames: $framesPresented)';
+}
+
+/// [WindowController] for an [ApplicationWindow]: closing goes through the
+/// same path as the close button.
+final class _ApplicationWindowController implements WindowController {
+  _ApplicationWindowController(this._window);
+
+  final ApplicationWindow _window;
+
+  @override
+  void close() => _window.application._onCloseRequested(_window);
+
+  @override
+  void minimize() {
+    if (_window.nativeWindow case final ClientDecoratedWindow window
+        when window.canMinimize) {
+      window.minimize();
+    }
+  }
+
+  @override
+  void setTitle(String title) => _window.nativeWindow.setTitle(title);
+
+  @override
+  void setCursor(SystemCursor cursor) => _window.nativeWindow.setCursor(cursor);
 }

@@ -105,6 +105,7 @@ export 'src/graphics/vector/constants.dart' hide FillRule, TextAlign;
 export 'src/graphics/vector/contour.dart';
 export 'src/graphics/vector/doc_methods.dart';
 export 'src/graphics/vector/document.dart';
+export 'src/graphics/vector/document_history.dart';
 export 'src/graphics/vector/document_object.dart';
 export 'src/graphics/vector/pixmap.dart';
 export 'src/graphics/vector/primitives.dart';
@@ -279,6 +280,7 @@ export 'src/widgets/vector_editor/vector_canvas.dart';
 export 'src/widgets/vector_editor/vector_renderer.dart';
 export 'src/widgets/video.dart';
 export 'src/widgets/widget.dart';
+export 'src/widgets/window_scope.dart';
 
 /// Mounts [rootWidget] using production platform defaults.
 ///
