@@ -143,6 +143,21 @@ const Map<String, List<String>> _allowedDependencies = <String, List<String>>{
     'semantics',
     'text',
   ],
+  // Immediate mode sits beside the widgets, not under them: it is hosted by
+  // one render object and draws with the controls' own shapes and theme, so
+  // it uses `widgets` the way an application does, and nothing below it may
+  // know it exists.
+  'immediate': <String>[
+    'foundation',
+    'geometry',
+    'graphics',
+    'layout',
+    'platform',
+    'rendering',
+    'semantics',
+    'text',
+    'widgets',
+  ],
   // The overlay draws its own numbers, and the join between a face and a
   // display list is `rendering/text` - the same one every widget uses. The
   // alternative was a second, private bitmap font living in diagnostics.
