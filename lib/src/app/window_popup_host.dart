@@ -118,6 +118,7 @@ final class WindowPopupHost implements PopupHost {
       chain: _chain,
       spec: spec,
       parent: parent,
+      openedFrom: _enclosing,
     );
     _chain.handles.add(handle);
     unawaited(_chain._launch(handle));
@@ -187,7 +188,7 @@ final class _PopupChain {
       window = await application.openPopup(
         owner: owner,
         parentPopup: parentWindow,
-        anchorRect: spec.anchorRect,
+        anchorRect: handle._anchorInOwner(spec.anchorRect),
         content: _PopupContent(handle: handle),
         kind: spec.kind,
         anchorPoint: spec.anchorPoint,
@@ -243,12 +244,46 @@ final class WindowPopupHandle implements PopupHandle {
     required _PopupChain chain,
     required PopupSpec spec,
     required PopupHandle? parent,
+    required WindowPopupHandle? openedFrom,
   })  : _chain = chain,
         _spec = spec,
-        _parent = parent;
+        _parent = parent,
+        _openedFrom = openedFrom;
 
   final _PopupChain _chain;
   final PopupHandle? _parent;
+
+  /// The popup whose tree asked for this one - a submenu's parent menu - or
+  /// null when the owner window's tree did.
+  ///
+  /// The anchor arrives in *that* tree's coordinates: a submenu item measures
+  /// itself with `localToGlobal` inside its own popup window, which is not
+  /// the owner's space [PopupSpec.anchorRect] promises. Placed as it came, a
+  /// submenu opened from a context menu lands at the item's offset from the
+  /// popup's corner, measured from the owner's corner instead.
+  final WindowPopupHandle? _openedFrom;
+
+  /// [rect], in the coordinates of the window that asked for this popup,
+  /// converted to the owner window's.
+  ///
+  /// Through the screen, which is the only space both windows share. Without
+  /// screen coordinates (Wayland) it is passed through: there the compositor
+  /// places a popup against its parent popup's surface, which is the space the
+  /// rectangle is already in.
+  Rect _anchorInOwner(Rect rect) {
+    final ApplicationWindow? from = _openedFrom?._window;
+    final ApplicationWindow owner = _chain.owner;
+    if (from == null ||
+        from.isDisposed ||
+        owner.isDisposed ||
+        !_chain.application.hasScreenCoordinates) {
+      return rect;
+    }
+    final Offset screen = from.nativeWindow.clientToScreen(rect.topLeft);
+    final Offset local = owner.nativeWindow.screenToClient(screen);
+    return rect.translate(local.dx - rect.left, local.dy - rect.top);
+  }
+
   PopupSpec _spec;
   ApplicationWindow? _window;
   bool _open = true;
@@ -311,7 +346,7 @@ final class WindowPopupHandle implements PopupHandle {
     if (window == null || window.isDisposed) return;
     window.nativeWindow.setBounds(_chain.application.placePopup(
       owner: _chain.owner,
-      anchorRect: anchorRect,
+      anchorRect: _anchorInOwner(anchorRect),
       size: window.nativeWindow.clientSize,
       anchorPoint: _spec.anchorPoint,
       popupPoint: _spec.popupPoint,

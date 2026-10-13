@@ -657,6 +657,13 @@ void main() {
       // either view of it.
       expect(host.openCount, 2);
 
+      // The submenu's anchor was measured inside the menu's own window, at
+      // (20,20) from its corner; the menu sits at (10,30) in the owner. So
+      // the submenu goes under (30,50), not under (20,20) of the owner - the
+      // bug that opened a context menu's submenu in the window's top left.
+      expect(menu.placedRect, const Rect.fromLTWH(10, 30, 80, 40));
+      expect(submenu.placedRect, const Rect.fromLTWH(30, 60, 80, 40));
+
       await _stop(app);
     });
 
