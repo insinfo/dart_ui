@@ -5,7 +5,7 @@
 /// ```
 ///
 /// Scenarios: home, details (the default), icons, tiles, rename, search,
-/// thispc, details-pane, pictures.
+/// thispc, details-pane, pictures, properties, properties-folder.
 library;
 
 import 'dart:io';
@@ -51,11 +51,13 @@ Future<void> main(List<String> args) async {
   );
   owner.updateRoot(PopupScope(
     host: InTreePopupHost(),
-    child: FileExplorerApp(
-      model: model,
-      dark: dark,
-      thumbnailLoader: _paintedThumbnail,
-      onReady: (ExplorerWindowState w) => window = w,
+    child: DialogLayer(
+      child: FileExplorerApp(
+        model: model,
+        dark: dark,
+        thumbnailLoader: _paintedThumbnail,
+        onReady: (ExplorerWindowState w) => window = w,
+      ),
     ),
   ));
 
@@ -83,6 +85,14 @@ Future<void> main(List<String> args) async {
         });
     case 'tiles':
       registry.execute('view.tiles');
+    case 'properties':
+      registry
+        ..execute('select.byName', <String, Object?>{'prefix': 'annual'})
+        ..execute('file.properties');
+    case 'properties-folder':
+      registry
+        ..execute('select.byName', <String, Object?>{'prefix': 'project'})
+        ..execute('file.properties');
     case 'pictures':
       registry
         ..execute('nav.go', <String, Object?>{'path': '/Users/ana/Pictures'})

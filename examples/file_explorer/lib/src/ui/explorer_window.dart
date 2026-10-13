@@ -19,6 +19,7 @@ import 'details_pane.dart';
 import 'folder_view.dart';
 import 'home_page.dart';
 import 'menus.dart';
+import 'properties_dialog.dart';
 import 'sidebar.dart';
 import 'thumbnails.dart';
 
@@ -142,8 +143,18 @@ class ExplorerWindowState extends State<ExplorerWindow>
 
   @override
   void showProperties(List<FileEntry> entries) {
-    model.detailsPane = true;
-    model.notify();
+    // Nothing selected: the folder itself, as Explorer does.
+    if (entries.isEmpty) {
+      final Location at = model.tab.location;
+      if (at is! FolderLocation) return;
+      unawaited(model.fs.stat(at.path).then((FileEntry? folder) {
+        if (folder != null && mounted) {
+          unawaited(showPropertiesDialog(context, model, <FileEntry>[folder]));
+        }
+      }));
+      return;
+    }
+    unawaited(showPropertiesDialog(context, model, entries));
   }
 
   @override

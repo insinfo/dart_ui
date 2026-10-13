@@ -23,10 +23,12 @@ final class _Harness {
     );
     owner.updateRoot(PopupScope(
       host: InTreePopupHost(),
-      child: FileExplorerApp(
-        model: model,
-        onReady: (ExplorerWindowState w) => window = w,
-        onClose: () => closed = true,
+      child: DialogLayer(
+        child: FileExplorerApp(
+          model: model,
+          onReady: (ExplorerWindowState w) => window = w,
+          onClose: () => closed = true,
+        ),
       ),
     ));
   }
@@ -130,6 +132,53 @@ void main() {
     field.onSubmitted!('LICENSE-MIT.txt');
     await h.settle();
     expect(h.texts, contains('LICENSE-MIT.txt'));
+    h.dispose();
+  });
+
+  test('Alt+Enter opens Properties over the window, which it keeps from keys',
+      () async {
+    final _Harness h = _Harness();
+    await h.settle();
+    h.registry.execute('select.byName', <String, Object?>{'prefix': 'annual'});
+    await h.settle();
+    h.key(logicalKeyEnter, modifiers: const <KeyModifier>{KeyModifier.alt});
+    await h.settle();
+    expect(h.renders<RenderDialog>().single.title,
+        'Annual Report 2025.pdf Properties');
+    expect(h.texts, contains('2.30 MB (2,411,724 bytes)'));
+    expect(h.owner.modalDepth, 1);
+
+    // Delete is the window's key: under the dialog it must not trash the
+    // file behind it.
+    h.key(logicalKeyDelete);
+    await h.settle();
+    expect(await h.model.fs.stat('/Users/ana/Documents/Annual Report 2025.pdf'),
+        isNotNull);
+
+    h.key(logicalKeyEscape);
+    await h.settle();
+    expect(h.renders<RenderDialog>(), isEmpty);
+    expect(h.owner.modalDepth, 0);
+    h.dispose();
+  });
+
+  test('renaming in Properties renames on OK', () async {
+    final _Harness h = _Harness();
+    await h.settle();
+    h.registry.execute('select.byName', <String, Object?>{'prefix': 'license'});
+    h.registry.execute('file.properties');
+    await h.settle();
+    final RenderTextField name = h
+        .renders<RenderTextField>()
+        .firstWhere((RenderTextField f) => f.controller.value == 'license.txt');
+    name.controller.value = 'COPYING.txt';
+    h
+        .renders<RenderButton>()
+        .firstWhere((RenderButton b) => b.label == 'OK')
+        .activate();
+    await h.settle();
+    expect(h.renders<RenderDialog>(), isEmpty);
+    expect(h.texts, contains('COPYING.txt'));
     h.dispose();
   });
 

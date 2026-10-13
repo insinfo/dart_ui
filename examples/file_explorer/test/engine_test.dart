@@ -5,6 +5,7 @@ import 'package:file_explorer/src/engine/explorer_model.dart';
 import 'package:file_explorer/src/engine/file_system.dart';
 import 'package:file_explorer/src/engine/file_types.dart';
 import 'package:file_explorer/src/engine/location.dart';
+import 'package:file_explorer/src/engine/properties.dart';
 import 'package:file_explorer/src/engine/sorting.dart';
 import 'package:file_explorer/src/engine/strings.dart';
 import 'package:test/test.dart';
@@ -303,5 +304,40 @@ void main() {
     ]);
     m.toggleColumn(DetailsColumn.type);
     expect(m.columns.indexOf(DetailsColumn.type), 2);
+  });
+
+  test('Properties: a folder counted to the bottom, as it is walked', () async {
+    final MemoryFileSystem fs = MemoryFileSystem()
+      ..addFile('/p/a.txt', size: 1000)
+      ..addFile('/p/sub/b.txt', size: 24)
+      ..addFile('/p/sub/deeper/c.bin', size: 1048576)
+      ..addFolder('/p/empty');
+    final List<Tally> steps = <Tally>[];
+    final FileEntry folder = (await fs.stat('/p'))!;
+    final Tally total =
+        await tally(fs, <FileEntry>[folder], progress: steps.add);
+    expect(total, const Tally(files: 3, folders: 3, bytes: 1049600));
+    expect(steps.last, total);
+    expect(steps.length, greaterThan(1), reason: 'it counts up as it goes');
+
+    var asked = 0;
+    final Tally stopped =
+        await tally(fs, <FileEntry>[folder], cancelled: () => ++asked > 1);
+    expect(stopped.files, lessThan(3), reason: 'a closed dialog stops it');
+  });
+
+  test('Properties: sizes in full, long dates, per language', () {
+    const ExplorerStrings en = ExplorerStrings.english;
+    const ExplorerStrings pt = ExplorerStrings.portuguese;
+    expect(exactSize(1071, en), '1.05 KB (1,071 bytes)');
+    expect(exactSize(1071, pt), '1,05 KB (1.071 bytes)');
+    expect(exactSize(900, en), '900 bytes');
+    final DateTime d = DateTime(2025, 1, 3, 10, 0, 5);
+    expect(longDate(d, en), 'Friday, January 3, 2025, 10:00:05 AM');
+    expect(longDate(d, pt), 'sexta-feira, 3 de janeiro de 2025, 10:00:05');
+    expect(containsText(const Tally(files: 1, folders: 2), en),
+        '1 File, 2 Folders');
+    expect(containsText(const Tally(files: 1200, folders: 0), pt),
+        '1.200 arquivos, 0 pastas');
   });
 }

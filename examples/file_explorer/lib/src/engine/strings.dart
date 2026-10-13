@@ -98,6 +98,9 @@ final class ExplorerStrings {
   String selectedCount(int n) =>
       n == 1 ? '1 $selectedOne' : '${_number(n)} $selected';
 
+  /// [n] with the thousands mark of the language: "1,071", "1.071".
+  String number(int n) => _number(n);
+
   String _number(int n) {
     final String digits = n.toString();
     final String mark = locale.startsWith('pt') ? '.' : ',';
