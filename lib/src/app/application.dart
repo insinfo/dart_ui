@@ -970,6 +970,7 @@ Future<Application> runApp(
   required List<WindowingBackendEntry> backends,
   List<PresentationPathEntry> presentations = const <PresentationPathEntry>[],
   ApplicationOptions options = const ApplicationOptions(),
+  FutureOr<void> Function(Application application)? onStarted,
 }) async {
   final application = await Application.start(
     rootWidget: rootWidget,
@@ -977,6 +978,9 @@ Future<Application> runApp(
     presentations: presentations,
     options: options,
   );
+  // Before the loop, so whatever it attaches - a control channel, a probe,
+  // a recorder - sees the first frame.
+  if (onStarted != null) await onStarted(application);
   final completion = Completer<void>();
   try {
     runZonedGuarded<void>(
@@ -1607,6 +1611,23 @@ final class ApplicationWindow with DisposableMixin {
     if (_inFrame || !_rootMounted) return;
     buildOwner.buildScope();
     pipelineOwner.flushLayout();
+  }
+
+  /// The window as it is now, painted into a display list of its own - for
+  /// a screenshot or an automation client. Null before the first frame.
+  ///
+  /// Not the list the presenter was given: that one belongs to a pool and is
+  /// rewound two frames later, so holding it would read a later frame. This
+  /// paints the whole tree again from its paint caches, which is what a
+  /// frame does too, and leaves nothing for the next frame to miss.
+  /// Popups live in windows of their own and are not in it.
+  DisplayList? paintSnapshot() {
+    throwIfDisposed();
+    if (_inFrame || !_rootMounted || !_isHitTestable) return null;
+    _settleForInput();
+    final DisplayList list = DisplayList();
+    pipelineOwner.flushPaint(list);
+    return list;
   }
 
   /// Whether there is geometry for a pointer to be tested against.

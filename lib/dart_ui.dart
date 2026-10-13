@@ -37,6 +37,8 @@
 /// 6.2 exists to prevent.
 library;
 
+import 'dart:async';
+
 import 'src/app/application.dart' as app;
 import 'src/backends/default_platform_resolver_stub.dart'
     if (dart.library.io) 'src/backends/default_platform_resolver.dart';
@@ -99,6 +101,7 @@ export 'src/graphics/image/decoded_image.dart';
 export 'src/graphics/image/image_errors.dart';
 export 'src/graphics/image/inflate.dart';
 export 'src/graphics/image/png.dart';
+export 'src/graphics/image/png_encoder.dart';
 export 'src/graphics/image/raster_codec.dart';
 export 'src/graphics/image/raster_formats.dart';
 export 'src/graphics/svg/svg_path.dart';
@@ -295,12 +298,14 @@ export 'src/widgets/window_scope.dart';
 /// available for tests, custom platforms and experimental renderers. Omitting
 /// them selects the native window backend, ranks registered direct GPU paths
 /// first (D3D11/OpenGL today), and retains CPU/headless paths as diagnosed
-/// fallbacks.
+/// fallbacks. [onStarted] runs once the application is up, before its
+/// event loop - the place to attach a control channel or a probe.
 Future<app.Application> runApp(
   Widget rootWidget, {
   List<app.WindowingBackendEntry>? backends,
   List<app.PresentationPathEntry>? presentations,
   app.ApplicationOptions options = const app.ApplicationOptions(),
+  FutureOr<void> Function(app.Application application)? onStarted,
 }) =>
     app.runApp(
       rootWidget,
@@ -309,4 +314,5 @@ Future<app.Application> runApp(
       presentations:
           presentations ?? PlatformBackendResolver.defaultPresentations(),
       options: options,
+      onStarted: onStarted,
     );

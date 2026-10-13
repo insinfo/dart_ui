@@ -28,10 +28,16 @@ import 'toolbox.dart';
 
 /// The primary desktop window for the vector editor.
 class MainWindow extends StatefulWidget {
-  const MainWindow({super.key, this.initialDoc, this.initialName});
+  const MainWindow({
+    super.key,
+    this.initialDoc,
+    this.initialName,
+    this.onReady,
+  });
 
   final VectorDocument? initialDoc;
   final String? initialName;
+  final void Function(MainWindowState window)? onReady;
 
   @override
   State<MainWindow> createState() => MainWindowState();
@@ -83,6 +89,7 @@ class MainWindowState extends State<MainWindow> implements EditorHost {
         name: widget.initialName ?? model.nextUntitledName(),
       ),
     );
+    widget.onReady?.call(this);
     // "Follow the system" needs to know what the system is; asked once at
     // start, and again whenever the user picks that mode.
     unawaited(SystemInfo.isDarkMode().then((bool? dark) {

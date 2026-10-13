@@ -184,6 +184,17 @@ const Map<String, List<String>> _allowedDependencies = <String, List<String>>{
   // a `KeyGesture`. Nothing below may know commands exist - a widget takes a
   // callback, and the application wires it to a command.
   'commands': <String>['foundation', 'widgets'],
+  // Automation drives an application from outside: its commands, its
+  // windows' input and their pixels. It is the top of the stack beside
+  // `app`, and nothing imports it but an application.
+  'automation': <String>[
+    'app',
+    'commands',
+    'geometry',
+    'graphics',
+    'platform',
+    'rendering',
+  ],
   // The application shell sits above everything, which is precisely why it is
   // listed last and why `backends` is still absent from its row: `runApp` has
   // to assemble a backend without being allowed to name one, and the entries

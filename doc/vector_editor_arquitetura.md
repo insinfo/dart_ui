@@ -88,10 +88,10 @@ que falta vão para `doc/vector_editor_paridade.md` a cada entrega.
 | # | Entrega | Estado |
 |---|---|---|
 | 1 | `lib/src/commands/`: registro, parâmetros, `MenuSpec`, atalhos, testes | feito |
-| 2 | `lib/src/automation/`: servidor de controle e host padrão de janela | — |
+| 2 | `lib/src/automation/` (`package:dart_ui/automation.dart`): servidor de controle e host padrão de janela | feito |
 | 3 | Editor: todos os comandos no registro; menus, contexto, barras e atalhos a partir dele | feito (painéis de propriedades ainda chamam o modelo) |
 | 4 | Editor: pastas `engine/` e `ui/`, teste de camadas | feito |
-| 5 | `--control` no editor; sonda que desenha e captura só pelo canal | — |
+| 5 | `--control` no editor; sonda que desenha e captura só pelo canal (`tool/control_probe.dart`) | feito |
 | 6 | Ferramenta de paridade e `doc/vector_editor_paridade.md` | — |
 | 7 | Paleta de comandos (Ctrl/⌘+Shift+P) | — |
 | 8 | Auditoria de sala limpa do código derivado do sK1 | — |
