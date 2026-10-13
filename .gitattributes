@@ -1,3 +1,9 @@
+# Text is stored and checked out with LF on every machine. Without this, a
+# Windows checkout (or a copy made through one) left 519 files with CRLF in a
+# macOS working tree on 12/10/2026 - identical content, and every one of them
+# shown as modified.
+* text=auto eol=lf
+
 # Binary test fixtures. Git detects these correctly on its own, but stating it
 # means a machine with `core.autocrlf=true` cannot silently rewrite a byte
 # inside a font or a compressed conformance file - a corruption that would show
