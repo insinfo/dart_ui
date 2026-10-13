@@ -310,6 +310,7 @@ export 'src/widgets/popup_menu.dart';
 export 'src/widgets/progress_indicator.dart';
 export 'src/widgets/properties.dart';
 export 'src/widgets/proxy.dart';
+export 'src/widgets/ribbon.dart';
 export 'src/widgets/routes.dart';
 export 'src/widgets/safe_area.dart';
 export 'src/widgets/scroll_view.dart';
