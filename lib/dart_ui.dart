@@ -275,6 +275,7 @@ export 'src/widgets/flyout.dart';
 export 'src/widgets/focus.dart';
 export 'src/widgets/focus_scope.dart';
 export 'src/widgets/gesture_detector.dart';
+export 'src/widgets/hero.dart' show Hero;
 export 'src/widgets/hover.dart';
 export 'src/widgets/icon.dart';
 export 'src/widgets/icon_button.dart';

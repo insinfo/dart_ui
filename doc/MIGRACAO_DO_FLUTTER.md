@@ -169,7 +169,7 @@ Sem justificativa de projeto — simplesmente não escrito:
   outubro de 2026.)
 - **Texto rico**: `WidgetSpan`. (`RichText`, `Text.rich` e `TextSpan` no
   nível de widget existem.)
-- **Animação**: `Hero`. (`AnimatedBuilder`,
+- **Animação**: nada de essencial. (`Hero`, `AnimatedBuilder`,
   `ListenableBuilder`, as `*Transition` (com `SizeTransition`),
   `TweenAnimationBuilder`, `AnimatedList`,
   `AnimatedContainer`, `AnimatedSwitcher`, `AnimatedSize` e

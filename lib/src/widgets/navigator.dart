@@ -45,6 +45,7 @@ import 'actions.dart';
 import 'element.dart';
 import 'focus.dart';
 import 'focus_scope.dart';
+import 'hero.dart' show startHeroFlights;
 import 'overlay.dart';
 import 'routes.dart';
 import 'widget.dart';
@@ -255,7 +256,20 @@ final class NavigatorState extends State<Navigator> {
     _takeFocusFor(route, from: previous);
     previous?.didChangeNext(route);
     route.didPush();
+    _flyHeroes(from: previous, to: route, push: true);
     _markDirty();
+  }
+
+  /// The [Hero]s shared by the route being left and the one arriving fly
+  /// between them while the transition runs; see `hero.dart`.
+  void _flyHeroes({
+    required Route<Object?>? from,
+    required Route<Object?> to,
+    required bool push,
+  }) {
+    final OverlayState? overlay = _overlayKey.currentState;
+    if (from == null || overlay == null) return;
+    startHeroFlights(overlay: overlay, from: from, to: to, push: push);
   }
 
   /// Pushes the route [name] resolves to.
@@ -326,6 +340,7 @@ final class NavigatorState extends State<Navigator> {
       finalizeRoute(route);
     } else {
       _popping.add(route);
+      _flyHeroes(from: route, to: below, push: false);
     }
     _markDirty();
     return true;
