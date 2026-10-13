@@ -13,7 +13,9 @@ import '../geometry/offset.dart';
 import '../graphics/display_list.dart';
 import '../layout/alignment.dart';
 import '../layout/render_box.dart';
+import '../layout/render_flex.dart' show Axis;
 import '../layout/render_proxy_box.dart';
+import 'basic.dart' show Align;
 import 'element.dart';
 import 'proxy.dart';
 import 'widget.dart';
@@ -168,6 +170,41 @@ class SlideTransition extends AnimatedWidget {
         transformHitTests: transformHitTests,
         child: child,
       );
+}
+
+/// Reveals [child] along [axis] by [sizeFactor]: 0 takes no space, 1 is
+/// the child's full extent - what an item appearing in a list grows by.
+/// The child is laid out at full size and clipped; [axisAlignment] (-1 to 1)
+/// is which part of it shows first, the start by default as in Flutter.
+class SizeTransition extends AnimatedWidget {
+  const SizeTransition({
+    super.key,
+    required Animation<double> sizeFactor,
+    this.axis = Axis.vertical,
+    this.axisAlignment = 0.0,
+    this.child,
+  }) : super(listenable: sizeFactor);
+
+  Animation<double> get sizeFactor => listenable as Animation<double>;
+  final Axis axis;
+  final double axisAlignment;
+  final Widget? child;
+
+  @override
+  Widget build(BuildContext context) {
+    final double factor = math.max(sizeFactor.value, 0.0);
+    final bool vertical = axis == Axis.vertical;
+    return ClipRect(
+      child: Align(
+        alignment: vertical
+            ? Alignment(-1, axisAlignment)
+            : Alignment(axisAlignment, -1),
+        heightFactor: vertical ? factor : null,
+        widthFactor: vertical ? null : factor,
+        child: child,
+      ),
+    );
+  }
 }
 
 /// Paints [child] moved by [translation] in fractions of its own size,

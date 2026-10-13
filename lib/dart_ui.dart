@@ -239,6 +239,7 @@ export 'src/vector_editing/text_metrics.dart';
 export 'src/vector_editing/tool_controller.dart';
 export 'src/vector_editing/tool_mode.dart';
 export 'src/widgets/actions.dart';
+export 'src/widgets/animated_list.dart';
 export 'src/widgets/animated_widgets.dart';
 export 'src/widgets/animation_scope.dart';
 export 'src/widgets/async_builders.dart';
