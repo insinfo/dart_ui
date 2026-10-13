@@ -47,7 +47,9 @@ import '../../geometry/size.dart';
 import '../../platform/system_fonts.dart';
 import '../../text/cmap.dart';
 import '../../text/font_data.dart';
+import '../../text/font_fallback.dart';
 import '../../text/font_tables.dart';
+import '../../text/grapheme.dart' show isExtendedPictographic;
 import '../../text/script.dart';
 import '../../text/sfnt.dart';
 import '../../text/typeface.dart';
@@ -73,7 +75,27 @@ const double kDefaultUiFontSize = 12.0;
 /// Sharing is safe because painting is synchronous and single-threaded: a run
 /// returned by it borrows the shaper's buffers and every caller here consumes
 /// the run before shaping again.
-final TextPainter uiTextPainter = TextPainter();
+///
+/// Its paragraphs fall back through [FontRegistry.instance] - read at the
+/// moment of the question, not captured, because a test or an application
+/// may replace the instance - so a label in Inter with a 😀 in it draws the
+/// smiley from the platform's emoji face. See [FontRegistry.fallbackFace].
+final TextPainter uiTextPainter = TextPainter(fallback: _InstanceFallback());
+
+/// [FontFallback] that asks whichever registry is [FontRegistry.instance] now.
+final class _InstanceFallback implements FontFallback {
+  @override
+  Typeface? fallbackFace(
+    int codePoint,
+    Typeface primary, {
+    bool emojiPresentation = false,
+  }) =>
+      FontRegistry.instance.fallbackFace(
+        codePoint,
+        primary,
+        emojiPresentation: emojiPresentation,
+      );
+}
 
 /// Reads the identity of every face in [file], or an empty list.
 ///
@@ -165,7 +187,8 @@ enum FontFallbackStep {
   /// family's Bold may carry a script its Regular does not.
   family,
 
-  /// A family named in the per-script preference list for this platform.
+  /// A family named in the per-script preference list for this platform - or,
+  /// for an emoji, one of [FontRegistry.emojiFamilies].
   scriptPreference,
 
   /// Found by scanning the index for a face whose `OS/2` claims the
@@ -225,19 +248,27 @@ enum EmojiPresentation {
 
 /// What could be honoured of an emoji request, and what could not.
 ///
-/// ## The limit this type exists to declare
+/// ## What is drawn in colour, and what is not
 ///
-/// Colour glyphs are stored in tables this engine does not implement: `COLR`
-/// and `CPAL` (layered vector), `CBDT`/`CBLC` and `sbix` (embedded bitmaps).
-/// A face carrying them still parses, because they sit alongside ordinary
-/// `glyf` outlines, and drawing it produces the *base* outlines - a monochrome
-/// silhouette - or, where the base glyph is empty because all the artwork is in
-/// the bitmap, nothing at all.
+/// Colour glyphs come in four storage formats and this engine draws two of
+/// them. **`sbix`** (Apple Color Emoji) and **`CBDT`/`CBLC`** (Noto Color
+/// Emoji) are embedded PNGs: the typeface layer reads them
+/// ([Typeface.colorBitmapOf]) and the painter draws the picture in place of the
+/// glyph. **`COLR`/`CPAL`** (layered vector, Segoe UI Emoji) and **`SVG `**
+/// are not implemented: a face carrying only those still parses, because they
+/// sit alongside ordinary outlines, and drawing it produces the *base*
+/// outlines - a monochrome silhouette - or, where the base glyph is empty,
+/// nothing at all.
 ///
-/// Both outcomes are legitimate engineering states and neither may be silent. A
-/// blank where an emoji was asked for, discovered by a user, is a bug report
-/// with no information in it. So [limitation] carries the sentence that explains
-/// it and [drawable] says outright whether anything would appear on screen.
+/// Sequences are the other gap. Apple Color Emoji forms skin-tone and `U+200D`
+/// sequences with the AAT `morx` table, which this engine does not run, so 👍🏽
+/// draws as 👍 followed by the 🏽 swatch - two colour pictures, not one, and
+/// not boxes.
+///
+/// Every shortfall is reported rather than silent. A blank where an emoji was
+/// asked for, discovered by a user, is a bug report with no information in
+/// it. So [limitation] carries the sentence that explains it and [drawable]
+/// says outright whether anything would appear on screen.
 final class EmojiResolution {
   const EmojiResolution({
     required this.face,
@@ -266,14 +297,16 @@ final class EmojiResolution {
   /// which is the difference between 👨‍👩‍👧 and three separate people.
   final bool isZwjSequence;
 
-  /// Whether drawing [glyph] would put anything on screen at all.
+  /// Whether drawing [glyph] would put anything on screen at all: it has a
+  /// picture in a colour table this engine reads, or an outline.
   ///
-  /// False for a face whose emoji artwork lives entirely in a colour bitmap:
-  /// the outline is empty, and this engine draws outlines.
+  /// False for a glyph whose artwork lives only in `COLR` or `SVG ` over an
+  /// empty outline.
   final bool drawable;
 
-  /// The colour table the chosen face carries - `COLR`, `CBDT` or `sbix` - or
-  /// null when it has none. Never implemented, always reported.
+  /// The colour table the chosen face carries - `COLR`, `CBDT`, `sbix` or
+  /// `SVG ` - or null when it has none. Always reported; `sbix` and `CBDT` are
+  /// drawn, the other two are not.
   final String? colourTable;
 
   /// The one sentence describing what was not honoured, or null when the
@@ -295,7 +328,7 @@ final class EmojiResolution {
 /// expensive, mutable-only-by-configuration resource, which is what a registry
 /// is for. An application that ships its own font calls [useTypeface] at
 /// startup and never thinks about it again.
-final class FontRegistry {
+final class FontRegistry implements FontFallback {
   /// [search] replaces the walk over the machine's font directories.
   ///
   /// The seam exists for one case that cannot be reproduced otherwise: a
@@ -437,6 +470,7 @@ final class FontRegistry {
     _source = source;
     _sized.clear();
     _fallbackCache.clear();
+    _emojiFaces.clear();
     registerTypeface(face, source: source);
   }
 
@@ -507,6 +541,7 @@ final class FontRegistry {
     // nothing to "open": `open` finds it here and never touches a file.
     _opened[key] = face;
     _fallbackCache.clear();
+    _emojiFaces.clear();
   }
 
   /// The faces this registry was handed directly, in registration order.
@@ -650,11 +685,13 @@ final class FontRegistry {
   ///      family. A family is not uniform: its Bold may carry a script its
   ///      Regular does not, and staying inside the family keeps the run's
   ///      design consistent;
-  ///   3. **[FontFallbackStep.scriptPreference]** - the families this platform
-  ///      ships the character's script in, by name, in preference order (see
-  ///      [fallbackFamiliesFor]). Named rather than discovered because "the
-  ///      face Windows draws Japanese in" is knowledge no table in a font
-  ///      contains;
+  ///   3. **[FontFallbackStep.scriptPreference]** - for an emoji
+  ///      ([isEmojiCodePoint]) the platform's emoji families first
+  ///      ([emojiFamilies]), every face of them, unfiltered by coverage bits;
+  ///      then the families this platform ships the character's script in, by
+  ///      name, in preference order (see [fallbackFamiliesFor]). Named rather
+  ///      than discovered because "the face Windows draws Japanese in" is
+  ///      knowledge no table in a font contains;
   ///   4. **[FontFallbackStep.coverageScan]** - the indexed faces, ordered by
   ///      whether their `OS/2` claims the character's Unicode range. See
   ///      [_coverageCandidates] for the exact order and for why the claim only
@@ -740,6 +777,23 @@ final class FontRegistry {
             facesExamined: examined,
           );
         }
+      }
+    }
+
+    // Step 3a: an emoji goes to the platform's emoji faces before anything
+    // else, and *without* the coverage-bit filter steps 2 and 3 apply: Apple
+    // Color Emoji claims no supplementary-plane bit, so the filter skipped it
+    // and a 😀 fell through to a coverage scan that ran out of budget first.
+    // See [isEmojiCodePoint] for which characters count.
+    if (isEmojiCodePoint(codePoint)) {
+      final Typeface? colour = _emojiFace(codePoint);
+      if (colour != null) {
+        return FallbackResolution(
+          face: colour,
+          glyph: colour.glyphForCodePoint(codePoint),
+          step: FontFallbackStep.scriptPreference,
+          facesExamined: examined + 1,
+        );
       }
     }
 
@@ -996,6 +1050,75 @@ final class FontRegistry {
 
   // --- emoji ---------------------------------------------------------------
 
+  /// [FontFallback] for paragraph layout: a face for [codePoint] in place of
+  /// [primary], or null to keep [primary].
+  ///
+  /// With [emojiPresentation] - the cluster carries `U+FE0F` - the platform's
+  /// emoji faces are asked first even when [primary] has the character,
+  /// because [primary]'s glyph is the text presentation the selector asked to
+  /// replace; a heart in Inter is monochrome, the one in Apple Color Emoji is
+  /// red. If no emoji face has it, [primary] keeps it.
+  ///
+  /// Otherwise this is [resolveCodePoint] from [primary], so the answer is the
+  /// fallback chain's, cached the same way.
+  @override
+  Typeface? fallbackFace(
+    int codePoint,
+    Typeface primary, {
+    bool emojiPresentation = false,
+  }) {
+    if (emojiPresentation) {
+      final Typeface? colour = _emojiFace(codePoint);
+      if (colour != null) return colour;
+    }
+    if (primary.coversCodePoint(codePoint)) return null;
+    return resolveCodePoint(codePoint, from: primary).face;
+  }
+
+  /// Emoji faces found per code point, null meaning "none has it".
+  ///
+  /// Separate from [_fallbackCache] because it does not depend on the face
+  /// the search started from: the emoji families are the same list whichever
+  /// face a run is in.
+  final Map<int, Typeface?> _emojiFaces = <int, Typeface?>{};
+
+  /// The first face of [emojiFamilies] that maps [codePoint], or null.
+  ///
+  /// Every face of each family is tried, unfiltered: a coverage bit is a
+  /// claim, and the emoji faces make none for the planes their artwork is in.
+  Typeface? _emojiFace(int codePoint) {
+    if (_emojiFaces.containsKey(codePoint)) return _emojiFaces[codePoint];
+    Typeface? found;
+    for (final String family in emojiFamilies()) {
+      for (final SystemFontFace candidate in _familyCandidates(family)) {
+        final ({Typeface face, int glyph})? hit =
+            _tryFace(candidate, codePoint);
+        if (hit != null) {
+          found = hit.face;
+          break;
+        }
+      }
+      if (found != null) break;
+    }
+    _emojiFaces[codePoint] = found;
+    return found;
+  }
+
+  /// Whether [codePoint] should be drawn from an emoji face when the run's
+  /// face lacks it, ahead of the ordinary fallback chain.
+  ///
+  /// Extended_Pictographic **above U+1F000** - the emoji blocks proper - plus
+  /// the skin-tone modifiers, the regional indicators flags are made of and
+  /// the keycap combining mark. The pictographs below U+1F000 are left to the
+  /// chain on purpose: ©, ™, ☺ and ✂ are Extended_Pictographic too, have a
+  /// text presentation by default, and a missing © should come from a text
+  /// face, not as a colour picture.
+  static bool isEmojiCodePoint(int codePoint) =>
+      (codePoint >= 0x1F000 && isExtendedPictographic(codePoint)) ||
+      (codePoint >= 0x1F3FB && codePoint <= 0x1F3FF) ||
+      (codePoint >= 0x1F1E6 && codePoint <= 0x1F1FF) ||
+      codePoint == 0x20E3;
+
   /// The face for an emoji [cluster], and everything about it that could not
   /// be honoured.
   ///
@@ -1020,13 +1143,17 @@ final class FontRegistry {
   ///
   /// ## Colour
   ///
-  /// **This engine draws outlines and nothing else.** `COLR`/`CPAL`,
-  /// `CBDT`/`CBLC` and `sbix` are not implemented, so a colour emoji face
-  /// yields its monochrome base outlines, and a face whose artwork exists only
-  /// as a bitmap yields an empty glyph. [EmojiResolution.drawable] and
+  /// `sbix` and `CBDT`/`CBLC` pictures are drawn (see [EmojiResolution] and
+  /// `color_glyph_cache.dart`); `COLR`/`CPAL` and `SVG ` are not, so a face
+  /// with only those yields its monochrome base outlines, or an empty glyph
+  /// where the outline is empty. [EmojiResolution.drawable] and
   /// [EmojiResolution.colourTable] report which of those happened. Returning a
   /// face and letting the caller discover a row of blanks is exactly the
   /// silent-degradation failure section 6.6 forbids.
+  ///
+  /// A sequence the face would form with AAT `morx` - Apple Color Emoji's skin
+  /// tones and `U+200D` sequences - is reported as drawn in parts, because
+  /// this engine does not run `morx`.
   EmojiResolution resolveEmoji(String cluster, {Script? script}) {
     final List<int> bases = <int>[];
     int selector = 0;
@@ -1147,19 +1274,32 @@ final class FontRegistry {
         'glyph is used',
       );
     }
+    if (bases.length > 1 &&
+        face.sfnt.hasTable('morx') &&
+        !face.sfnt.hasTable('GSUB')) {
+      notes.add(
+        '${face.familyName ?? 'the chosen face'} forms sequences with the AAT '
+        '"morx" table, which this engine does not run, so the cluster will '
+        'draw as separate parts',
+      );
+    }
     final String? colour = _colourTableOf(face);
-    if (colour != null) {
+    final bool pictured = face.colorBitmaps != null;
+    if (colour != null && !pictured) {
       notes.add(
         '${face.familyName ?? 'the chosen face'} stores its colour artwork in '
         '"$colour", which this engine does not implement; the monochrome base '
         'outline is what will be drawn',
       );
     }
-    final bool drawable = face.hasOutline(glyph);
+    final bool drawable =
+        (pictured && face.colorBitmapOf(glyph, kDefaultUiFontSize) != null) ||
+            face.hasOutline(glyph);
     if (!drawable) {
       notes.add(
-        'the chosen glyph has no outline at all, so nothing would appear; the '
-        'artwork exists only as colour data this engine cannot read',
+        'the chosen glyph has no outline and no picture, so nothing would '
+        'appear; the artwork exists only as colour data this engine cannot '
+        'read',
       );
     }
 
@@ -1203,7 +1343,8 @@ final class FontRegistry {
     yield* _coverageCandidates(base);
   }
 
-  /// Which colour-glyph table [face] carries, or null. None are implemented.
+  /// Which colour-glyph table [face] carries, or null. `sbix` and `CBDT` are
+  /// drawn ([Typeface.colorBitmaps]); `COLR` and `SVG ` are not.
   static String? _colourTableOf(Typeface face) {
     for (final String tag in const <String>['COLR', 'CBDT', 'sbix', 'SVG ']) {
       if (face.sfnt.hasTable(tag)) return tag;
@@ -1229,6 +1370,7 @@ final class FontRegistry {
     _opened.clear();
     _registeredFaces.clear();
     _fallbackCache.clear();
+    _emojiFaces.clear();
     _fallbackQueries = 0;
     _fallbackMisses = 0;
     _opens = 0;

@@ -115,12 +115,17 @@
 ///    font actually names and the model that script needs. A script whose model
 ///    is not implemented throws rather than rendering wrongly - see
 ///    [sharedShaper] for how to trade that for approximate text.
-///  * **One font per style.** There is no font fallback: a run whose face has
-///    no glyph for a character gets `.notdef`, not a second face. The registry
-///    that would choose the second face is a neighbouring concern and the seam
-///    it needs is the style span - splitting a run further by coverage is the
-///    same operation as splitting it by script, and it belongs right next to
-///    it in [_ParagraphBuilder._shapeRuns].
+///  * **Font fallback is per grapheme cluster, and only with a [FontFallback].**
+///    Given one, a cluster the span's face cannot draw - or one that asks for
+///    the emoji presentation with `U+FE0F` - is shaped in the face the
+///    fallback names, and the run is split there exactly as it is split at a
+///    script boundary (see [_ParagraphBuilder._assignFallbackFaces]). Without
+///    one, a character the face lacks is `.notdef`. A fallback run is drawn in
+///    its own face but **measured into the line with the span's**: the line
+///    box keeps the height the style asked for, so a label does not grow
+///    taller the moment someone types an emoji into it. A face whose glyphs
+///    are taller than the span's line box therefore paints a little past it,
+///    which is what every browser does with `line-height` set.
 library;
 
 import 'dart:math' as math;
@@ -130,6 +135,8 @@ import '../geometry/offset.dart';
 import '../geometry/rect.dart';
 import '../geometry/size.dart';
 import 'bidi.dart';
+import 'default_ignorable.dart';
+import 'font_fallback.dart';
 import 'grapheme.dart';
 import 'line_break.dart';
 import 'script.dart';
@@ -588,6 +595,7 @@ final class Paragraph {
     ParagraphStyle style = const ParagraphStyle(),
     double maxWidth = double.infinity,
     Shaper? shaper,
+    FontFallback? fallback,
   }) {
     if (spans.isEmpty) {
       throw ArgumentError.value(spans, 'spans', 'a paragraph needs a style');
@@ -603,6 +611,7 @@ final class Paragraph {
       style,
       maxWidth,
       shaper ?? sharedShaper,
+      fallback,
     ).build();
   }
 
@@ -613,12 +622,14 @@ final class Paragraph {
     ParagraphStyle paragraphStyle = const ParagraphStyle(),
     double maxWidth = double.infinity,
     Shaper? shaper,
+    FontFallback? fallback,
   }) =>
       Paragraph.layout(
         spans: <TextSpan>[TextSpan(text, style)],
         style: paragraphStyle,
         maxWidth: maxWidth,
         shaper: shaper,
+        fallback: fallback,
       );
 
   /// The spans concatenated: the string every offset here indexes into.
@@ -1033,6 +1044,7 @@ final class _ShapedRun {
     required this.end,
     required this.level,
     required this.style,
+    required this.font,
     required this.kind,
     required this.glyphIds,
     required this.positions,
@@ -1045,7 +1057,15 @@ final class _ShapedRun {
   final int start;
   final int end;
   final int level;
+
+  /// The span's style: what the line box is measured from.
   final TextStyle style;
+
+  /// The face the glyphs index into - [style]'s, or a fallback face at the
+  /// same size. Kept apart from [style] so that a fallback run draws in the
+  /// face that has its glyphs and still measures into the line like the text
+  /// around it; see the library comment.
+  final ScaledTypeface font;
   final _RunKind kind;
 
   final Int32List glyphIds;
@@ -1071,8 +1091,13 @@ final class _ShapedRun {
 
 /// Runs the pipeline once, for one paragraph.
 final class _ParagraphBuilder {
-  _ParagraphBuilder(this.spans, this.style, this.maxWidth, this.shaper)
-      : text = spans.length == 1
+  _ParagraphBuilder(
+    this.spans,
+    this.style,
+    this.maxWidth,
+    this.shaper,
+    this.fallback,
+  ) : text = spans.length == 1
             ? spans.first.text
             : spans.map((TextSpan s) => s.text).join();
 
@@ -1080,7 +1105,13 @@ final class _ParagraphBuilder {
   final ParagraphStyle style;
   final double maxWidth;
   final Shaper shaper;
+  final FontFallback? fallback;
   final String text;
+
+  /// Per UTF-16 offset, the fallback face that offset is drawn in, or null
+  /// for the span's own. Null as a whole - the common case - when nothing
+  /// needed a second face.
+  List<Typeface?>? _fallbackFaces;
 
   late final BidiParagraph _bidi;
   late final List<_ShapedRun> _runs;
@@ -1205,6 +1236,14 @@ final class _ParagraphBuilder {
       }
     }
 
+    final List<Typeface?>? faces =
+        _fallbackFaces = fallback == null ? null : _assignFallbackFaces();
+    if (faces != null) {
+      for (int i = 1; i < length; i++) {
+        if (!identical(faces[i], faces[i - 1])) boundary[i] = 1;
+      }
+    }
+
     final List<_ShapedRun> runs = <_ShapedRun>[];
     int start = 0;
     for (int i = 1; i <= length; i++) {
@@ -1231,15 +1270,121 @@ final class _ParagraphBuilder {
       return _emptyRun(start, end, level, runStyle, kind);
     }
 
+    final Typeface? substitute = _fallbackFaces?[start];
+    final ScaledTypeface font = substitute == null
+        ? runStyle.font
+        : _scaledFallbacks.putIfAbsent(
+            (substitute, runStyle.font.pixelSize),
+            () => substitute.atSize(runStyle.font.pixelSize),
+          );
     final GlyphRun run = shaper.shape(
       text.substring(start, end),
-      runStyle.font,
+      font,
       script: _scriptAt(start),
       language: runStyle.language,
       direction:
           level.isOdd ? TextDirection.rightToLeft : TextDirection.leftToRight,
     );
     return _copy(run, start, end, level, runStyle, _RunKind.glyphs);
+  }
+
+  /// One [ScaledTypeface] per fallback face and size, so every run a face
+  /// draws shares one instance - and with it one display-list font id.
+  final Map<(Typeface, double), ScaledTypeface> _scaledFallbacks =
+      <(Typeface, double), ScaledTypeface>{};
+
+  /// Decides, per grapheme cluster, whether the span's face draws it or a
+  /// [fallback] face does. Null when every cluster stays in its span's face.
+  ///
+  /// Per *cluster*, not per code point, because a cluster is what a reader
+  /// sees as one character: a base and its accent, a flag's two regional
+  /// indicators, a thumbs-up and its skin tone. Splitting one across two
+  /// faces would shape its halves separately and draw an accent with no letter
+  /// under it.
+  ///
+  /// A cluster asks for another face when
+  ///
+  ///  * it carries `U+FE0F`, the request for colour presentation. The span's
+  ///    face may well have a glyph - Inter has a monochrome ❤ - and that glyph
+  ///    is exactly what the selector asked to replace. If the fallback finds
+  ///    no colour face, the span's glyph stands; or
+  ///  * the span's face lacks one of its characters. Default-ignorable ones are
+  ///    not counted (see `default_ignorable.dart`): a face without `U+200D`
+  ///    still draws both halves of a joined sequence, and the joiner shapes to
+  ///    nothing.
+  ///
+  /// The face asked for is the one for the cluster's first character that is
+  /// not ignorable, and it is used for the whole cluster. Tabs, line breaks and
+  /// soft hyphens are runs of their own with no glyphs and are never sent.
+  ///
+  /// Linear in the text with a `cmap` lookup per code point, and the grapheme
+  /// scan is skipped outright when that first pass finds nothing to do - which
+  /// is every paragraph in a face that covers its own text.
+  List<Typeface?>? _assignFallbackFaces() {
+    final FontFallback chooser = fallback!;
+    // The cheap pass: does anything here need a second face at all?
+    bool needed = false;
+    int index = 0;
+    while (index < text.length) {
+      final int rune = _runeAt(index);
+      if (rune == 0xFE0F ||
+          (!isDefaultIgnorable(rune) &&
+              rune >= 0x20 &&
+              !_styleAt(index).font.typeface.coversCodePoint(rune))) {
+        needed = true;
+        break;
+      }
+      index += rune > 0xFFFF ? 2 : 1;
+    }
+    if (!needed) return null;
+
+    final List<Typeface?> faces = List<Typeface?>.filled(text.length, null);
+    bool any = false;
+    final List<int> marks = GraphemeBreaks.boundaries(text);
+    for (int c = 1; c < marks.length; c++) {
+      final int start = marks[c - 1];
+      final int end = marks[c];
+      final Typeface primary = _styleAt(start).font.typeface;
+      int base = -1;
+      bool emoji = false;
+      bool covered = true;
+      for (int i = start; i < end;) {
+        final int rune = _runeAt(i);
+        i += rune > 0xFFFF ? 2 : 1;
+        if (rune == 0xFE0F) emoji = true;
+        if (isDefaultIgnorable(rune)) continue;
+        // Controls - a tab, a line feed - are runs of their own with no
+        // glyphs. Sending them to a fallback would only split the run.
+        if (rune < 0x20 || (rune >= 0x7F && rune < 0xA0)) {
+          base = -1;
+          covered = true;
+          break;
+        }
+        if (base < 0) base = rune;
+        if (!primary.coversCodePoint(rune)) covered = false;
+      }
+      if (base < 0 || (covered && !emoji)) continue;
+      final Typeface? other =
+          chooser.fallbackFace(base, primary, emojiPresentation: emoji);
+      if (other == null || identical(other, primary)) continue;
+      for (int i = start; i < end; i++) {
+        faces[i] = other;
+      }
+      any = true;
+    }
+    return any ? faces : null;
+  }
+
+  /// The code point starting at UTF-16 [index].
+  int _runeAt(int index) {
+    final int unit = text.codeUnitAt(index);
+    if (unit >= 0xD800 && unit <= 0xDBFF && index + 1 < text.length) {
+      final int low = text.codeUnitAt(index + 1);
+      if (low >= 0xDC00 && low <= 0xDFFF) {
+        return 0x10000 + ((unit - 0xD800) << 10) + (low - 0xDC00);
+      }
+    }
+    return unit;
   }
 
   _ShapedRun _emptyRun(
@@ -1254,6 +1399,7 @@ final class _ParagraphBuilder {
         end: end,
         level: level,
         style: runStyle,
+        font: runStyle.font,
         kind: kind,
         glyphIds: _noGlyphs,
         positions: _noPositions,
@@ -1293,6 +1439,7 @@ final class _ParagraphBuilder {
       end: end,
       level: level,
       style: runStyle,
+      font: run.font,
       kind: kind,
       glyphIds: ids,
       positions: positions,
@@ -1938,7 +2085,7 @@ final class _Draft {
 
     return GlyphSpan._(
       glyphs: GlyphRun(
-        font: style.font,
+        font: source.font,
         glyphIds: ids,
         positions: positions,
         clusters: clusters,
@@ -2007,13 +2154,22 @@ final class _Draft {
 /// entries become unreachable rather than wrong. They still occupy the cache,
 /// which is what [clear] is for.
 final class ParagraphCache {
-  ParagraphCache({this.maximumEntries = 64, Shaper? shaper})
+  ParagraphCache({this.maximumEntries = 64, Shaper? shaper, this.fallback})
       : shaper = shaper ?? sharedShaper;
 
   /// How many laid-out paragraphs to keep. Least recently used goes first.
   final int maximumEntries;
 
   final Shaper shaper;
+
+  /// Where a character the span's face lacks gets its face, or null for no
+  /// fallback at all. A property of the cache, like [shaper]: not in the key.
+  ///
+  /// The one input that is *not* immutable - installing a font changes what a
+  /// fallback answers - and so the one way an entry can go stale. A caller
+  /// that registers a face mid-session and wants laid-out text to pick it up
+  /// calls [clear].
+  final FontFallback? fallback;
 
   final Map<_ParagraphKey, Paragraph> _entries = <_ParagraphKey, Paragraph>{};
 
@@ -2044,6 +2200,7 @@ final class ParagraphCache {
       style: style,
       maxWidth: maxWidth,
       shaper: shaper,
+      fallback: fallback,
     );
     _entries[key] = laid;
     while (_entries.length > maximumEntries) {

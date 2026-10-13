@@ -732,8 +732,47 @@ final class RenderText extends RenderBox {
   /// the single-line path only shapes. An [_ellipsis] therefore takes the
   /// paragraph path too: a label that does not fit its box ends in "…"
   /// instead of being cut through a letter.
+  ///
+  /// So does text with a character the face cannot draw, or an emoji asked
+  /// for with `U+FE0F`: a shaped run is one face, and only a paragraph falls
+  /// back to a second - the platform's emoji face for "Hello 😀", which the
+  /// single-line path drew as a `.notdef` box until 13/10/2026.
   bool get _usesParagraph =>
-      _softWrap || _hasHardBreak || _ellipsis != null || _alignsAcross;
+      _softWrap ||
+      _hasHardBreak ||
+      _ellipsis != null ||
+      _alignsAcross ||
+      _fallsBack;
+
+  /// Whether the text needs a face other than [font] somewhere, remembered
+  /// per text and face so layout, paint and the intrinsics ask the `cmap`
+  /// once rather than once each.
+  bool get _fallsBack {
+    final ScaledTypeface? face = font;
+    if (face == null) return false;
+    if (_fallbackText != _text || _fallbackFace != face) {
+      _fallbackText = _text;
+      _fallbackFace = face;
+      _fallbackNeeded = uiTextPainter.needsFallback(_text, face);
+    }
+    return _fallbackNeeded;
+  }
+
+  String? _fallbackText;
+  ScaledTypeface? _fallbackFace;
+  bool _fallbackNeeded = false;
+
+  /// The paragraph's line-height multiplier: [lineHeight], unless the label
+  /// is only in the paragraph engine for [_fallsBack].
+  ///
+  /// A single line has no leading - see [lineHeight] - and a label must not
+  /// grow by its multiplier the moment someone types an emoji into it, so a
+  /// line that would have taken the single-line path keeps its height.
+  double get _heightMultiplier {
+    final bool singleLine =
+        !_softWrap && !_hasHardBreak && _ellipsis == null && !_alignsAcross;
+    return singleLine ? 1.0 : (_lineHeight ?? 1.0);
+  }
 
   /// The width paragraph layout may use: the constraint when soft wrapping,
   /// otherwise none, so that only mandatory breaks end a line.
@@ -846,9 +885,13 @@ final class RenderText extends RenderBox {
     // With no face the estimated box is still reserved, so a missing font
     // shows up as blank text rather than as a tree that has collapsed to
     // nothing. See FontRegistry.estimatedSize.
-    return face == null
-        ? FontRegistry.estimatedSize(_text, _fontSize)
-        : uiTextPainter.measure(_text, face);
+    if (face == null) return FontRegistry.estimatedSize(_text, _fontSize);
+    // A fallback face changes the advances, and only the paragraph knows
+    // them; measuring the single run would size the box for `.notdef`s.
+    if (_fallsBack && !_hasHardBreak) {
+      return uiTextPainter.layout(_text, face).size;
+    }
+    return uiTextPainter.measure(_text, face);
   }
 
   @override
@@ -869,7 +912,7 @@ final class RenderText extends RenderBox {
         breakWords: _breakWords,
         maxLines: _maxLines,
         ellipsis: _ellipsis,
-        heightMultiplier: _lineHeight ?? 1.0,
+        heightMultiplier: _heightMultiplier,
       ),
     );
     // Lines centred or right-aligned were placed across the layout width,
@@ -901,7 +944,7 @@ final class RenderText extends RenderBox {
             breakWords: _breakWords,
             maxLines: _maxLines,
             ellipsis: _ellipsis,
-            heightMultiplier: _lineHeight ?? 1.0,
+            heightMultiplier: _heightMultiplier,
           ),
         )
         .size
@@ -923,7 +966,7 @@ final class RenderText extends RenderBox {
             breakWords: _breakWords,
             maxLines: _maxLines,
             ellipsis: _ellipsis,
-            heightMultiplier: _lineHeight ?? 1.0,
+            heightMultiplier: _heightMultiplier,
           ),
         )
         .size
@@ -949,7 +992,7 @@ final class RenderText extends RenderBox {
             breakWords: _breakWords,
             maxLines: _maxLines,
             ellipsis: _ellipsis,
-            heightMultiplier: _lineHeight ?? 1.0,
+            heightMultiplier: _heightMultiplier,
           ),
         )
         .size

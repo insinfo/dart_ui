@@ -32,9 +32,13 @@ import '../../geometry/offset.dart';
 import '../../geometry/size.dart';
 import '../../graphics/display_list.dart';
 import '../../graphics/display_list_opcodes.dart';
+import '../../text/cmap.dart' show notdefGlyph;
+import '../../text/default_ignorable.dart';
+import '../../text/font_fallback.dart';
 import '../../text/paragraph.dart';
 import '../../text/shaper.dart';
 import '../../text/typeface.dart';
+import 'color_glyph_cache.dart';
 
 /// Shapes text and appends it to a display list.
 ///
@@ -44,13 +48,30 @@ final class TextPainter {
   /// [shaper] replaces the default for **both** levels of the API: the
   /// single-run calls use it directly, and the paragraph calls use it for every
   /// script instead of picking one per run.
+  ///
+  /// [fallback] is where the paragraph calls find a face for a character the
+  /// span's face lacks; see [FontFallback]. It is handed to the
+  /// [ParagraphCache] this builds, so it is ignored when [paragraphCache] is
+  /// supplied - that cache already has its own. The single-run calls never
+  /// fall back: a [GlyphRun] is one face by construction, which is why
+  /// [needsFallback] exists.
+  ///
+  /// [colorGlyphs] is where pictures from `sbix` and `CBDT` faces are decoded
+  /// and kept; see [emitRun].
   TextPainter({
     Shaper? shaper,
     ParagraphCache? paragraphCache,
     GlyphRunCache? runCache,
+    FontFallback? fallback,
+    ColorGlyphCache? colorGlyphs,
   })  : _shaper = shaper ?? sharedShaper,
         runs = runCache ?? GlyphRunCache(shaper ?? sharedShaper),
-        paragraphs = paragraphCache ?? ParagraphCache(shaper: shaper);
+        paragraphs = paragraphCache ??
+            ParagraphCache(shaper: shaper, fallback: fallback),
+        colorGlyphs = colorGlyphs ?? sharedColorGlyphCache;
+
+  /// Decoded colour glyphs, shared by default with every other painter.
+  final ColorGlyphCache colorGlyphs;
 
   /// The shaper the single-run API uses.
   ///
@@ -104,6 +125,26 @@ final class TextPainter {
         direction: direction,
       );
 
+  /// Whether [text] has a cluster that [font] alone would draw wrongly, and
+  /// so must go through [layout] - whose paragraphs fall back - rather than
+  /// through [shapeRun].
+  ///
+  /// True when the paragraph cache has a fallback and [text] has a character
+  /// [font] cannot draw, or asks for the emoji presentation with `U+FE0F`.
+  /// Default-ignorable characters do not count: the shaper hides them. A
+  /// widget that draws single lines through [shapeRun] asks this first; the
+  /// cost is one `cmap` lookup per character.
+  bool needsFallback(String text, ScaledTypeface font) {
+    if (paragraphs.fallback == null) return false;
+    final Typeface face = font.typeface;
+    for (final int rune in text.runes) {
+      if (rune == 0xFE0F) return true;
+      if (rune < 0x20 || isDefaultIgnorable(rune)) continue;
+      if (face.glyphForCodePoint(rune) == notdefGlyph) return true;
+    }
+    return false;
+  }
+
   /// Appends [text] to [list], with the **left end of its baseline** at
   /// [origin].
   ///
@@ -133,6 +174,24 @@ final class TextPainter {
   /// run repeatedly - a scrolling list redraws lines it already measured - and
   /// re-shaping per frame is the most common way text rendering becomes the
   /// slowest part of a frame.
+  ///
+  /// ## Colour glyphs
+  ///
+  /// A glyph whose face has a picture of it (`sbix`, `CBDT` - see
+  /// [Typeface.colorBitmapOf]) is drawn as an image and **left out of the
+  /// glyph run**. Leaving it out is not an optimisation: those faces' outlines
+  /// are placeholders, and drawing both would put a box behind every emoji.
+  /// The picture is placed by the table's origin offsets from the glyph's pen
+  /// position and baseline, at whole pixels - the blit is pixel for pixel -
+  /// and drawn with [paintId], whose alpha a GPU backend applies and whose
+  /// colour nothing applies: an emoji is not tinted by the text colour.
+  /// Ordinary glyphs of the same run still go out as one glyph command, and
+  /// carry the run's text to a backend that captures it.
+  ///
+  /// Sequences an `sbix` face forms with AAT `morx` - a thumbs-up with a skin
+  /// tone, a family joined with `U+200D` - are not formed, because this engine
+  /// does not run `morx`; each part draws as its own picture, 👍 then the
+  /// 🏽 swatch, rather than as a box.
   void emitRun(
     DisplayList list,
     GlyphRun run,
@@ -141,6 +200,9 @@ final class TextPainter {
   ) {
     if (run.isEmpty) return;
     final int fontId = list.addFont(run.font);
+    final Typeface face = run.font.typeface;
+    final bool pictures = face.hasColorBitmaps;
+    final double pixelSize = run.font.pixelSize;
 
     // Scanning clusters is the only work this method does that a rasteriser
     // has no use for, so it is asked for once, here, and not per command. The
@@ -161,12 +223,23 @@ final class TextPainter {
       // Offsets are relative to the run origin, and the origin of a
       // continuation run is the first glyph in it - so that glyph's offset is
       // zero and the rest are measured from it.
+      // A glyph drawn as a picture is skipped here and drawn below; the
+      // offsets of the rest are still from the chunk's origin, so leaving one
+      // out moves nothing else.
       final Int32List ids = _emitIds;
       final Float32List offsets = _emitOffsets;
+      int kept = 0;
+      int drawnAsPictures = 0;
       for (int i = 0; i < count; i++) {
-        ids[i] = run.glyphIds[emitted + i];
-        offsets[i * 2] = run.xOf(emitted + i) - run.xOf(emitted);
-        offsets[i * 2 + 1] = run.yOf(emitted + i) - run.yOf(emitted);
+        final int glyph = run.glyphIds[emitted + i];
+        if (pictures && colorGlyphs.lookup(face, glyph, pixelSize) != null) {
+          drawnAsPictures++;
+          continue;
+        }
+        ids[kept] = glyph;
+        offsets[kept * 2] = run.xOf(emitted + i) - run.xOf(emitted);
+        offsets[kept * 2 + 1] = run.yOf(emitted + i) - run.yOf(emitted);
+        kept++;
       }
 
       // Before the command, because the side table keys on the offset the
@@ -186,16 +259,60 @@ final class TextPainter {
         if (to > from) list.recordGlyphText(run.text, from, to);
       }
 
-      list.drawGlyphRun(
-        fontId,
-        paintId,
-        runOriginX,
-        runOriginY,
-        ids,
-        offsets,
-        count,
-      );
+      // Emitted even when every glyph became a picture, if the text is being
+      // captured: the command is what the side table's entry belongs to.
+      if (kept > 0 || captureText) {
+        list.drawGlyphRun(
+          fontId,
+          paintId,
+          runOriginX,
+          runOriginY,
+          ids,
+          offsets,
+          kept,
+        );
+      }
+      if (drawnAsPictures > 0) {
+        _emitPictures(list, run, emitted, count, baselineOrigin, paintId);
+      }
       emitted += count;
+    }
+  }
+
+  /// Draws the glyphs `[first, first + count)` of [run] that have pictures.
+  ///
+  /// Every lookup here is a cache hit - [emitRun] made the same ones a moment
+  /// ago to decide what to leave out of the glyph command.
+  void _emitPictures(
+    DisplayList list,
+    GlyphRun run,
+    int first,
+    int count,
+    Offset baselineOrigin,
+    int paintId,
+  ) {
+    final Typeface face = run.font.typeface;
+    final double pixelSize = run.font.pixelSize;
+    for (int i = first; i < first + count; i++) {
+      final ColorGlyphImage? picture =
+          colorGlyphs.lookup(face, run.glyphIds[i], pixelSize);
+      if (picture == null) continue;
+      final double left =
+          (baselineOrigin.dx + run.xOf(i) + picture.left).roundToDouble();
+      final double top =
+          (baselineOrigin.dy + run.yOf(i) + picture.top).roundToDouble();
+      list.drawImage(
+        list.addImage(picture.image),
+        0,
+        0,
+        picture.width.toDouble(),
+        picture.height.toDouble(),
+        left,
+        top,
+        left + picture.width,
+        top + picture.height,
+        paintId,
+      );
     }
   }
 

@@ -27,6 +27,7 @@ import '../layout/render_box.dart';
 import '../platform/input_events.dart';
 import '../rendering/text/font_registry.dart';
 import '../semantics/semantics.dart';
+import '../text/paragraph.dart' show Paragraph, TextPosition;
 import '../text/shaper.dart';
 import '../text/typeface.dart';
 import 'focus.dart';
@@ -510,7 +511,21 @@ mixin ControlBehavior on RenderBox
   Size measureLabel(String text) {
     final ScaledTypeface? font = labelFont;
     if (font == null) return FontRegistry.estimatedSize(text, _theme.fontSize);
+    final Paragraph? fallback = _fallbackParagraph(text, font);
+    if (fallback != null) return fallback.size;
     return uiTextPainter.measure(text, font);
+  }
+
+  /// [text] as a paragraph when the label face lacks some of its characters
+  /// - an emoji, a script the interface font does not cover - and so has to
+  /// fall back to other faces, colour ones included; null in the common
+  /// case, which stays on the one-run path.
+  ///
+  /// One line, at the label face's line height: a label with an emoji in it
+  /// is the same height as one without.
+  Paragraph? _fallbackParagraph(String text, ScaledTypeface font) {
+    if (!uiTextPainter.needsFallback(text, font)) return null;
+    return uiTextPainter.layout(text, font);
   }
 
   /// Paints [text] with its top-left corner at [origin], in [color].
@@ -536,6 +551,20 @@ mixin ControlBehavior on RenderBox
     // way, and recording the paint as hard-edged would mislead any backend
     // that does honour the flag.
     final int paint = list.addPaint(colorArgb: color.value, antiAlias: true);
+    final Paragraph? fallback = _fallbackParagraph(text, font);
+    if (fallback != null) {
+      final bool clip = fallback.size.width > maxWidth;
+      if (clip) {
+        list
+          ..save()
+          ..clipRectangle(
+            Rect.fromLTWH(origin.dx, origin.dy, maxWidth, font.lineHeight),
+          );
+      }
+      uiTextPainter.paintParagraph(list, fallback, origin, paint);
+      if (clip) list.restore();
+      return;
+    }
     // Shaped once and then both measured and drawn from that one run: shaping
     // to decide whether to clip and shaping again to draw would double the
     // cost of every label on screen.
@@ -623,6 +652,12 @@ mixin ControlBehavior on RenderBox
       return FontRegistry.estimatedSize(text.substring(0, end), _theme.fontSize)
           .width;
     }
+    final Paragraph? fallback = _fallbackParagraph(text, font);
+    if (fallback != null) {
+      return fallback
+          .getCaretRect(TextPosition(index.clamp(0, text.length)))
+          .left;
+    }
     final GlyphRun run = uiTextPainter.shapeRun(text, font);
     for (int i = 0; i < run.length; i++) {
       if (run.clusters[i] >= index) return run.xOf(i);
@@ -638,6 +673,10 @@ mixin ControlBehavior on RenderBox
   int labelIndexAtOffset(String text, double dx) {
     final ScaledTypeface? font = labelFont;
     if (font == null || text.isEmpty) return 0;
+    final Paragraph? fallback = _fallbackParagraph(text, font);
+    if (fallback != null) {
+      return fallback.getPositionForOffset(Offset(dx, 0)).offset;
+    }
     final GlyphRun run = uiTextPainter.shapeRun(text, font);
     int best = text.length;
     double bestDistance = (run.width - dx).abs();

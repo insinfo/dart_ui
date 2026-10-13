@@ -52,6 +52,8 @@ library;
 
 import 'dart:typed_data';
 
+import 'cmap.dart' show notdefGlyph;
+import 'default_ignorable.dart';
 import 'gpos.dart';
 import 'gsub.dart';
 import 'kern.dart';
@@ -379,6 +381,25 @@ final class LatinShaper implements Shaper {
 
     for (final int rune in text.runes) {
       final int glyphId = face.glyphForCodePoint(rune);
+
+      // A format control the face has no glyph for draws as nothing - see
+      // `default_ignorable.dart` - and the space glyph at zero advance is how
+      // "nothing" keeps its cluster, so a caret still steps over it. Without a
+      // space glyph to borrow it is dropped, and its code units join the
+      // previous cluster. It does not break kerning across it: the pair either
+      // side is still the pair the reader sees.
+      if (glyphId == notdefGlyph && isDefaultIgnorable(rune)) {
+        final int space = face.glyphForCodePoint(0x20);
+        if (space != notdefGlyph) {
+          _glyphIds[count] = space;
+          _positions[count * 2] = pen;
+          _positions[count * 2 + 1] = 0;
+          _clusters[count] = clusterIndex;
+          count++;
+        }
+        clusterIndex += rune > 0xFFFF ? 2 : 1;
+        continue;
+      }
 
       // Kerning adjusts the gap *before* this glyph, so it moves the pen back
       // before the glyph is placed rather than shrinking the previous advance.
@@ -725,8 +746,25 @@ final class OpenTypeShaper implements Shaper {
 
     _buffer.clear();
     int clusterIndex = 0;
+    int previousRune = -1;
+    bool hasIgnorable = false;
     for (final int rune in text.runes) {
-      _buffer.add(face.glyphForCodePoint(rune), clusterIndex);
+      final int glyph = face.glyphForCodePoint(rune);
+      // A variation selector picks the glyph of the character *before* it,
+      // when the face declares the pair in `cmap` format 14. The selector
+      // itself stays in the buffer - as whatever the face maps it to, which
+      // for nearly every face is nothing, and is then hidden below.
+      if (previousRune >= 0 && isVariationSelector(rune)) {
+        final int? variant = face.glyphForVariation(previousRune, rune);
+        if (variant != null && variant != notdefGlyph) {
+          _buffer.substitute(_buffer.length - 1, variant);
+        }
+      }
+      if (glyph == notdefGlyph && isDefaultIgnorable(rune)) {
+        hasIgnorable = true;
+      }
+      _buffer.add(glyph, clusterIndex);
+      previousRune = rune;
       // A code point above the BMP occupies two UTF-16 units and the cluster
       // index is into the original string, so it advances by the right amount.
       clusterIndex += rune > 0xFFFF ? 2 : 1;
@@ -792,7 +830,20 @@ final class OpenTypeShaper implements Shaper {
       }
     }
 
+    // Hidden after positioning, not before substitution: a ZWNJ the face
+    // lacks must still be in the buffer while `GSUB` runs, or the ligature it
+    // exists to prevent would form across the gap it left.
+    final bool dropsIgnorables =
+        hasIgnorable && _hideDefaultIgnorables(text, face);
     _buffer.resolveAttachments(rightToLeft: direction.isRightToLeft);
+    if (dropsIgnorables) {
+      for (int i = _buffer.length - 1; i >= 0; i--) {
+        if (_buffer.glyphs[i] == notdefGlyph &&
+            isDefaultIgnorable(_codePointAt(text, _buffer.clusters[i]))) {
+          _buffer.expand(i, const <int>[]);
+        }
+      }
+    }
     // Logical order until now, because that is the order the font's rules are
     // written in. Visual order is produced once, here.
     if (direction.isRightToLeft) _buffer.reverse();
@@ -826,6 +877,40 @@ final class OpenTypeShaper implements Shaper {
     );
   }
 
+  /// Makes every `.notdef` that stands for a default-ignorable character
+  /// invisible and zero-width. Returns whether any had to be **removed**
+  /// rather than hidden, which the caller does once attachments are resolved.
+  ///
+  /// The rule is Unicode's (see `default_ignorable.dart`) and the mechanism is
+  /// HarfBuzz's: the glyph becomes the face's space at zero advance, so the
+  /// cluster keeps a glyph - a caret, a selection and the glyph-text side
+  /// table all still see the character - and nothing is drawn. Only a face
+  /// with no space glyph forces a removal.
+  ///
+  /// A character the face *does* map is left alone: Apple Color Emoji maps
+  /// `U+FE0F` and `U+200D` to zero-width empty glyphs on purpose, and its
+  /// glyph is the face's own answer.
+  bool _hideDefaultIgnorables(String text, Typeface face) {
+    final int space = face.glyphForCodePoint(0x20);
+    bool drops = false;
+    for (int i = 0; i < _buffer.length; i++) {
+      if (_buffer.glyphs[i] != notdefGlyph) continue;
+      if (!isDefaultIgnorable(_codePointAt(text, _buffer.clusters[i]))) {
+        continue;
+      }
+      _buffer.xAdvances[i] = 0;
+      _buffer.yAdvances[i] = 0;
+      _buffer.xOffsets[i] = 0;
+      _buffer.yOffsets[i] = 0;
+      if (space != notdefGlyph) {
+        _buffer.substitute(i, space);
+      } else {
+        drops = true;
+      }
+    }
+    return drops;
+  }
+
   void _ensureCapacity(int glyphs) {
     if (_glyphIds.length >= glyphs) return;
     int capacity = _glyphIds.length;
@@ -836,6 +921,19 @@ final class OpenTypeShaper implements Shaper {
     _positions = Float32List(capacity * 2);
     _clusters = Int32List(capacity);
   }
+}
+
+/// The code point starting at UTF-16 [index] of [text], or -1 past the end.
+int _codePointAt(String text, int index) {
+  if (index < 0 || index >= text.length) return -1;
+  final int unit = text.codeUnitAt(index);
+  if (unit >= 0xD800 && unit <= 0xDBFF && index + 1 < text.length) {
+    final int low = text.codeUnitAt(index + 1);
+    if (low >= 0xDC00 && low <= 0xDFFF) {
+      return 0x10000 + ((unit - 0xD800) << 10) + (low - 0xDC00);
+    }
+  }
+  return unit;
 }
 
 // ---------------------------------------------------------------------------

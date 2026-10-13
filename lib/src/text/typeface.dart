@@ -17,6 +17,8 @@ import 'dart:typed_data';
 import '../geometry/path.dart';
 import 'cff.dart';
 import 'cmap.dart';
+import 'color_bitmaps.dart';
+import 'default_ignorable.dart';
 import 'font_data.dart';
 import 'font_tables.dart';
 import 'glyf.dart';
@@ -323,9 +325,15 @@ final class Typeface {
   ///
   /// What font fallback is built from: a face that cannot render a run should
   /// be rejected before layout, not discovered at paint time as a row of boxes.
+  ///
+  /// Default-ignorable characters are not asked about: a face without
+  /// `U+FE0F` still draws "❤️" - the selector shapes to nothing - and
+  /// rejecting it for that would send ordinary text off to fallback.
   bool covers(String text) {
     for (final int rune in text.runes) {
-      if (cmap.glyphFor(rune) == notdefGlyph) return false;
+      if (cmap.glyphFor(rune) == notdefGlyph && !isDefaultIgnorable(rune)) {
+        return false;
+      }
     }
     return true;
   }
@@ -471,6 +479,56 @@ final class Typeface {
     return !outlineOf(glyphId).isEmpty;
   }
 
+  // --- colour bitmaps ------------------------------------------------------
+
+  /// Whether this face stores glyph pictures in `sbix` or `CBDT`/`CBLC`.
+  ///
+  /// A directory lookup, so a painter can ask it per run and skip the per-glyph
+  /// question entirely for the overwhelming majority of faces, which have no
+  /// pictures at all.
+  bool get hasColorBitmaps =>
+      sfnt.hasTable('sbix') || (sfnt.hasTable('CBDT') && sfnt.hasTable('CBLC'));
+
+  /// The face's colour-bitmap table, read on first use; null when it has none
+  /// or when its header is malformed.
+  ///
+  /// Lazy because only an emoji face has one and only a drawn emoji needs it:
+  /// a face loaded to measure Latin text never reads it. A malformed header
+  /// degrades to "no pictures" - and is recorded in [colorBitmapIssue] - rather
+  /// than throwing out of a paint, which is the advisory-table rule
+  /// [identityIssues] states: a face whose pictures cannot be read still has
+  /// outlines and metrics.
+  late final ColorBitmapTable? colorBitmaps = _readColorBitmaps();
+
+  /// Why [colorBitmaps] is null for a face that has the tables, or null.
+  String? get colorBitmapIssue {
+    colorBitmaps;
+    return _colorBitmapIssue;
+  }
+
+  String? _colorBitmapIssue;
+
+  ColorBitmapTable? _readColorBitmaps() {
+    if (!hasColorBitmaps) return null;
+    try {
+      return ColorBitmapTable.read(sfnt, glyphCount);
+    } on FontFormatException catch (error) {
+      _colorBitmapIssue = error.message;
+      return null;
+    }
+  }
+
+  /// The picture of [glyphId] to draw at [pixelSize], or null when the glyph
+  /// has none and is drawn from its outline.
+  ///
+  /// A glyph that answers non-null here is drawn **instead of** its outline,
+  /// never as well: Apple Color Emoji's `glyf` entries are placeholder boxes
+  /// that exist only to give the glyph a bounding box, and drawing them under
+  /// the picture is exactly the "box behind every emoji" this exists to stop.
+  /// The strike rule is [ColorBitmapTable.glyphAt]'s.
+  ColorBitmapGlyph? colorBitmapOf(int glyphId, double pixelSize) =>
+      hasColorBitmaps ? colorBitmaps?.glyphAt(glyphId, pixelSize) : null;
+
   /// This face at [pixelSize] pixels per em.
   ScaledTypeface atSize(double pixelSize) => ScaledTypeface(this, pixelSize);
 
@@ -531,10 +589,15 @@ final class ScaledTypeface {
   /// Correct for measuring a monospace run and for a first approximation
   /// everywhere else. It is not a substitute for shaping and callers that need
   /// exact placement must go through the shaper.
+  ///
+  /// A default-ignorable character the face has no glyph for measures zero,
+  /// as the shapers draw it - see `default_ignorable.dart`.
   double measure(String text) {
     double total = 0;
     for (final int rune in text.runes) {
-      total += advanceOf(typeface.glyphForCodePoint(rune));
+      final int glyph = typeface.glyphForCodePoint(rune);
+      if (glyph == notdefGlyph && isDefaultIgnorable(rune)) continue;
+      total += advanceOf(glyph);
     }
     return total;
   }

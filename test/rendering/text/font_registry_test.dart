@@ -467,7 +467,7 @@ void main() {
       expect(empty.limitation, contains('no character to draw'));
     });
 
-    test('a colour emoji font is used for its outlines, and the gap declared',
+    test('a colour emoji font is drawn from its pictures, or the gap declared',
         () {
       final FontRegistry registry = FontRegistry(search: () => null)
         ..useTypeface(_roboto(), source: _robotoPath);
@@ -482,15 +482,23 @@ void main() {
         return;
       }
 
-      // COLR, CBDT and sbix are all unimplemented. The engine draws the base
-      // outlines and *says* that is what it is doing: a user who reports "my
-      // emoji are grey" must be able to find the sentence that predicted it.
       expect(
         grin.colourTable,
         anyOf(<String>['COLR', 'CBDT', 'sbix', 'SVG ']),
       );
-      expect(grin.limitation, contains('does not implement'));
-      expect(grin.limitation, contains(grin.colourTable!));
+      if (grin.colourTable == 'sbix' || grin.colourTable == 'CBDT') {
+        // Embedded pictures are drawn: nothing to declare about colour, and
+        // the glyph is drawable because it has a picture.
+        expect(grin.face!.colorBitmaps, isNotNull);
+        expect(grin.drawable, isTrue);
+        expect(grin.limitation ?? '', isNot(contains('does not implement')));
+      } else {
+        // COLR and SVG are unimplemented. The engine draws the base outlines
+        // and *says* that is what it is doing: a user who reports "my emoji
+        // are grey" must be able to find the sentence that predicted it.
+        expect(grin.limitation, contains('does not implement'));
+        expect(grin.limitation, contains(grin.colourTable!));
+      }
     });
 
     test('a variation selector a real font declares is honoured', () {
