@@ -471,4 +471,46 @@ void main() {
     model.undo();
     expect(rect.style.fill.fillType, FillType.linearGradient);
   });
+
+  test('a pattern fill, its colours, size and turn, undone in one step', () {
+    registry.execute('shape.rectangle',
+        <String, Object?>{'x': 0, 'y': 0, 'width': 40, 'height': 40});
+    final SelectableObject rect = objects().single;
+    final FillDescriptor before = rect.style.fill;
+    registry.execute('object.patternFill', <String, Object?>{
+      'kind': 'crosshatch',
+      'color': '#102030',
+      'background': '#FFFFFF',
+      'size': 5,
+      'angle': 30,
+    });
+    final FillDescriptor fill = rect.style.fill;
+    expect(fill.isPattern, isTrue);
+    expect(fill.patternId, 'crosshatch');
+    expect(fill.color, const Color(0xFF102030));
+    expect(fill.patternBackground, const Color(0xFFFFFFFF));
+    expect(fill.patternSize, 5);
+    expect(fill.patternAngle, 30);
+    expect(
+        registry['object.patternFill']!.isCheckedWith(
+            const CommandArgs(<String, Object?>{'kind': 'crosshatch'})),
+        isTrue);
+    registry.execute('object.patternFill', <String, Object?>{
+      'kind': 'clouds',
+      'color': '#336699',
+      'background': null,
+    });
+    expect(rect.style.fill.patternId, 'clouds');
+    expect(rect.style.fill.patternBackground, isNull, reason: 'see-through');
+    expect(
+        registry.execute('object.patternFill', <String, Object?>{
+          'kind': 'stripes',
+          'color': '#000000',
+        }).error,
+        isNotNull,
+        reason: 'an unknown kind is refused');
+    model.undo();
+    model.undo();
+    expect(rect.style.fill.fillType, before.fillType);
+  });
 }

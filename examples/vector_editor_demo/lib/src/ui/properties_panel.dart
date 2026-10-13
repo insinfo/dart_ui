@@ -127,6 +127,16 @@ class PropertiesPanel extends StatelessWidget {
           'angle': angle,
           if (kind == null) 'live': true,
         });
+    // The current pattern's parameters, for a control that changes one.
+    Map<String, Object?> pattern({String? kind}) => <String, Object?>{
+          'kind': kind ?? fill.patternId ?? 'hatch',
+          'color': '#${colorToHex(fill.color)}',
+          'background': fill.patternBackground == null
+              ? null
+              : '#${colorToHex(fill.patternBackground!)}',
+          'size': fill.patternSize,
+          'angle': fill.patternAngle,
+        };
     return PanelSection(
       caption: 'Fill',
       children: <Widget>[
@@ -136,10 +146,16 @@ class PropertiesPanel extends StatelessWidget {
           planeSize: 150,
           onChanged: (Color color) => fountain
               ? fountainWith(start: color)
-              : _run('object.fill', <String, Object?>{
-                  'color': '#${colorToHex(color)}',
-                  'live': true,
-                }),
+              : fill.isPattern
+                  ? _run('object.patternFill', <String, Object?>{
+                      ...pattern(),
+                      'color': '#${colorToHex(color)}',
+                      'live': true,
+                    })
+                  : _run('object.fill', <String, Object?>{
+                      'color': '#${colorToHex(color)}',
+                      'live': true,
+                    }),
         ),
         if (fountain) ...<Widget>[
           const SizedBox(height: Spacing.xs),
@@ -184,6 +200,16 @@ class PropertiesPanel extends StatelessWidget {
             ),
             CommandChip(
               registry: registry,
+              command: 'object.patternFill',
+              label: 'Pattern',
+              params: <String, Object?>{
+                'kind': fill.isPattern ? fill.patternId : 'hatch',
+                'color': '#${colorToHex(from)}',
+                'background': '#ffffffff',
+              },
+            ),
+            CommandChip(
+              registry: registry,
               command: 'object.fill',
               label: none ? 'No fill' : 'Remove fill',
               params: const <String, Object?>{'color': null},
@@ -204,6 +230,61 @@ class PropertiesPanel extends StatelessWidget {
             ],
           ],
         ),
+        if (fill.isPattern) ...<Widget>[
+          const SizedBox(height: Spacing.xs),
+          PanelRow(
+            label: 'Pattern',
+            child: Wrap(
+              spacing: Spacing.xs,
+              runSpacing: Spacing.xs,
+              children: <Widget>[
+                for (final String kind in <String>[
+                  ...VectorPatterns.kinds,
+                  ...VectorPatterns.textures,
+                ])
+                  CommandChip(
+                    registry: registry,
+                    command: 'object.patternFill',
+                    label: kind[0].toUpperCase() + kind.substring(1),
+                    params: pattern(kind: kind),
+                  ),
+              ],
+            ),
+          ),
+          PanelRow(
+            label: 'Background',
+            child: Wrap(
+              spacing: Spacing.xs,
+              children: <Widget>[
+                CommandChip(
+                  registry: registry,
+                  command: 'object.patternFill',
+                  label: 'White',
+                  params: <String, Object?>{
+                    ...pattern(),
+                    'background': '#ffffffff',
+                  },
+                ),
+                CommandChip(
+                  registry: registry,
+                  command: 'object.patternFill',
+                  label: 'None',
+                  params: <String, Object?>{...pattern(), 'background': null},
+                ),
+              ],
+            ),
+          ),
+          PanelRow(
+            label: 'Size',
+            child: PanelNumber(
+              value: fill.patternSize,
+              decimals: 1,
+              min: 1,
+              onChanged: (double size) => _run('object.patternFill',
+                  <String, Object?>{...pattern(), 'size': size}),
+            ),
+          ),
+        ],
       ],
     );
   }

@@ -396,6 +396,37 @@ class EditorModel {
         live: live ? 'fountain' : null);
   }
 
+  /// A pattern or texture fill, CorelDRAW's two-colour pattern: [kind]'s
+  /// marks - one of [VectorPatterns.kinds] or [VectorPatterns.textures] -
+  /// in [color] over [background], or over nothing when it is null, every
+  /// [size] units and turned [angle] degrees.
+  void setPatternFill({
+    required String kind,
+    required Color color,
+    Color? background,
+    double size = 8,
+    double angle = 0,
+    bool live = false,
+  }) {
+    FillDescriptor pattern(FillRule rule) => FillDescriptor(
+          fillType: FillType.pattern,
+          fillRule: rule,
+          color: color,
+          patternId: kind,
+          patternBackground: background,
+          patternSize: size,
+          patternAngle: angle,
+        );
+    currentFill = pattern(FillRule.evenOdd);
+    if (!hasSelection) {
+      refresh('New objects will use this pattern');
+      return;
+    }
+    applyToSelection(
+        (style) => style.copyWith(fill: pattern(style.fill.fillRule)),
+        live: live ? 'pattern' : null);
+  }
+
   void setStroke(Color? color, {bool live = false}) {
     currentStroke = color == null
         ? currentStroke.copyWith(width: 0)

@@ -13,6 +13,7 @@ library;
 import 'dart:math' as math;
 import 'dart:typed_data';
 
+import '../../animation/animation.dart' show ColorTween;
 import '../../geometry/offset.dart';
 import '../../geometry/path.dart';
 import '../../geometry/rect.dart';
@@ -33,12 +34,14 @@ import '../../graphics/vector/pixmap.dart';
 import '../../graphics/vector/primitives.dart';
 import '../../graphics/vector/selectable_objects.dart';
 import '../../graphics/vector/structural_objects.dart';
+import '../../graphics/vector/style.dart';
 import '../../rendering/cpu_renderer.dart' show rasterizeDisplayList;
 import '../../rendering/framebuffer.dart';
 import '../../rendering/text/text_painter.dart';
 import '../../text/paragraph.dart' show Paragraph;
 import '../../vector_editing/node_editing.dart';
 import '../../vector_editing/parametric_handles.dart';
+import '../../vector_editing/patterns.dart';
 import '../../vector_editing/selection.dart';
 import '../../vector_editing/text_metrics.dart';
 import '../../vector_editing/tool_mode.dart';
@@ -627,7 +630,31 @@ class VectorRenderer {
       final pathId = list.addPath(path);
 
       // Fill
-      if (!fill.isNone) {
+      if (fill.isPattern && VectorPatterns.isTexture(fill.patternId)) {
+        _renderTexture(obj, pathId, list);
+      } else if (fill.isPattern) {
+        // A two-colour pattern: the background in the shape, then the
+        // marks, already cut to it.
+        final Color? background = fill.patternBackground;
+        if (background != null) {
+          list.drawPath(
+              pathId,
+              list.addPaint(
+                colorArgb: background.value,
+                antiAlias: true,
+                fillRule: fill.fillRule == FillRule.evenOdd
+                    ? pathFillRuleEvenOdd
+                    : pathFillRuleNonZero,
+              ));
+        }
+        final List<VectorPath> marks = VectorPatterns.marksOf(obj);
+        if (marks.isNotEmpty) {
+          list.drawPath(
+            list.addPath(_pathOf(marks, kNormalTrafo)),
+            list.addPaint(colorArgb: fill.color.value, antiAlias: true),
+          );
+        }
+      } else if (!fill.isNone) {
         final fillPaint = list.addPaint(
           colorArgb: fill.color.value,
           antiAlias: true,
@@ -665,6 +692,127 @@ class VectorRenderer {
         _renderArrowheads(obj, paths, list);
       }
     }
+  }
+
+  /// Each textured object's image at the size it was last drawn.
+  static final Expando<_TextureRaster> _textures = Expando<_TextureRaster>();
+
+  /// A texture fill: the shape rasterized at the device pixels it covers
+  /// for a mask, the texture computed in the object's units under it, and
+  /// the result drawn as an image in z-order - the one fill that is pixels,
+  /// not geometry, so it is made where the pixels are.
+  static void _renderTexture(
+      PrimitiveObject obj, int pathId, DisplayList list) {
+    final FillDescriptor fill = obj.style.fill;
+    final Rect box = obj.cacheBbox;
+    if (box.isEmpty) return;
+    final int width = (box.width * _zoom).ceil().clamp(1, 4096);
+    final int height = (box.height * _zoom).ceil().clamp(1, 4096);
+    final List<VectorPath>? paths = obj.cachePaths;
+    if (paths == null) return;
+    _TextureRaster? raster = _textures[obj];
+    if (raster == null ||
+        !identical(raster.paths, paths) ||
+        !identical(raster.trafo, obj.trafo) ||
+        raster.fill != fill ||
+        raster.image.width != width ||
+        raster.image.height != height) {
+      // The mask: the shape, opaque, at this size.
+      final double sx = width / box.width;
+      final double sy = height / box.height;
+      final DisplayList mask = DisplayList();
+      mask
+        ..transform(sx, 0, 0, sy, -box.left * sx, -box.top * sy)
+        ..drawPath(
+          mask.addPath(_pathOf(paths, obj.trafo)),
+          mask.addPaint(
+            colorArgb: 0xFFFFFFFF,
+            antiAlias: true,
+            fillRule: fill.fillRule == FillRule.evenOdd
+                ? pathFillRuleEvenOdd
+                : pathFillRuleNonZero,
+          ),
+        );
+      final Framebuffer framebuffer = Framebuffer(
+        width: width,
+        height: height,
+        bytesPerRow: width * 4,
+        format: PixelFormat.rgba8888Premultiplied,
+        pixels: Uint8List(width * height * 4),
+      );
+      rasterizeDisplayList(mask, framebuffer, clearColor: 0x00000000);
+      final Uint8List pixels = framebuffer.pixels;
+      final Color front = fill.color;
+      // Over nothing, the texture fades from see-through to its colour.
+      final Color back =
+          fill.patternBackground ?? Color(fill.color.value & 0x00FFFFFF);
+      final double size = fill.patternSize <= 0 ? 8 : fill.patternSize;
+      final String kind = fill.patternId!;
+      for (int y = 0; y < height; y++) {
+        final double docY = box.top + (y + 0.5) / sy;
+        for (int x = 0; x < width; x++) {
+          final int i = (y * width + x) * 4;
+          final int coverage = pixels[i + 3];
+          if (coverage == 0) continue;
+          final double docX = box.left + (x + 0.5) / sx;
+          final double t =
+              VectorPatterns.textureAt(kind, docX / size, docY / size)
+                  .clamp(0.0, 1.0);
+          final int argb = ColorTween.interpolate(back.value, front.value, t);
+          final int a = ((argb >>> 24) * coverage + 127) ~/ 255;
+          pixels[i] = ((argb >> 16 & 0xFF) * a + 127) ~/ 255;
+          pixels[i + 1] = ((argb >> 8 & 0xFF) * a + 127) ~/ 255;
+          pixels[i + 2] = ((argb & 0xFF) * a + 127) ~/ 255;
+          pixels[i + 3] = a;
+        }
+      }
+      raster = _textures[obj] = _TextureRaster(
+        paths,
+        obj.trafo,
+        fill,
+        DecodedImage(
+          width: width,
+          height: height,
+          order: ImageChannelOrder.rgba,
+          pixels: pixels,
+          hasAlpha: true,
+        ),
+      );
+    }
+    list.drawImage(
+      list.addImage(framebufferFromImage(raster.image)),
+      0,
+      0,
+      width.toDouble(),
+      height.toDouble(),
+      box.left,
+      box.top,
+      box.left + width / _zoom,
+      box.top + height / _zoom,
+      list.addPaint(colorArgb: 0xFFFFFFFF),
+    );
+  }
+
+  /// [paths] placed by [trafo], as a display-list path.
+  static Path _pathOf(List<VectorPath> paths, List<double> trafo) {
+    final PathBuilder builder = PathBuilder();
+    for (final VectorPath vp in paths) {
+      final Offset start = applyTrafoToPoint(vp.start, trafo);
+      builder.moveTo(start.dx, start.dy);
+      for (final Object pt in vp.points) {
+        if (pt is CurvePoint) {
+          final Offset c1 = applyTrafoToPoint(pt.control1, trafo);
+          final Offset c2 = applyTrafoToPoint(pt.control2, trafo);
+          final Offset end = applyTrafoToPoint(pt.endpoint, trafo);
+          builder.cubicTo(c1.dx, c1.dy, c2.dx, c2.dy, end.dx, end.dy);
+        } else if (pt is Offset) {
+          final Offset end = applyTrafoToPoint(pt, trafo);
+          builder.lineTo(end.dx, end.dy);
+        }
+      }
+      if (vp.isClosed) builder.close();
+    }
+    return builder.build();
   }
 
   /// The outline's arrowheads, on the open ends of [paths], in the outline's
@@ -1138,6 +1286,16 @@ class VectorRenderer {
         Offset(bounds.left, bounds.bottom),
         Offset(bounds.left, bounds.center.dy),
       ];
+}
+
+/// A texture fill's pixels at one size, and what they were made from.
+final class _TextureRaster {
+  const _TextureRaster(this.paths, this.trafo, this.fill, this.image);
+
+  final List<VectorPath> paths;
+  final List<double> trafo;
+  final FillDescriptor fill;
+  final DecodedImage image;
 }
 
 /// An image's pixels at one device size, and the data they came from.

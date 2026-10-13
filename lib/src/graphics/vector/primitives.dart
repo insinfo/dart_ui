@@ -433,7 +433,8 @@ class VectorPolygon extends PrimitiveObject {
   /// Radius coefficient for corners (1.0 = on the circle).
   double coef1;
 
-  /// Radius coefficient for midpoints (1.0 = on the circle; <1 = star).
+  /// Radius coefficient for midpoints, of [midpointRadius]: 1.0 puts them
+  /// on the straight sides of a regular polygon, below 1 makes a star.
   double coef2;
 
   /// Initial transform.
@@ -1036,17 +1037,21 @@ List<VectorPath> _getPolygonPaths(
     cy + r * coef1 * math.sin(startAngle),
   );
 
+  // Where a side of the regular polygon crosses the line to its middle:
+  // with coef2 at 1 the midpoints are on the sides, not on the circle.
+  final mid = r * coef2 * math.cos(step / 2.0);
   for (var i = 0; i < cornersNum; i++) {
     // Midpoint
     final midAngle = startAngle + step * i + step / 2.0 + angle2;
     points.add(Offset(
-      cx + r * coef2 * math.cos(midAngle),
-      cy + r * coef2 * math.sin(midAngle),
+      cx + mid * math.cos(midAngle),
+      cy + mid * math.sin(midAngle),
     ));
 
-    // Next corner (skip first since it's the start point)
+    // Next corner (skip first since it's the start point); startAngle
+    // already holds angle1.
     if (i < cornersNum - 1) {
-      final cornerAngle = startAngle + step * (i + 1) + angle1;
+      final cornerAngle = startAngle + step * (i + 1);
       points.add(Offset(
         cx + r * coef1 * math.cos(cornerAngle),
         cy + r * coef1 * math.sin(cornerAngle),

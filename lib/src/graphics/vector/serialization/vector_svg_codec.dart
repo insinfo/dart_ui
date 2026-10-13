@@ -264,7 +264,22 @@ final class _SvgWriter {
     final FillDescriptor fill = obj.style.fill;
     final StrokeDescriptor stroke = obj.style.stroke;
     final List<String> out = <String>[];
-    if (fill.isNone) {
+    if (fill.isPattern) {
+      final Color? back = fill.patternBackground;
+      final String kind = fill.patternId!;
+      out
+        ..add(_textures.contains(kind)
+            // SVG has no procedural texture this codec writes: other
+            // readers get the colour halfway between the two, or half the
+            // colour over nothing.
+            ? back == null
+                ? 'fill="${_hex(fill.color)}" fill-opacity="0.5"'
+                : 'fill="${_hex(Color(_mix(back, fill.color)))}"'
+            : 'fill="url(#${_pattern(fill, _anchor(paths, obj.trafo))})"')
+        ..add('dartui:pattern="$kind ${_n(fill.patternSize)} '
+            '${_n(fill.patternAngle)} ${back == null ? 'none' : _hex8(back)} '
+            '${_hex8(fill.color)}"');
+    } else if (fill.isNone) {
       out.add('fill="none"');
     } else if (fill.isGradient &&
         fill.gradientStops.length >= 2 &&
@@ -353,6 +368,91 @@ final class _SvgWriter {
         ..write(stops)
         ..writeln('    </linearGradient>');
     }
+    return id;
+  }
+
+  static const List<String> _textures = <String>['clouds', 'paper', 'noise'];
+
+  static int _mix(Color a, Color b) {
+    int channel(int shift) =>
+        (((a.value >> shift) & 0xFF) + ((b.value >> shift) & 0xFF)) ~/ 2;
+    return 0xFF000000 | channel(16) << 16 | channel(8) << 8 | channel(0);
+  }
+
+  static String _hex8(Color c) =>
+      '#${c.value.toRadixString(16).padLeft(8, '0')}';
+
+  /// Writes [fill]'s two-colour pattern into `<defs>` as one tile, in the
+  /// object's own units like the canvas draws it, and returns its id.
+  /// The centre of [paths]' box once placed by [trafo]: where the editor
+  /// anchors a pattern, so the tiles land where it draws its marks.
+  static Offset _anchor(List<VectorPath>? paths, List<double> trafo) {
+    double left = double.infinity, top = double.infinity;
+    double right = double.negativeInfinity, bottom = double.negativeInfinity;
+    void add(Offset p) {
+      final Offset q = applyTrafoToPoint(p, trafo);
+      left = math.min(left, q.dx);
+      top = math.min(top, q.dy);
+      right = math.max(right, q.dx);
+      bottom = math.max(bottom, q.dy);
+    }
+
+    for (final VectorPath path in paths ?? const <VectorPath>[]) {
+      add(path.start);
+      for (final Object point in path.points) {
+        if (point is CurvePoint) {
+          add(point.control1);
+          add(point.control2);
+          add(point.endpoint);
+        } else if (point is Offset) {
+          add(point);
+        }
+      }
+    }
+    if (!left.isFinite) return Offset.zero;
+    return Offset((left + right) / 2, (top + bottom) / 2);
+  }
+
+  String _pattern(FillDescriptor fill, Offset anchor) {
+    final String id = 'pattern${++_gradients}';
+    final double s = fill.patternSize <= 0 ? 8 : fill.patternSize;
+    final String fg = _hex(fill.color);
+    final Color? back = fill.patternBackground;
+    final String kind = fill.patternId!;
+    final double tile = kind == 'checker' ? 2 * s : s;
+    final StringBuffer marks = StringBuffer();
+    void rect(double x, double y, double w, double h) =>
+        marks.writeln('      <rect x="${_n(x)}" y="${_n(y)}" width="${_n(w)}" '
+            'height="${_n(h)}" fill="$fg"/>');
+    switch (kind) {
+      case 'hatch' || 'diagonal':
+        rect(0, s * 0.375, s, s * 0.25);
+      case 'crosshatch' || 'grid':
+        final double t = s * (kind == 'grid' ? 0.08 : 0.2);
+        rect(0, (s - t) / 2, s, t);
+        rect((s - t) / 2, 0, t, s);
+      case 'dots':
+        marks.writeln('      <circle cx="${_n(s / 2)}" cy="${_n(s / 2)}" '
+            'r="${_n(s * 0.22)}" fill="$fg"/>');
+      case 'checker':
+        rect(0, 0, s, s);
+        rect(s, s, s, s);
+    }
+    final double turn = -fill.patternAngle - (kind == 'diagonal' ? 45 : 0);
+    // The editor centres a mark - a stripe, a dot - on the anchor, and a
+    // chequer's corner; these tiles hold their mark in the middle.
+    final double shift = kind == 'checker' ? 0 : -s / 2;
+    _defs
+      ..writeln('    <pattern id="$id" patternUnits="userSpaceOnUse" '
+          'width="${_n(tile)}" height="${_n(tile)}" '
+          'patternTransform="translate(${_n(anchor.dx)} ${_n(anchor.dy)}) '
+          'rotate(${_n(turn)}) translate(${_n(shift)} ${_n(shift)})">')
+      ..write(back == null
+          ? ''
+          : '      <rect width="${_n(tile)}" height="${_n(tile)}" '
+              'fill="${_hex(back)}"/>\n')
+      ..write(marks)
+      ..writeln('    </pattern>');
     return id;
   }
 
@@ -970,16 +1070,42 @@ final class _SvgReader {
   /// The document style of an element whose user space maps to the page
   /// through [ctm]. Stroke widths are scaled by it: an SVG stroke is in the
   /// element's units, a document stroke is in points.
+  /// A pattern or texture fill this codec wrote, from `dartui:pattern`.
+  static FillDescriptor? _patternFill(XmlElement element) {
+    final List<String>? parts =
+        element.getAttribute('dartui:pattern')?.split(' ');
+    if (parts == null || parts.length != 5) return null;
+    Color? colour(String hex) {
+      if (hex == 'none' || !hex.startsWith('#')) return null;
+      final int? value = int.tryParse(hex.substring(1), radix: 16);
+      return value == null ? null : Color(value);
+    }
+
+    final Color? front = colour(parts[4]);
+    if (front == null) return null;
+    return FillDescriptor(
+      fillType: FillType.pattern,
+      fillRule: FillRule.nonZero,
+      color: front,
+      patternId: parts[0],
+      patternSize: double.tryParse(parts[1]) ?? 8,
+      patternAngle: double.tryParse(parts[2]) ?? 0,
+      patternBackground: colour(parts[3]),
+    );
+  }
+
   VectorStyle _vectorStyle(XmlElement element, _Style style, Transform2D ctm) {
     final int? fillArgb = style.fill;
-    final FillDescriptor fill = fillArgb == null && style.fillUrl == null
-        ? FillDescriptor.none
-        : FillDescriptor(
-            fillType: FillType.solid,
-            fillRule: style.fillRule,
-            color: Color(_withAlpha(
-                fillArgb ?? 0xFF000000, style.opacity * style.fillOpacity)),
-          );
+    final FillDescriptor? pattern = _patternFill(element);
+    final FillDescriptor fill = pattern ??
+        (fillArgb == null && style.fillUrl == null
+            ? FillDescriptor.none
+            : FillDescriptor(
+                fillType: FillType.solid,
+                fillRule: style.fillRule,
+                color: Color(_withAlpha(
+                    fillArgb ?? 0xFF000000, style.opacity * style.fillOpacity)),
+              ));
     final int? strokeArgb = style.stroke;
     // A calligraphic pen this codec wrote: `dartui:nib="stretch angle"`.
     final List<double>? nib =

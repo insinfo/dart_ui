@@ -185,10 +185,23 @@ pela metade e o próximo passo. Ver `AGENTS.md`.
   `calligraphicOutline` - a soma de Minkowski do traço com a pena
   elíptica, preenchida; o SVG grava `dartui:nib` e outros leitores veem uma
   pena redonda da mesma largura.
-- P0 em 99% (62 feitas, 1 parcial: preenchimentos de padrão e textura).
+- Preenchimento de padrão e textura (`object.patternFill`: hachura,
+  hachura cruzada, diagonal, pontos, grade, xadrez; texturas nuvens, papel
+  e ruído; cor das marcas, fundo branco ou transparente, tamanho, ângulo;
+  chips no painel Preenchimento). Framework: `FillDescriptor.patternBackground`/
+  `patternSize`/`patternAngle` e `VectorPatterns` - as marcas são
+  geometria recortada da forma por `PathBoolean` no espaço do documento
+  (nítidas em qualquer zoom, iguais em todo backend, sem clip no display
+  list), as texturas um ruído fractal determinístico rasterizado no
+  tamanho em pixels do canvas. O SVG grava `<pattern>` ancorado no mesmo
+  ponto que o editor, e `dartui:pattern` para reler.
+- Corrigido no framework: um polígono de n cantos virava um polígono de 2n
+  lados (os pontos médios ficavam no círculo, não nos lados); `angle1`
+  era somado duas vezes aos cantos.
+- P0 em 100% (63 de 63).
 
 **Ficou pela metade**
-- Pena caligráfica, preenchimentos de padrão e textura.
+- O padrão não gira junto com o objeto (fica no espaço do documento).
 - Uma imagem girada é desenhada como contorno com um X até haver desenho
   de imagem transformada no display list.
 - Arrastar as alças de um parágrafo ainda escala o texto, em vez de mudar a

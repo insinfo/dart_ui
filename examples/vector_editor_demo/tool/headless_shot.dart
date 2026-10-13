@@ -253,6 +253,39 @@ Future<void> main(List<String> args) async {
         'to': '#E53935',
       })
       ..execute('panel.properties');
+  } else if (scenario == 'patterns') {
+    // Crosshatch on white in the rectangle, dots over nothing in a new
+    // hexagon, clouds in the ellipse; the Properties panel on the clouds.
+    state.model.selection.select(objectOfType((o) => o is VectorRectangle));
+    state.registry.execute('object.patternFill', <String, Object?>{
+      'kind': 'crosshatch',
+      'color': '#1565C0',
+      'background': '#FFFFFF',
+      'size': 10,
+      'angle': 20,
+    });
+    state.registry
+      ..execute('shape.polygon', <String, Object?>{
+        'cx': 760,
+        'cy': 520,
+        'radius': 110,
+        'corners': 6,
+      })
+      ..execute('object.patternFill', <String, Object?>{
+        'kind': 'dots',
+        'color': '#D81B60',
+        'background': null,
+        'size': 12,
+      });
+    state.model.selection.select(objectOfType((o) => o is VectorCircle));
+    state.registry
+      ..execute('object.patternFill', <String, Object?>{
+        'kind': 'clouds',
+        'color': '#0D47A1',
+        'background': '#E3F2FD',
+        'size': 40,
+      })
+      ..execute('panel.properties');
   } else if (scenario == 'find') {
     // Edit > Find and Replace, the editor's first dialog.
     state.registry.execute('edit.findReplace');

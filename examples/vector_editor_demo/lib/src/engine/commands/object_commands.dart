@@ -228,6 +228,56 @@ List<CommandSpec> objectCommands(EditorContext context) {
       },
     ),
     CommandSpec(
+      id: 'object.patternFill',
+      label: 'Pattern fill',
+      description: 'A two-colour pattern (hatch, crosshatch, diagonal, '
+          'dots, grid, checker) or a texture (clouds, paper, noise): marks '
+          'in one colour over a background, or over nothing.',
+      params: const <CommandParam>[
+        CommandParam('kind', CommandParamType.string,
+            required: true,
+            description: 'hatch, crosshatch, diagonal, dots, grid, checker, '
+                'clouds, paper or noise'),
+        CommandParam('color', CommandParamType.string, required: true),
+        CommandParam('background', CommandParamType.any,
+            description: 'a colour, or null for see-through'),
+        CommandParam('size', CommandParamType.number,
+            description: 'the period, in document units; 8 by default'),
+        CommandParam('angle', CommandParamType.number,
+            description: 'degrees counterclockwise'),
+        _live,
+      ],
+      when: context.needsDocument,
+      checked: (CommandArgs args) {
+        final List<SelectableObject> picked = model.hasDocument
+            ? model.selection.selectedObjects.toList()
+            : const <SelectableObject>[];
+        return picked.isNotEmpty &&
+            picked.every((SelectableObject o) =>
+                o.style.fill.isPattern &&
+                o.style.fill.patternId == args['kind']);
+      },
+      run: (CommandArgs args) {
+        final String kind = oneOf(args, 'kind', <String>[
+          ...VectorPatterns.kinds,
+          ...VectorPatterns.textures,
+        ]);
+        final Color? color = parseColor(args['color']);
+        if (color == null) throw const CommandError('`color` is a colour');
+        final double size = args.has('size') ? args.number('size') : 8;
+        if (!(size > 0)) throw const CommandError('`size` is above 0');
+        model.setPatternFill(
+          kind: kind,
+          color: color,
+          background: parseColor(args['background']),
+          size: size,
+          angle: args.has('angle') ? args.number('angle') : 0,
+          live: args.flag('live'),
+        );
+        return null;
+      },
+    ),
+    CommandSpec(
       id: 'object.outline',
       label: 'Outline colour',
       params: const <CommandParam>[_color, _live],

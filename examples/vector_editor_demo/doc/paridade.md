@@ -7,22 +7,22 @@
 
 | | feitas | parciais | faltam | total | cobertura |
 |---|---|---|---|---|---|
-| P0 | 62 | 1 | 0 | 63 | 99% |
+| P0 | 63 | 0 | 0 | 63 | 100% |
 | P1 | 7 | 2 | 35 | 44 | 18% |
 | P2 | 1 | 0 | 67 | 68 | 1% |
-| **todas** | 70 | 3 | 102 | 175 | 41% |
+| **todas** | 71 | 2 | 102 | 175 | 41% |
 
 Cobertura = (feitas + metade das parciais) / total.
 
 Menus do editor: 92 de 107 linhas têm comando registrado; as outras aparecem desabilitadas.
 
-Comandos registrados: 134.
+Comandos registrados: 135.
 
 ## Por área
 
 | área | feitas | parciais | faltam | total | cobertura |
 |---|---|---|---|---|---|
-| Caixa de ferramentas | 12 | 1 | 47 | 60 | 21% |
+| Caixa de ferramentas | 13 | 0 | 47 | 60 | 22% |
 | Interações no canvas | 9 | 1 | 3 | 13 | 73% |
 | Barra de propriedades | 7 | 0 | 9 | 16 | 44% |
 | Dockers | 4 | 0 | 11 | 15 | 27% |
@@ -97,7 +97,7 @@ Comandos registrados: 134.
 | ❌ | Mesh fill | P2 |  | tudo |
 | ❌ | Smart fill | P2 |  | tudo |
 | ✅ | Outline pen (F12) | P0 | `panel.fillStroke`, `object.outline`, `object.outlineWidth`, `object.outlineStyle`, `object.calligraphy` |  |
-| 🟡 | Fill (F11) | P0 | `panel.fillStroke`, `object.fill`, `object.fountainFill` | uniform and fountain (linear, radial); no pattern or texture fills |
+| ✅ | Fill (F11) | P0 | `panel.fillStroke`, `object.fill`, `object.fountainFill`, `object.patternFill` |  |
 
 ### Interações no canvas
 

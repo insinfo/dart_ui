@@ -39,6 +39,9 @@ class FillDescriptor {
     this.gradientCenter = const Offset(0.5, 0.5),
     this.gradientRadius = 0.5,
     this.patternId,
+    this.patternBackground,
+    this.patternSize = 8.0,
+    this.patternAngle = 0.0,
   });
 
   /// Creates a solid fill with the given [color].
@@ -50,7 +53,10 @@ class FillDescriptor {
         gradientEnd = const Offset(1, 0),
         gradientCenter = const Offset(0.5, 0.5),
         gradientRadius = 0.5,
-        patternId = null;
+        patternId = null,
+        patternBackground = null,
+        patternSize = 8.0,
+        patternAngle = 0.0;
 
   /// No fill.
   static const FillDescriptor none = FillDescriptor();
@@ -69,7 +75,21 @@ class FillDescriptor {
   final double gradientRadius;
 
   // Pattern
+
+  /// With [FillType.pattern]: which two-colour pattern - one of
+  /// `VectorPatterns.kinds` - drawn in [color] over [patternBackground].
   final String? patternId;
+
+  /// What shows between the pattern's marks; null leaves it see-through.
+  final Color? patternBackground;
+
+  /// The pattern's period, in the object's own units.
+  final double patternSize;
+
+  /// The pattern's turn, degrees counterclockwise.
+  final double patternAngle;
+
+  bool get isPattern => fillType == FillType.pattern && patternId != null;
 
   bool get isNone => fillType == FillType.none;
   bool get isSolid => fillType == FillType.solid;
@@ -88,6 +108,10 @@ class FillDescriptor {
     Offset? gradientCenter,
     double? gradientRadius,
     String? patternId,
+    Color? patternBackground,
+    bool clearPatternBackground = false,
+    double? patternSize,
+    double? patternAngle,
   }) =>
       FillDescriptor(
         fillType: fillType ?? this.fillType,
@@ -99,6 +123,11 @@ class FillDescriptor {
         gradientCenter: gradientCenter ?? this.gradientCenter,
         gradientRadius: gradientRadius ?? this.gradientRadius,
         patternId: patternId ?? this.patternId,
+        patternBackground: clearPatternBackground
+            ? null
+            : patternBackground ?? this.patternBackground,
+        patternSize: patternSize ?? this.patternSize,
+        patternAngle: patternAngle ?? this.patternAngle,
       );
 
   @override
