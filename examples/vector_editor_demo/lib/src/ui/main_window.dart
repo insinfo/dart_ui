@@ -79,6 +79,7 @@ class MainWindowState extends State<MainWindow> implements EditorHost {
     super.initState();
     registerEditorCommands(registry, model, this);
     registerUiCommands(registry, ui);
+    ui.workspace.registry = registry;
     // A command that refuses says why, where the user is looking.
     registry.onExecuted = (String id, CommandOutcome outcome) {
       if (!outcome.ok) model.refresh(outcome.error);

@@ -12,6 +12,7 @@ import 'menus.dart';
 import 'metrics.dart';
 import 'objects_panel.dart';
 import 'panels.dart';
+import 'properties_panel.dart';
 
 /// The property panels' ids - the plugin ids sK1 uses in `plgarea.py`.
 abstract final class PanelIds {
@@ -33,9 +34,11 @@ abstract final class WorkspacePanels {
   static const String align = PanelIds.align;
   static const String fillStroke = PanelIds.fillStroke;
   static const String objects = 'ObjectsPlugin';
+  static const String properties = 'PropertiesPlugin';
 
   /// The panels a user can open, close and move - not the document.
   static const List<String> all = <String>[
+    properties,
     transform,
     align,
     fillStroke,
@@ -44,6 +47,7 @@ abstract final class WorkspacePanels {
 
   static String nameOf(String id) => switch (id) {
         objects => 'Objects',
+        properties => 'Properties',
         transform => 'Transform',
         align => 'Align',
         fillStroke => 'Fill & Outline',
@@ -56,6 +60,7 @@ abstract final class WorkspacePanels {
         align => 'panel.align',
         fillStroke => 'panel.fillStroke',
         objects => 'panel.objects',
+        properties => 'panel.properties',
         _ => 'panel.$id',
       };
 
@@ -65,6 +70,7 @@ abstract final class WorkspacePanels {
         align => const KeyGesture(logicalKeyD, command: true, shift: true),
         fillStroke => const KeyGesture(logicalKeyF11),
         objects => const KeyGesture(logicalKeyF7, command: true),
+        properties => const KeyGesture(logicalKeyEnter, alt: true),
         _ => null,
       };
 
@@ -73,6 +79,7 @@ abstract final class WorkspacePanels {
         align => PhosphorIcons.alignLeft,
         fillStroke => PhosphorIcons.paintBucket,
         objects => PhosphorIcons.stack,
+        properties => PhosphorIcons.slidersHorizontal,
         _ => PhosphorIcons.squaresFour,
       };
 }
@@ -84,6 +91,9 @@ final class EditorWorkspace {
   }
 
   final DockingLayout layout = DockingLayout();
+
+  /// What the panels run their commands through; set once by the window.
+  CommandRegistry registry = CommandRegistry();
 
   /// Panels shown in windows of their own, with where they came from.
   final Map<String, ({ChildWindow? window, DockingPlacement placement})>
@@ -132,6 +142,7 @@ final class EditorWorkspace {
       DockingColumn(
         <DockingArea>[
           DockingTabs(<DockingItem>[
+            item(WorkspacePanels.properties),
             item(WorkspacePanels.transform),
             item(WorkspacePanels.align),
             item(WorkspacePanels.fillStroke),
@@ -158,7 +169,9 @@ final class EditorWorkspace {
     layout.rebuild();
   }
 
-  static Widget panelFor(String id, EditorModel model) => switch (id) {
+  Widget panelFor(String id, EditorModel model) => switch (id) {
+        WorkspacePanels.properties =>
+          PropertiesPanel(model: model, registry: registry),
         WorkspacePanels.transform => TransformPanel(model: model),
         WorkspacePanels.align => AlignPanel(model: model),
         WorkspacePanels.fillStroke => FillStrokePanel(model: model),
@@ -320,7 +333,7 @@ final class _FloatingPanelState extends State<_FloatingPanel> {
                 ),
               ),
               Expanded(
-                child: EditorWorkspace.panelFor(widget.id, widget.model),
+                child: widget.workspace.panelFor(widget.id, widget.model),
               ),
             ],
           ),

@@ -51,14 +51,20 @@ class DocumentApi {
   void removeObject(DocumentObject obj) => removeObjects(<DocumentObject>[obj]);
 
   /// Gives every object in [objects] the style [restyle] returns for it.
+  ///
+  /// With [live], a run of changes of the same kind to the same objects -
+  /// every colour a picker passes through while it is dragged - is one undo
+  /// step.
   void restyle(Iterable<SelectableObject> objects,
-      VectorStyle Function(VectorStyle style) restyle) {
+      VectorStyle Function(VectorStyle style) restyle,
+      {Object? live}) {
+    final List<SelectableObject> list = objects.toList();
     record('Change style', () {
-      for (final SelectableObject object in objects) {
+      for (final SelectableObject object in list) {
         object.style = restyle(object.style);
         object.update();
       }
-    });
+    }, coalesce: live == null ? null : _SameObjects(live, list));
   }
 
   void setObjectStyle(SelectableObject obj, VectorStyle newStyle) =>
@@ -81,7 +87,7 @@ class DocumentApi {
       }
     },
         // Repeated nudges of the same objects are one step.
-        coalesce: description == 'Nudge' ? _NudgeKey(list) : null);
+        coalesce: description == 'Nudge' ? _SameObjects('nudge', list) : null);
   }
 
   void transformObject(SelectableObject obj, List<double> trafo) =>
@@ -112,20 +118,24 @@ class DocumentApi {
       };
 }
 
-/// Equal for the same objects in the same order, so consecutive nudges of
-/// one selection coalesce and a nudge of another selection does not.
-final class _NudgeKey {
-  _NudgeKey(this.objects);
+/// Equal for the same kind of change to the same objects in the same order,
+/// so consecutive nudges of one selection coalesce and a nudge of another
+/// selection does not.
+final class _SameObjects {
+  _SameObjects(this.kind, this.objects);
 
+  final Object kind;
   final List<SelectableObject> objects;
 
   @override
   bool operator ==(Object other) =>
-      other is _NudgeKey &&
+      other is _SameObjects &&
+      other.kind == kind &&
       other.objects.length == objects.length &&
       Iterable<int>.generate(objects.length)
           .every((int i) => identical(other.objects[i], objects[i]));
 
   @override
-  int get hashCode => Object.hashAll(objects.map(identityHashCode));
+  int get hashCode =>
+      Object.hash(kind, Object.hashAll(objects.map(identityHashCode)));
 }

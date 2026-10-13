@@ -114,8 +114,14 @@ const List<ParityFeature> kParityCatalog = <ParityFeature>[
   ParityFeature(_tools, 'Mesh fill', 'P2'),
   ParityFeature(_tools, 'Smart fill', 'P2'),
   ParityFeature(_tools, 'Outline pen (F12)', 'P0',
-      commands: <String>['panel.fillStroke', 'object.outline'],
-      partial: 'colour and width; no dashes, caps or joins'),
+      commands: <String>[
+        'panel.fillStroke',
+        'object.outline',
+        'object.outlineWidth',
+        'object.outlineStyle',
+      ],
+      partial: 'caps, joins and dashes are kept but the canvas draws them '
+          'butt, miter and solid'),
   ParityFeature(_tools, 'Fill (F11)', 'P0',
       commands: <String>['panel.fillStroke', 'object.fill'],
       partial: 'uniform colour; no fountain, pattern or texture fills'),
@@ -171,6 +177,7 @@ const List<ParityFeature> kParityCatalog = <ParityFeature>[
       commands: <String>['tool.freehandSmoothing'],
       partial: 'Freehand smoothing; no arrowheads or line style on the bar'),
   ParityFeature(_bar, 'Text: content and size', 'P0',
+      commands: <String>['text.content', 'text.size'],
       partial: 'content and size; no font, style or alignment'),
   ParityFeature(_bar, 'Interactive fill', 'P1'),
   ParityFeature(_bar, 'Transparency', 'P1'),
@@ -183,7 +190,14 @@ const List<ParityFeature> kParityCatalog = <ParityFeature>[
 
   // --- dockers ----------------------------------------------------------------
   ParityFeature(_dockers, 'Objects', 'P0', commands: <String>['panel.objects']),
-  ParityFeature(_dockers, 'Properties (Alt+Enter)', 'P0'),
+  ParityFeature(_dockers, 'Properties (Alt+Enter)', 'P0', commands: <String>[
+    'panel.properties',
+    'object.position',
+    'object.fillRule',
+    'rectangle.round',
+    'ellipse.type',
+    'polygon.corners',
+  ]),
   ParityFeature(_dockers, 'Transform', 'P1',
       commands: <String>['panel.transform']),
   ParityFeature(_dockers, 'Align and Distribute', 'P0',

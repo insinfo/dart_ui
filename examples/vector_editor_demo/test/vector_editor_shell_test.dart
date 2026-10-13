@@ -324,6 +324,19 @@ void main() {
       harness.dispose();
     });
 
+    test('Alt+Enter brings up Properties, and it edits through commands', () {
+      final harness = _Harness();
+      harness.frame();
+      final registry = harness.windowState.registry;
+      final run =
+          registry.keyBindings()[const KeyGesture(logicalKeyEnter, alt: true)];
+      expect(run, isNotNull);
+      run!();
+      harness.frame();
+      expect(registry['panel.properties']!.isChecked, isTrue);
+      harness.dispose();
+    });
+
     test('the rectangle tool creates a real object, undoably', () {
       final harness = _Harness();
       harness.frame();
@@ -427,8 +440,10 @@ void main() {
       final harness = _Harness();
       harness.frame();
       final workspace = harness.windowState.ui.workspace;
-      expect(workspace.layout.hierarchy(nameInfo: true),
-          'R(IDocument,C(T(ITransform,IAlign,IFill & Outline),IObjects))');
+      expect(
+          workspace.layout.hierarchy(nameInfo: true),
+          'R(IDocument,C(T(IProperties,ITransform,IAlign,IFill & Outline),'
+          'IObjects))');
       expect(harness.sizeOf(ObjectsPanel), isNotNull);
       harness.dispose();
     });
@@ -443,6 +458,8 @@ void main() {
       workspace.layout.removeItem(
           item: workspace.layout.findDockingItem(WorkspacePanels.objects)!);
       workspace.layout.removeItem(
+          item: workspace.layout.findDockingItem(WorkspacePanels.properties)!);
+      workspace.layout.removeItem(
           item: workspace.layout.findDockingItem(WorkspacePanels.transform)!);
       workspace.layout.removeItem(
           item: workspace.layout.findDockingItem(WorkspacePanels.align)!);
@@ -456,8 +473,10 @@ void main() {
       harness.frame();
       expect(workspace.isDocked(WorkspacePanels.objects), isTrue);
       workspace.reset();
-      expect(workspace.layout.hierarchy(nameInfo: true),
-          'R(IDocument,C(T(ITransform,IAlign,IFill & Outline),IObjects))');
+      expect(
+          workspace.layout.hierarchy(nameInfo: true),
+          'R(IDocument,C(T(IProperties,ITransform,IAlign,IFill & Outline),'
+          'IObjects))');
       harness.dispose();
     });
 

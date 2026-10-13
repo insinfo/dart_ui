@@ -312,13 +312,17 @@ class EditorModel {
   // -------------------------------------------------------------------------
 
   /// Applies [style] to every selected object, as one undoable step.
-  void applyToSelection(VectorStyle Function(VectorStyle style) transform) {
+  ///
+  /// With [live], consecutive changes of that kind to the same selection are
+  /// one step - a colour picker being dragged.
+  void applyToSelection(VectorStyle Function(VectorStyle style) transform,
+      {Object? live}) {
     if (!hasSelection) return;
-    active.api.restyle(selection.selectedObjects, transform);
+    active.api.restyle(selection.selectedObjects, transform, live: live);
     touch('Style applied to ${selection.count} object(s)');
   }
 
-  void setFill(Color? color) {
+  void setFill(Color? color, {bool live = false}) {
     currentFill =
         color == null ? FillDescriptor.none : FillDescriptor.solid(color);
     if (!hasSelection) {
@@ -327,10 +331,16 @@ class EditorModel {
           : 'New objects will use this fill');
       return;
     }
-    applyToSelection((style) => style.copyWith(fill: currentFill));
+    applyToSelection(
+        (style) => style.copyWith(
+            fill: color == null
+                ? FillDescriptor.none
+                : FillDescriptor.solid(color)
+                    .copyWith(fillRule: style.fill.fillRule)),
+        live: live ? 'fill' : null);
   }
 
-  void setStroke(Color? color) {
+  void setStroke(Color? color, {bool live = false}) {
     currentStroke = color == null
         ? currentStroke.copyWith(width: 0)
         : StrokeDescriptor(
@@ -342,7 +352,15 @@ class EditorModel {
           : 'New objects will use this outline');
       return;
     }
-    applyToSelection((style) => style.copyWith(stroke: currentStroke));
+    // The colour only: an object's width, caps, joins and dashes stay.
+    applyToSelection(
+        (style) => style.copyWith(
+            stroke: color == null
+                ? style.stroke.copyWith(width: 0)
+                : style.stroke.copyWith(
+                    color: color,
+                    width: style.stroke.width <= 0 ? 1 : style.stroke.width)),
+        live: live ? 'outline' : null);
   }
 
   /// Runs [change] on the active document as one undoable step, then

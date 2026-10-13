@@ -90,8 +90,8 @@ class PanelRow extends StatelessWidget {
 /// `labelSmall` in the secondary foreground - the design system's own
 /// "legendas, metadados" role. Three copies of this sentence used to declare
 /// `fontSize: 11` each, and one of them forgot the colour.
-class _PanelNote extends StatelessWidget {
-  const _PanelNote(this.text);
+class PanelNote extends StatelessWidget {
+  const PanelNote(this.text, {super.key});
 
   final String text;
 
@@ -337,7 +337,7 @@ class TransformPanel extends StatelessWidget {
             ),
           ),
           const SizedBox(height: Spacing.xs),
-          const _PanelNote('Shearing is not implemented in the Dart demo yet.'),
+          const PanelNote('Shearing is not implemented in the Dart demo yet.'),
         ];
     }
   }
@@ -459,7 +459,7 @@ class AlignPanel extends StatelessWidget {
                     ? model.applyAlign
                     : null,
               ),
-              if (!selected) const _PanelNote('Nothing is selected.'),
+              if (!selected) const PanelNote('Nothing is selected.'),
             ],
           ),
           PanelSection(
@@ -484,7 +484,7 @@ class AlignPanel extends StatelessWidget {
                 ],
               ),
               if (!canDistribute)
-                const _PanelNote(
+                const PanelNote(
                     'Distributing needs at least three selected objects.'),
             ],
           ),

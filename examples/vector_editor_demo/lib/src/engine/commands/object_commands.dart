@@ -15,6 +15,11 @@ const CommandParam _color = CommandParam(
   description: '"#rrggbb", "#aarrggbb" or null for none',
 );
 
+/// A step of a continuous change - a colour picker being dragged - that
+/// coalesces with the steps before it into one undo.
+const CommandParam _live = CommandParam('live', CommandParamType.boolean,
+    description: 'part of a drag; coalesces into one undo step');
+
 /// `#rrggbb`, `#aarrggbb` or null, as a colour or none.
 Color? parseColor(Object? value) {
   if (value == null) return null;
@@ -165,16 +170,18 @@ List<CommandSpec> objectCommands(EditorContext context) {
       label: 'Fill colour',
       description: "The selection's fill, or the next shapes' when nothing "
           'is selected.',
-      params: const <CommandParam>[_color],
+      params: const <CommandParam>[_color, _live],
       when: context.needsDocument,
-      run: (CommandArgs args) => model.setFill(parseColor(args['color'])),
+      run: (CommandArgs args) =>
+          model.setFill(parseColor(args['color']), live: args.flag('live')),
     ),
     CommandSpec(
       id: 'object.outline',
       label: 'Outline colour',
-      params: const <CommandParam>[_color],
+      params: const <CommandParam>[_color, _live],
       when: context.needsDocument,
-      run: (CommandArgs args) => model.setStroke(parseColor(args['color'])),
+      run: (CommandArgs args) =>
+          model.setStroke(parseColor(args['color']), live: args.flag('live')),
     ),
   ];
 }

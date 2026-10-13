@@ -146,6 +146,10 @@ Future<void> main(List<String> args) async {
     state.model.selection.select(objectOfType((o) => o is VectorRectangle));
     state.model
         .pickObject(objectOfType((o) => o is VectorCircle), toggle: true);
+  } else if (scenario == 'properties') {
+    // The Properties panel (Alt+Enter) on the rectangle.
+    state.model.selection.select(objectOfType((o) => o is VectorRectangle));
+    state.registry.execute('panel.properties');
   } else if (scenario == 'multi') {
     // Bug 5: three objects picked up with Shift.
     final rect = objectOfType((o) => o is VectorRectangle);

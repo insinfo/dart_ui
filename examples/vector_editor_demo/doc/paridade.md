@@ -7,16 +7,16 @@
 
 | | feitas | parciais | faltam | total | cobertura |
 |---|---|---|---|---|---|
-| P0 | 50 | 9 | 4 | 63 | 87% |
+| P0 | 51 | 10 | 2 | 63 | 89% |
 | P1 | 7 | 2 | 35 | 44 | 18% |
 | P2 | 1 | 0 | 67 | 68 | 1% |
-| **todas** | 58 | 11 | 106 | 175 | 36% |
+| **todas** | 59 | 12 | 104 | 175 | 37% |
 
 Cobertura = (feitas + metade das parciais) / total.
 
-Menus do editor: 78 de 93 linhas têm comando registrado; as outras aparecem desabilitadas.
+Menus do editor: 79 de 94 linhas têm comando registrado; as outras aparecem desabilitadas.
 
-Comandos registrados: 102.
+Comandos registrados: 112.
 
 ## Por área
 
@@ -24,8 +24,8 @@ Comandos registrados: 102.
 |---|---|---|---|---|---|
 | Caixa de ferramentas | 10 | 3 | 47 | 60 | 19% |
 | Interações no canvas | 8 | 2 | 3 | 13 | 69% |
-| Barra de propriedades | 4 | 1 | 11 | 16 | 28% |
-| Dockers | 3 | 0 | 12 | 15 | 20% |
+| Barra de propriedades | 4 | 2 | 10 | 16 | 31% |
+| Dockers | 4 | 0 | 11 | 15 | 27% |
 | Operações de objeto | 10 | 2 | 10 | 22 | 50% |
 | Alinhar e distribuir (teclas) | 5 | 1 | 2 | 8 | 69% |
 | Menus | 3 | 1 | 4 | 8 | 44% |
@@ -96,7 +96,7 @@ Comandos registrados: 102.
 | ❌ | Interactive fill (G) | P1 |  | tudo |
 | ❌ | Mesh fill | P2 |  | tudo |
 | ❌ | Smart fill | P2 |  | tudo |
-| 🟡 | Outline pen (F12) | P0 | `panel.fillStroke`, `object.outline` | colour and width; no dashes, caps or joins |
+| 🟡 | Outline pen (F12) | P0 | `panel.fillStroke`, `object.outline`, `object.outlineWidth`, `object.outlineStyle` | caps, joins and dashes are kept but the canvas draws them butt, miter and solid |
 | 🟡 | Fill (F11) | P0 | `panel.fillStroke`, `object.fill` | uniform colour; no fountain, pattern or texture fills |
 
 ### Interações no canvas
@@ -128,7 +128,7 @@ Comandos registrados: 102.
 | ❌ | Ellipse: arc and pie | P1 |  | tudo |
 | ❌ | Polygon / Star: points | P1 |  | corner count only |
 | 🟡 | Freehand, Bézier, Pen | P0 | `tool.freehandSmoothing` | Freehand smoothing; no arrowheads or line style on the bar |
-| ❌ | Text: content and size | P0 |  | content and size; no font, style or alignment |
+| 🟡 | Text: content and size | P0 | `text.content`, `text.size` | content and size; no font, style or alignment |
 | ❌ | Interactive fill | P1 |  | tudo |
 | ❌ | Transparency | P1 |  | tudo |
 | ❌ | Blend | P2 |  | tudo |
@@ -143,7 +143,7 @@ Comandos registrados: 102.
 | | funcionalidade | prio | como | falta |
 |---|---|---|---|---|
 | ✅ | Objects | P0 | `panel.objects` |  |
-| ❌ | Properties (Alt+Enter) | P0 |  | tudo |
+| ✅ | Properties (Alt+Enter) | P0 | `panel.properties`, `object.position`, `object.fillRule`, `rectangle.round`, `ellipse.type`, `polygon.corners` |  |
 | ✅ | Transform | P1 | `panel.transform` |  |
 | ✅ | Align and Distribute | P0 | `panel.align` |  |
 | ❌ | Color styles / harmonies | P2 |  | tudo |

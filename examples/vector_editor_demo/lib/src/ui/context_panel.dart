@@ -134,14 +134,34 @@ class ContextPanel extends StatelessWidget {
         ContextPlugin.units => _UnitsPlugin(model: model),
         ContextPlugin.position => _PositionPlugin(model: model),
         ContextPlugin.resize => _ResizePlugin(model: model),
-        ContextPlugin.rotate => _RotatePlugin(model: model),
-        ContextPlugin.mirror => _MirrorPlugin(model: model),
-        ContextPlugin.order => _OrderPlugin(model: model),
-        ContextPlugin.rectangle => _RectanglePlugin(model: model),
-        ContextPlugin.circle => _CirclePlugin(model: model),
-        ContextPlugin.polygon => _PolygonPlugin(model: model),
+        ContextPlugin.rotate => _RotatePlugin(registry: registry),
+        ContextPlugin.mirror =>
+          _commandButtons(const <(String, IconData, Map<String, Object?>)>[
+            (
+              'object.flip',
+              PhosphorIcons.arrowsOutLineHorizontal,
+              <String, Object?>{'direction': 'horizontal'}
+            ),
+            (
+              'object.flip',
+              PhosphorIcons.arrowsOutLineVertical,
+              <String, Object?>{'direction': 'vertical'}
+            ),
+          ]),
+        ContextPlugin.order =>
+          _commandButtons(const <(String, IconData, Map<String, Object?>)>[
+            ('object.toBack', PhosphorIcons.alignBottom, <String, Object?>{}),
+            ('object.backward', PhosphorIcons.arrowDown, <String, Object?>{}),
+            ('object.forward', PhosphorIcons.arrowUp, <String, Object?>{}),
+            ('object.toFront', PhosphorIcons.alignTop, <String, Object?>{}),
+          ]),
+        ContextPlugin.rectangle =>
+          _RectanglePlugin(model: model, registry: registry),
+        ContextPlugin.circle => _CirclePlugin(registry: registry),
+        ContextPlugin.polygon =>
+          _PolygonPlugin(model: model, registry: registry),
         ContextPlugin.polygonConfig => _PolygonConfigPlugin(model: model),
-        ContextPlugin.text => _TextPlugin(model: model),
+        ContextPlugin.text => _TextPlugin(model: model, registry: registry),
         ContextPlugin.group => _commands(const <String>[
             'object.group',
             'object.ungroup',
@@ -174,6 +194,18 @@ class ContextPanel extends StatelessWidget {
         ContextPlugin.freehand =>
           _FreehandPlugin(model: model, registry: registry),
       };
+
+  /// A row of command buttons with their own icons and parameters.
+  Widget _commandButtons(List<(String, IconData, Map<String, Object?>)> rows) =>
+      Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: <Widget>[
+          for (final (String id, IconData icon, Map<String, Object?> params)
+              in rows)
+            CommandIconButton(
+                registry: registry, command: id, icon: icon, params: params),
+        ],
+      );
 
   /// A row of command buttons; null is a gap between groups.
   Widget _commands(List<String?> ids) => Row(
@@ -470,9 +502,9 @@ class _ResizePlugin extends StatelessWidget {
 
 /// Rotation - sK1's RotatePlugin.
 class _RotatePlugin extends StatelessWidget {
-  const _RotatePlugin({required this.model});
+  const _RotatePlugin({required this.registry});
 
-  final EditorModel model;
+  final CommandRegistry registry;
 
   @override
   Widget build(BuildContext context) => Row(
@@ -488,76 +520,23 @@ class _RotatePlugin extends StatelessWidget {
             width: 56,
             min: -360,
             max: 360,
-            onChanged: model.rotateSelection,
+            onChanged: (double degrees) => registry.execute(
+                'object.rotate', <String, Object?>{'degrees': degrees}),
           ),
           const _Label('deg'),
-          _BarButton(
+          CommandIconButton(
+            registry: registry,
+            command: 'object.rotate',
             icon: PhosphorIcons.arrowCounterClockwise,
-            tooltip: 'Rotate left 90 degrees',
-            onTap: () => model.rotateSelection(-90),
+            label: 'Rotate left 90 degrees',
+            params: const <String, Object?>{'degrees': -90},
           ),
-          _BarButton(
+          CommandIconButton(
+            registry: registry,
+            command: 'object.rotate',
             icon: PhosphorIcons.arrowClockwise,
-            tooltip: 'Rotate right 90 degrees',
-            onTap: () => model.rotateSelection(90),
-          ),
-        ],
-      );
-}
-
-/// Mirroring - sK1's MirrorPlugin.
-class _MirrorPlugin extends StatelessWidget {
-  const _MirrorPlugin({required this.model});
-
-  final EditorModel model;
-
-  @override
-  Widget build(BuildContext context) => Row(
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: <Widget>[
-          _BarButton(
-            icon: PhosphorIcons.arrowsOutLineHorizontal,
-            tooltip: 'Flip horizontal',
-            onTap: () => model.flipSelection(horizontal: true),
-          ),
-          _BarButton(
-            icon: PhosphorIcons.arrowsOutLineVertical,
-            tooltip: 'Flip vertical',
-            onTap: () => model.flipSelection(horizontal: false),
-          ),
-        ],
-      );
-}
-
-/// Z order - sK1's OrderPlugin, in its bottom-to-top button order.
-class _OrderPlugin extends StatelessWidget {
-  const _OrderPlugin({required this.model});
-
-  final EditorModel model;
-
-  @override
-  Widget build(BuildContext context) => Row(
-        crossAxisAlignment: CrossAxisAlignment.center,
-        children: <Widget>[
-          _BarButton(
-            icon: PhosphorIcons.alignBottom,
-            tooltip: 'Move to Bottom',
-            onTap: () => model.reorder(up: false, toEnd: true),
-          ),
-          _BarButton(
-            icon: PhosphorIcons.arrowDown,
-            tooltip: 'Move Down',
-            onTap: () => model.reorder(up: false, toEnd: false),
-          ),
-          _BarButton(
-            icon: PhosphorIcons.arrowUp,
-            tooltip: 'Move Up',
-            onTap: () => model.reorder(up: true, toEnd: false),
-          ),
-          _BarButton(
-            icon: PhosphorIcons.alignTop,
-            tooltip: 'Move to Top',
-            onTap: () => model.reorder(up: true, toEnd: true),
+            label: 'Rotate right 90 degrees',
+            params: const <String, Object?>{'degrees': 90},
           ),
         ],
       );
@@ -565,9 +544,10 @@ class _OrderPlugin extends StatelessWidget {
 
 /// Corner rounding - sK1's RectanglePlugin.
 class _RectanglePlugin extends StatelessWidget {
-  const _RectanglePlugin({required this.model});
+  const _RectanglePlugin({required this.model, required this.registry});
 
   final EditorModel model;
+  final CommandRegistry registry;
 
   @override
   Widget build(BuildContext context) {
@@ -583,12 +563,8 @@ class _RectanglePlugin extends StatelessWidget {
           decimals: 0,
           min: 0,
           max: 100,
-          onChanged: (value) {
-            final corner = (value / 100).clamp(0.0, 1.0);
-            model.edit('Corner radius ${value.round()}%', () {
-              rectangle.corners = <double>[corner, corner, corner, corner];
-            });
-          },
+          onChanged: (value) => registry
+              .execute('rectangle.round', <String, Object?>{'percent': value}),
         ),
         const _Label('%'),
       ],
@@ -598,42 +574,37 @@ class _RectanglePlugin extends StatelessWidget {
 
 /// Arc / chord / pie - sK1's CirclePlugin.
 class _CirclePlugin extends StatelessWidget {
-  const _CirclePlugin({required this.model});
+  const _CirclePlugin({required this.registry});
 
-  final EditorModel model;
+  final CommandRegistry registry;
 
   @override
-  Widget build(BuildContext context) {
-    final circle = model.singleSelection as VectorCircle;
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.center,
-      children: <Widget>[
-        for (final type in ArcType.values)
-          _BarButton(
-            icon: switch (type) {
-              ArcType.arc => PhosphorIcons.circleNotch,
-              ArcType.chord => PhosphorIcons.circleHalf,
-              ArcType.pieslice => PhosphorIcons.circleHalfTilt,
-            },
-            tooltip: switch (type) {
-              ArcType.arc => 'Arc',
-              ArcType.chord => 'Chord',
-              ArcType.pieslice => 'Pie slice',
-            },
-            selected: circle.arcType == type,
-            onTap: () => model.edit(
-                'Ellipse: ${type.name}', () => circle.arcType = type),
-          ),
-      ],
-    );
-  }
+  Widget build(BuildContext context) => Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: <Widget>[
+          for (final (ArcType type, IconData icon, String label)
+              in const <(ArcType, IconData, String)>[
+            (ArcType.arc, PhosphorIcons.circleNotch, 'Arc'),
+            (ArcType.chord, PhosphorIcons.circleHalf, 'Chord'),
+            (ArcType.pieslice, PhosphorIcons.circleHalfTilt, 'Pie slice'),
+          ])
+            CommandIconButton(
+              registry: registry,
+              command: 'ellipse.type',
+              icon: icon,
+              label: label,
+              params: <String, Object?>{'type': type.name},
+            ),
+        ],
+      );
 }
 
 /// Corner count of the selected polygon - sK1's PolygonPlugin.
 class _PolygonPlugin extends StatelessWidget {
-  const _PolygonPlugin({required this.model});
+  const _PolygonPlugin({required this.model, required this.registry});
 
   final EditorModel model;
+  final CommandRegistry registry;
 
   @override
   Widget build(BuildContext context) {
@@ -649,8 +620,8 @@ class _PolygonPlugin extends StatelessWidget {
           decimals: 0,
           min: 3,
           max: 1000,
-          onChanged: (value) => model.edit('${value.round()} corners',
-              () => polygon.cornersNum = value.round().clamp(3, 1000)),
+          onChanged: (value) => registry.execute('polygon.corners',
+              <String, Object?>{'corners': value.round().clamp(3, 1000)}),
         ),
       ],
     );
@@ -688,9 +659,10 @@ class _PolygonConfigPlugin extends StatelessWidget {
 /// Stateful only because the field needs a controller that outlives one build;
 /// rebuilding it per frame would move the caret to the end on every keystroke.
 class _TextPlugin extends StatefulWidget {
-  const _TextPlugin({required this.model});
+  const _TextPlugin({required this.model, required this.registry});
 
   final EditorModel model;
+  final CommandRegistry registry;
 
   @override
   State<_TextPlugin> createState() => _TextPluginState();
@@ -715,8 +687,8 @@ class _TextPluginState extends State<_TextPlugin> {
     final object = widget.model.singleSelection;
     if (object is! VectorText) return;
     if (object.textContent == _controller.value) return;
-    widget.model.edit('Edit text', () => object.textContent = _controller.value,
-        coalesce: object);
+    widget.registry
+        .execute('text.content', <String, Object?>{'text': _controller.value});
   }
 
   @override
@@ -736,7 +708,6 @@ class _TextPluginState extends State<_TextPlugin> {
       }
     }
     final style = text.style.textStyle;
-    final model = widget.model;
     return Row(
       crossAxisAlignment: CrossAxisAlignment.center,
       children: <Widget>[
@@ -752,15 +723,8 @@ class _TextPluginState extends State<_TextPlugin> {
           decimals: 0,
           min: 4,
           max: 400,
-          onChanged: (value) {
-            model.active.api.setObjectStyle(
-              text,
-              text.style.copyWith(
-                textStyle: style.copyWith(fontSize: value),
-              ),
-            );
-            model.touch('Font size ${value.round()}');
-          },
+          onChanged: (value) => widget.registry
+              .execute('text.size', <String, Object?>{'size': value}),
         ),
         const _Label('pt'),
       ],
