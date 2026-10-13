@@ -1,6 +1,7 @@
 library;
 
 import 'dart:io';
+import 'dart:isolate';
 import 'dart:typed_data';
 
 import 'font_registry.dart';
@@ -74,10 +75,19 @@ abstract final class FrameworkFonts {
       );
 
   static Directory? _findDirectory(String? explicit) {
+    final String fonts =
+        '${Platform.pathSeparator}assets${Platform.pathSeparator}fonts';
+    final String? environment = Platform.environment['DART_UI_FONTS'];
     final List<String> candidates = <String>[
       if (explicit != null) explicit,
-      '${Directory.current.path}${Platform.pathSeparator}assets${Platform.pathSeparator}fonts',
-      '${File(Platform.script.toFilePath()).parent.path}${Platform.pathSeparator}assets${Platform.pathSeparator}fonts',
+      if (environment != null && environment.isNotEmpty) environment,
+      // The dart_ui package itself, wherever the program's package config
+      // puts it - an application in its own directory that depends on
+      // dart_ui by path or from a cache. Without this the fonts were only
+      // found when the program happened to run from the dart_ui checkout.
+      if (_packageRoot() case final String root) '$root$fonts',
+      '${Directory.current.path}$fonts',
+      '${File(Platform.script.toFilePath()).parent.path}$fonts',
     ];
     for (final String path in candidates) {
       final Directory directory = Directory(path);
@@ -89,6 +99,20 @@ abstract final class FrameworkFonts {
       }
     }
     return null;
+  }
+
+  /// The directory of the dart_ui package, from the running program's
+  /// package config; null in a compiled executable, which has none.
+  static String? _packageRoot() {
+    try {
+      final Uri? library = Isolate.resolvePackageUriSync(
+          Uri.parse('package:dart_ui/dart_ui.dart'));
+      if (library == null || library.scheme != 'file') return null;
+      // .../dart_ui/lib/dart_ui.dart -> .../dart_ui
+      return File(library.toFilePath()).parent.parent.path;
+    } on Object {
+      return null;
+    }
   }
 
   static Uint8List? _readOptional(Directory directory, String fileName) {

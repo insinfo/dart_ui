@@ -108,7 +108,7 @@ PDF em isolate, navega, busca, ajusta página/largura, aplica zoom, alterna tema
 seleciona texto continuamente entre páginas e copia pelo menu de contexto:
 
 ```shell
-dart run examples/pdf_reader_demo/main.dart
+cd examples/pdf_reader_demo && dart run main.dart
 ```
 
 O rodapé de diagnóstico do leitor informa o modo do Dart e a cadeia gráfica
@@ -116,9 +116,9 @@ realmente selecionada, por exemplo `AOT • GPU/direct3d11 • win32`. Para comp
 o mesmo documento no Windows sem depender da seleção automática:
 
 ```shell
-dart run examples/pdf_reader_demo/main.dart --presentation direct3d11
-dart run examples/pdf_reader_demo/main.dart --presentation opengl
-dart run examples/pdf_reader_demo/main.dart --presentation win32-dib
+cd examples/pdf_reader_demo && dart run main.dart --presentation direct3d11
+cd examples/pdf_reader_demo && dart run main.dart --presentation opengl
+cd examples/pdf_reader_demo && dart run main.dart --presentation win32-dib
 ```
 
 `--gpu` e `--cpu` também restringem a categoria de apresentação. Uma aplicação

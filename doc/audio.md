@@ -89,7 +89,7 @@ executar o pump e descartar o stream.
 ## Teste audível
 
 ```powershell
-dart run examples/wasapi_audio_demo/main.dart 3
+cd examples/wasapi_audio_demo && dart run main.dart 3
 ```
 
 O exemplo negocia o formato real, cria o stream no isolate de áudio, compartilha
@@ -114,7 +114,7 @@ obter o lock e conserva o snapshot anterior em caso de contenção.
 O teclado musical demonstra esse caminho:
 
 ```powershell
-dart run examples/wasapi_audio_demo/main.dart
+cd examples/wasapi_audio_demo && dart run main.dart
 ```
 
 Mouse e teclado físico controlam duas oitavas polifônicas; reverb, sala,
@@ -135,7 +135,7 @@ relações como hi-hat aberto/fechado, e `WasapiSharedTriggerBlock` preserva
 disparos repetidos por contadores monotônicos em memória compartilhada.
 
 ```powershell
-dart run examples/drumer/main.dart
+cd examples/drumer && dart run main.dart
 ```
 
 O exemplo carrega os 12 WAV mono/24-bit/44,1 kHz de `drum_sounds`, converte-os
@@ -162,9 +162,9 @@ inteiramente em Dart e sem alocação por amostra. `NativeThreeBandEqualizer`
 continua disponível para interfaces compactas de graves, médios e agudos.
 
 ```powershell
-dart run examples/music_player_demo/main.dart
-dart run examples/music_player_demo/main.dart "C:\musicas\faixa.mp3"
-dart run examples/music_player_demo/main.dart ~/Music/faixa.m4a   # macOS
+cd examples/music_player_demo && dart run main.dart
+cd examples/music_player_demo && dart run main.dart "C:\musicas\faixa.mp3"
+cd examples/music_player_demo && dart run main.dart ~/Music/faixa.m4a   # macOS
 ```
 
 O player também abre arquivos pelo seletor nativo, aceita vários WAV/MP3

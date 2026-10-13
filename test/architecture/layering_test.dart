@@ -179,6 +179,11 @@ const Map<String, List<String>> _allowedDependencies = <String, List<String>>{
     'text',
     'widgets',
   ],
+  // Commands are what an application is made of, above the widgets that show
+  // them: a menu built from command ids is `PlatformMenu`s, and a shortcut is
+  // a `KeyGesture`. Nothing below may know commands exist - a widget takes a
+  // callback, and the application wires it to a command.
+  'commands': <String>['foundation', 'widgets'],
   // The application shell sits above everything, which is precisely why it is
   // listed last and why `backends` is still absent from its row: `runApp` has
   // to assemble a backend without being allowed to name one, and the entries

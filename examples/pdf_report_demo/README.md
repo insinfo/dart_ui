@@ -13,7 +13,7 @@ Este exemplo gera um relatório A4 de duas páginas usando o módulo PDF do
 Execute a partir da raiz do repositório:
 
 ```powershell
-dart run examples/pdf_report_demo/main.dart
+dart run main.dart
 ```
 
 O arquivo é criado em `output/pdf/dart_ui_relatorio_exemplo.pdf`. Um caminho

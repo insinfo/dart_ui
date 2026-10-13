@@ -115,13 +115,13 @@ examples/vector_editor_demo/                    # Aplicação Desktop do Editor
 
 ```bash
 # Executar o editor com documento padrão
-dart run examples/vector_editor_demo/main.dart
+dart run main.dart
 
 # Abrir um arquivo CorelDRAW existente
-dart run examples/vector_editor_demo/main.dart meu_arquivo.cdr
+dart run main.dart meu_arquivo.cdr
 
 # Abrir um arquivo SVG existente
-dart run examples/vector_editor_demo/main.dart meu_desenho.svg
+dart run main.dart meu_desenho.svg
 ```
 
 ### Verificação sem abrir janela
@@ -130,10 +130,10 @@ O backend headless renderiza a janela inteira para PNG, que é o laço em que es
 construído: montar, rasterizar, olhar a imagem, corrigir.
 
 ```bash
-dart run examples/vector_editor_demo/tool/headless_shot.dart saida.png 1400 880
-dart run examples/vector_editor_demo/tool/headless_shot.dart saida.png 1400 880 menu:0
-dart run examples/vector_editor_demo/tool/headless_shot.dart saida.png 1400 880 select
-dart run examples/vector_editor_demo/tool/headless_shot.dart saida.png 1400 880 collapsed
+dart run tool/headless_shot.dart saida.png 1400 880
+dart run tool/headless_shot.dart saida.png 1400 880 menu:0
+dart run tool/headless_shot.dart saida.png 1400 880 select
+dart run tool/headless_shot.dart saida.png 1400 880 collapsed
 ```
 
 Os cenários de **interação** dirigem a janela com eventos de ponteiro e teclado reais, porque

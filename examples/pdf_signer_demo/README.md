@@ -12,7 +12,7 @@ durante a assinatura), nome extraído do certificado, CPF obtido do
 com fuso horário e um link clicável para `https://validar.iti.gov.br/`.
 
 ```powershell
-dart run examples/pdf_signer_demo/main.dart --presentation direct3d11
+dart run main.dart --presentation direct3d11
 ```
 
 No Windows, a opção padrão lê `CurrentUser\MY` e funciona com tokens que o
@@ -32,7 +32,7 @@ mesmo adaptador PAdES nas três plataformas. Também é possível iniciar com o
 documento e o módulo preenchidos:
 
 ```powershell
-dart run examples/pdf_signer_demo/main.dart documento.pdf `
+dart run main.dart documento.pdf `
   --module="C:\Windows\System32\aetpkss1.dll"
 ```
 

@@ -6,9 +6,9 @@
 /// out and then painted over, say - is obvious in the PNG in one look.
 ///
 /// ```
-/// dart run examples/vector_editor_demo/tool/headless_shot.dart out.png 1400 880
-/// dart run examples/vector_editor_demo/tool/headless_shot.dart out.png 1400 880 menu:1
-/// dart run examples/vector_editor_demo/tool/headless_shot.dart out.png 1400 880 select
+/// dart run tool/headless_shot.dart out.png 1400 880
+/// dart run tool/headless_shot.dart out.png 1400 880 menu:1
+/// dart run tool/headless_shot.dart out.png 1400 880 select
 /// ```
 library;
 

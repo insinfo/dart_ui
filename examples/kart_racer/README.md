@@ -1,8 +1,8 @@
 # Kart Racer
 
 ```powershell
-dart run examples/kart_racer/main.dart
-dart run examples/kart_racer/main.dart --replay=1800 --headless
+dart run main.dart
+dart run main.dart --replay=1800 --headless
 ```
 
 ## Navegador

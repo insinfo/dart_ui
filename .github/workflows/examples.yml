@@ -1,0 +1,44 @@
+name: Examples
+
+# Every folder of examples/ is a Dart project of its own (pubspec, tests,
+# tools), depending on dart_ui by path. The framework's own suite in test/
+# never imports them; this workflow is where they are analysed and tested.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+env:
+  DART_SDK_VERSION: stable
+
+jobs:
+  examples:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dart-lang/setup-dart@v1
+        with:
+          sdk: ${{ env.DART_SDK_VERSION }}
+
+      - name: Framework dependencies
+        run: dart pub get
+
+      - name: Analyze, format and test each example
+        run: |
+          status=0
+          for dir in examples/*/; do
+            name=$(basename "$dir")
+            [ -f "$dir/pubspec.yaml" ] || continue
+            echo "::group::$name"
+            (
+              cd "$dir" &&
+              dart pub get &&
+              dart format --output=none --set-exit-if-changed . &&
+              dart analyze &&
+              if [ -d test ]; then dart test --reporter=expanded; fi
+            ) || { echo "::error::$name failed"; status=1; }
+            echo "::endgroup::"
+          done
+          exit $status

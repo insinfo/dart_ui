@@ -50,7 +50,7 @@ Um teste de camadas (`test/examples/vector_editor_layers_test.dart`) lê os
 
 ## Canal de controle (agentes)
 
-`dart run examples/vector_editor_demo/main.dart --control 7979` abre
+`cd examples/vector_editor_demo && dart run main.dart --control 7979` abre
 `127.0.0.1:7979`. Uma requisição JSON por linha:
 
 ```json

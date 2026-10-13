@@ -28,7 +28,7 @@ Em Windows, macOS ou Linux, compile o executável nativo na própria plataforma
 sem depender do PowerShell:
 
 ```console
-dart run examples/icp_brasil_chrome_signer/application/build.dart
+dart run application/build.dart
 ```
 
 Para instalar no perfil atual e criar o atalho no Menu Iniciar:
@@ -59,12 +59,12 @@ powershell -ExecutionPolicy Bypass -File examples/icp_brasil_chrome_signer/insta
 2. No Chrome, Brave ou Edge, abra a página de extensões, habilite o modo do desenvolvedor e escolha **Carregar sem compactação** em `examples/icp_brasil_chrome_signer/extension/dist`. Essa pasta contém o `manifest.json`; não selecione `dist` dentro dela novamente.
 3. Copie o ID exibido pelo Chrome.
 4. Execute `powershell -ExecutionPolicy Bypass -File examples/icp_brasil_chrome_signer/install_host.ps1 -ExtensionId ID_COPIADO`. O instalador registra o host para Chrome, Brave, Edge e Firefox no perfil atual.
-5. Reinicie o Chrome. Rode `dart run examples/icp_brasil_chrome_signer/demo_server.dart` e abra `http://localhost:8787`. Essa página também é desenhada integralmente pelo `dart_ui`; o HTML contém apenas o ponto de montagem do backend.
+5. Reinicie o Chrome. Rode `dart run demo_server.dart` e abra `http://localhost:8787`. Essa página também é desenhada integralmente pelo `dart_ui`; o HTML contém apenas o ponto de montagem do backend.
 
 O host pode ser verificado sem abrir o token ou pedir PIN com
-`dart run examples/icp_brasil_chrome_signer/native_host_smoke.dart`.
+`dart run native_host_smoke.dart`.
 Para confirmar que o Windows e o `dart_ui` enxergam os certificados ICP-Brasil,
-execute `dart run examples/icp_brasil_chrome_signer/native_host_smoke.dart --list`.
+execute `dart run native_host_smoke.dart --list`.
 
 ### Firefox
 
