@@ -355,6 +355,14 @@ final class _VideoPlayerDemoState extends State<VideoPlayerDemo> {
   int _framesThisWindow = 0;
   double _presentedPerSecond = 0;
 
+  /// Frames the decode skipped because their whole display time had already
+  /// passed - see [_pumpDecode].
+  int _skipped = 0;
+
+  /// The most frames one pump skips before handing a late one to the
+  /// synchroniser anyway: a second of 25 fps video, decoded in ~10 ms.
+  static const int _maxSkipsPerPump = 25;
+
   @override
   void initState() {
     super.initState();
@@ -519,6 +527,7 @@ final class _VideoPlayerDemoState extends State<VideoPlayerDemo> {
       final Duration origin = first?.timestamp ?? Duration.zero;
       if (origin > const Duration(milliseconds: 100)) clock.seek(origin);
       _sync.reset();
+      _skipped = 0;
       setState(() {
         _decoder = decoder;
         _clock = clock;
@@ -676,7 +685,18 @@ final class _VideoPlayerDemoState extends State<VideoPlayerDemo> {
     if (decoder == null || _seeking || _loading || _resyncing) return;
     _resyncing = true;
     final int generation = _generation;
+    // A decode in flight would be reading while the reader is replaced. The
+    // tick does not start another while `_resyncing` holds; this one has to
+    // finish first, and what it brings back is from before the seek.
+    while (_decoding) {
+      await Future<void>.delayed(Duration.zero);
+    }
+    _discard(_pending);
+    _pending = null;
     try {
+      // The seek takes back every slot, the one on screen included; the
+      // renderer keeps showing the stream's last upload until the new frame
+      // replaces it (VideoFrame.isReadable).
       await decoder.seek(position);
       final VideoSample? sample = await decoder.readFrame();
       if (!mounted || generation != _generation) {
@@ -721,10 +741,18 @@ final class _VideoPlayerDemoState extends State<VideoPlayerDemo> {
   /// Never awaited by its caller: a tick that waited on a decode would hold up
   /// the frame it runs inside, which is the stall this rewrite exists to
   /// remove.
-  void _pumpDecode() {
+  ///
+  /// A frame that comes back already in the past - its whole display time
+  /// behind the clock - is skipped here and the next one read at once, up to
+  /// [_maxSkipsPerPump]. Leaving it to the tick would consume one frame per
+  /// window frame: when painting slows below the video's rate the picture
+  /// falls behind, the synchroniser's drop cap shows one late frame in three
+  /// (8 fps of 25), and the drift sits between the drop and the resync
+  /// thresholds for good.
+  void _pumpDecode({int skipped = 0}) {
     final VideoDecoder? decoder = _decoder;
     if (decoder == null || _decoding || _endOfStream) return;
-    if (_pending != null || _lookahead < 1) return;
+    if (_pending != null || _lookahead < 1 || _resyncing || _seeking) return;
     final int generation = _generation;
     _decoding = true;
     unawaited(decoder.readFrame().then((VideoSample? sample) {
@@ -737,6 +765,18 @@ final class _VideoPlayerDemoState extends State<VideoPlayerDemo> {
       }
       if (sample == null) {
         _endOfStream = true;
+        return;
+      }
+      final _MasterClock? clock = _clock;
+      if (_playing &&
+          !_resyncing &&
+          clock != null &&
+          skipped < _maxSkipsPerPump &&
+          sample.timestamp + sample.duration + _sync.dropThreshold <
+              clock.position) {
+        _discard(sample);
+        _skipped++;
+        _pumpDecode(skipped: skipped + 1);
         return;
       }
       _pending = sample;
@@ -772,7 +812,8 @@ final class _VideoPlayerDemoState extends State<VideoPlayerDemo> {
       'playback ${_presentedPerSecond.toStringAsFixed(1)} fps · '
       'clock ${_clock?.label} at ${_format(_clock?.position ?? Duration.zero)} '
       '· presented ${stats.presented} · dropped ${stats.dropped} · '
-      'waited ${stats.waited} · resynced ${stats.resynced} · '
+      'waited ${stats.waited} · skipped $_skipped · '
+      'resynced ${stats.resynced} · '
       'drift ${stats.recentAverageDrift.inMilliseconds}ms recent avg / '
       '${stats.recentMaxAbsoluteDrift.inMilliseconds}ms recent max / '
       '${stats.maxAbsoluteDrift.inMilliseconds}ms session max · '
@@ -1038,6 +1079,7 @@ final class _VideoPlayerDemoState extends State<VideoPlayerDemo> {
     return 'relógio: ${clock.label} · '
         '${_presentedPerSecond.toStringAsFixed(1)} fps · '
         'apresentados ${stats.presented} · descartados ${stats.dropped} · '
+        'pulados $_skipped · '
         'esperas ${stats.waited}$resyncs · '
         'drift ${stats.recentAverageDrift.inMilliseconds} ms '
         '(máx recente ${stats.recentMaxAbsoluteDrift.inMilliseconds} ms, '
