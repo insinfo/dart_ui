@@ -15,6 +15,7 @@ library;
 import 'package:dart_ui/dart_ui.dart';
 
 import 'editor_model.dart';
+import 'workspace.dart';
 
 /// Callbacks the window owns because they need the widget tree or the disk.
 class EditorServices {
@@ -418,12 +419,51 @@ class CommandCatalog {
         },
       );
 
-  EditorCommand get toggleDock => EditorCommand(
-        id: 'showDock',
-        label: 'Show panels',
-        checked: model.showDock,
-        onInvoke: model.toggleDock,
-      );
+  /// View > Theme: dark, light, or whatever the system uses.
+  List<EditorCommand> get themeCommands => <EditorCommand>[
+        for (final EditorThemeMode mode in EditorThemeMode.values)
+          EditorCommand(
+            id: 'theme.${mode.name}',
+            label: 'Theme: ${mode.label}',
+            checked: model.themeMode == mode,
+            onInvoke: () => model.setThemeMode(mode),
+          ),
+      ];
+
+  /// Window: every panel - shown docked, floating, or brought back - and
+  /// the default arrangement.
+  List<EditorCommand?> get windowCommands => <EditorCommand?>[
+        for (final String id in WorkspacePanels.all)
+          EditorCommand(
+            id: 'panel.$id',
+            label: model.workspace.isFloating(id)
+                ? '${WorkspacePanels.nameOf(id)} (dock again)'
+                : WorkspacePanels.nameOf(id),
+            icon: WorkspacePanels.iconOf(id),
+            checked:
+                model.workspace.isDocked(id) || model.workspace.isFloating(id),
+            shortcut: id == WorkspacePanels.objects
+                ? const KeyGesture(logicalKeyF7, command: true)
+                : null,
+            onInvoke: () {
+              if (model.workspace.isFloating(id)) {
+                model.workspace.dock(id);
+              } else {
+                model.workspace.show(id);
+              }
+              model.refresh('${WorkspacePanels.nameOf(id)} shown');
+            },
+          ),
+        null,
+        EditorCommand(
+          id: 'resetWorkspace',
+          label: 'Reset workspace',
+          onInvoke: () {
+            model.workspace.reset();
+            model.refresh('Workspace reset');
+          },
+        ),
+      ];
 
   EditorCommand get toggleGuides => EditorCommand(
         id: 'showGuides',
@@ -606,21 +646,12 @@ class CommandCatalog {
           null,
           toggleSnap,
           null,
-          toggleDock,
+          ...themeCommands,
         ]),
         EditorMenu(label: 'Layout', items: <EditorCommand?>[
           _todo('insertPage', 'Insert page...'),
           _todo('deletePage', 'Delete page...'),
           _todo('gotoPage', 'Go to page...'),
-          null,
-          EditorCommand(
-            id: 'layers',
-            label: 'Objects and layers',
-            shortcut: const KeyGesture(logicalKeyF7, command: true),
-            onInvoke: () {
-              if (!model.showDock) model.toggleDock();
-            },
-          ),
           null,
           _todo('pageFrame', 'Page frame'),
           _todo('guidesAround', 'Guides around page'),
@@ -674,6 +705,7 @@ class CommandCatalog {
           _todo('upperCase', 'Uppercase'),
           _todo('lowerCase', 'Lowercase'),
         ]),
+        EditorMenu(label: 'Window', items: windowCommands),
         EditorMenu(label: 'Help', items: <EditorCommand?>[
           EditorCommand(
             id: 'about',

@@ -18,7 +18,6 @@ import 'doc_tabs.dart';
 import 'editor_model.dart';
 import 'menu_bar.dart';
 import 'metrics.dart';
-import 'plugin_area.dart';
 import 'standard_toolbar.dart';
 import 'status_bar.dart';
 import 'toolbox.dart';
@@ -63,6 +62,13 @@ class MainWindowState extends State<MainWindow> {
         name: widget.initialName ?? 'Untitled 1',
       ),
     );
+    // "Follow the system" needs to know what the system is; asked once at
+    // start, and again whenever the user picks that mode.
+    unawaited(SystemInfo.isDarkMode().then((bool? dark) {
+      if (!mounted) return;
+      model.systemDark = dark;
+      model.refresh();
+    }).catchError((Object _) {}));
   }
 
   // -------------------------------------------------------------------------
@@ -367,7 +373,7 @@ class MainWindowState extends State<MainWindow> {
   Widget build(BuildContext context) {
     // A tab opened or switched to since the last frame is fitted once.
     _fitPending();
-    final theme = Theme.of(context);
+    final theme = model.theme;
     final catalog = CommandCatalog(model: model, services: _services);
     final menus = catalog.menus;
 
@@ -407,93 +413,128 @@ class MainWindowState extends State<MainWindow> {
       if (bindings[gesture] == null) bindings[gesture] = run;
     });
 
-    return CallbackShortcuts(
-      bindings: bindings,
-      child: ComboBoxScope(
-        child: ColoredBox(
-          color: theme.surface,
-          child: Stack(
-            children: <Widget>[
-              Positioned.fill(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: <Widget>[
-                    EditorMenuBar(
+    // The document area - its tabs and the canvas - is the fixed middle of
+    // the docking layout; the panels arrange themselves around it.
+    model.workspace.refresh(
+      model,
+      Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: <Widget>[
+          DocumentTabs(
+            documents: model.documents,
+            activeIndex: model.activeIndex,
+            onSelected: model.selectDocument,
+            onClosed: (int index) => unawaited(_closeDocument(index)),
+          ),
+          Expanded(
+            child: CanvasArea(
+              model: model,
+              onViewportResized: _onViewportResized,
+            ),
+          ),
+        ],
+      ),
+    );
+
+    return Theme(
+      data: theme,
+      child: CallbackShortcuts(
+        bindings: bindings,
+        child: ComboBoxScope(
+          child: ColoredBox(
+            color: theme.surface,
+            child: Stack(
+              children: <Widget>[
+                Positioned.fill(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: <Widget>[
+                      EditorMenuBar(
+                        menus: menus,
+                        openIndex: model.openMenu,
+                        onOpen: (int index) {
+                          model.openMenu = index;
+                          model.refresh();
+                        },
+                      ),
+                      StandardToolbar(commands: catalog.standardToolbar),
+                      ContextPanel(model: model),
+                      Expanded(
+                        child: Row(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: <Widget>[
+                            Toolbox(
+                              activeTool: model.tool,
+                              fill: model.shownFill,
+                              stroke: model.shownStroke,
+                              onToolSelected: selectTool,
+                              // Double-clicking the pick tool selects everything,
+                              // which is what CorelDRAW and sK1 both do. Only the
+                              // pick tool: a second click on "create rectangle"
+                              // means nothing, and making it mean Select All would
+                              // be a surprise rather than a shortcut.
+                              onToolDoubleTapped: (ToolMode tool) {
+                                if (tool != ToolMode.select) return;
+                                model.selectAll();
+                              },
+                            ),
+                            Expanded(
+                              child: Docking(
+                                layout: model.workspace.layout,
+                                maximizableItem: false,
+                                maximizableTab: false,
+                                onItemFloat: (DockingItem item, Offset at) =>
+                                    unawaited(model.workspace
+                                        .float(
+                                          item,
+                                          at: at,
+                                          window: WindowScope.of(context),
+                                          theme: model.theme,
+                                          model: model,
+                                        )
+                                        .then((_) => model.refresh(
+                                            '${item.name} in its own window'))),
+                                onItemClose: (DockingItem item) =>
+                                    model.refresh('${item.name} closed - '
+                                        'Window menu brings it back'),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      ColorPaletteBar(
+                        swatchSize: ChromeMetrics.paletteSwatchSize,
+                        height: ChromeMetrics.paletteHeight,
+                        // Which cell the selection is already wearing, so the
+                        // palette answers "what colour is this?" as well as
+                        // "make it that colour".
+                        selectedFill: model.shownFill.isNone
+                            ? null
+                            : model.shownFill.color,
+                        selectedStroke: model.shownStroke.isNone ||
+                                model.shownStroke.width <= 0
+                            ? null
+                            : model.shownStroke.color,
+                        onColorSelected: model.setFill,
+                        onStrokeColorSelected: model.setStroke,
+                      ),
+                      EditorStatusBar(model: model),
+                    ],
+                  ),
+                ),
+                if (model.openMenu >= 0)
+                  Positioned.fill(
+                    child: EditorMenuOverlay(
                       menus: menus,
                       openIndex: model.openMenu,
-                      onOpen: (int index) {
-                        model.openMenu = index;
+                      onDismiss: () {
+                        model.openMenu = -1;
                         model.refresh();
                       },
                     ),
-                    StandardToolbar(commands: catalog.standardToolbar),
-                    ContextPanel(model: model),
-                    DocumentTabs(
-                      documents: model.documents,
-                      activeIndex: model.activeIndex,
-                      onSelected: model.selectDocument,
-                      onClosed: (int index) => unawaited(_closeDocument(index)),
-                    ),
-                    Expanded(
-                      child: Row(
-                        crossAxisAlignment: CrossAxisAlignment.stretch,
-                        children: <Widget>[
-                          Toolbox(
-                            activeTool: model.tool,
-                            fill: model.shownFill,
-                            stroke: model.shownStroke,
-                            onToolSelected: selectTool,
-                            // Double-clicking the pick tool selects everything,
-                            // which is what CorelDRAW and sK1 both do. Only the
-                            // pick tool: a second click on "create rectangle"
-                            // means nothing, and making it mean Select All would
-                            // be a surprise rather than a shortcut.
-                            onToolDoubleTapped: (ToolMode tool) {
-                              if (tool != ToolMode.select) return;
-                              model.selectAll();
-                            },
-                          ),
-                          Expanded(
-                            child: CanvasArea(
-                              model: model,
-                              onViewportResized: _onViewportResized,
-                            ),
-                          ),
-                          PluginArea(model: model),
-                        ],
-                      ),
-                    ),
-                    ColorPaletteBar(
-                      swatchSize: ChromeMetrics.paletteSwatchSize,
-                      height: ChromeMetrics.paletteHeight,
-                      // Which cell the selection is already wearing, so the
-                      // palette answers "what colour is this?" as well as
-                      // "make it that colour".
-                      selectedFill:
-                          model.shownFill.isNone ? null : model.shownFill.color,
-                      selectedStroke: model.shownStroke.isNone ||
-                              model.shownStroke.width <= 0
-                          ? null
-                          : model.shownStroke.color,
-                      onColorSelected: model.setFill,
-                      onStrokeColorSelected: model.setStroke,
-                    ),
-                    EditorStatusBar(model: model),
-                  ],
-                ),
-              ),
-              if (model.openMenu >= 0)
-                Positioned.fill(
-                  child: EditorMenuOverlay(
-                    menus: menus,
-                    openIndex: model.openMenu,
-                    onDismiss: () {
-                      model.openMenu = -1;
-                      model.refresh();
-                    },
                   ),
-                ),
-            ],
+              ],
+            ),
           ),
         ),
       ),

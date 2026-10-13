@@ -27,10 +27,10 @@ import '../../examples/vector_editor_demo/main_window.dart';
 import '../../examples/vector_editor_demo/menu_bar.dart';
 import '../../examples/vector_editor_demo/metrics.dart';
 import '../../examples/vector_editor_demo/objects_panel.dart';
-import '../../examples/vector_editor_demo/plugin_area.dart';
 import '../../examples/vector_editor_demo/standard_toolbar.dart';
 import '../../examples/vector_editor_demo/status_bar.dart';
 import '../../examples/vector_editor_demo/toolbox.dart';
+import '../../examples/vector_editor_demo/workspace.dart';
 
 const Size kWindowSize = Size(1400, 880);
 
@@ -62,7 +62,6 @@ void main() {
         DocumentTabs: (box) => box,
         Toolbox: (box) => box,
         CanvasArea: (box) => box,
-        PluginArea: (box) => box,
         ColorPaletteBar: (box) => box,
         EditorStatusBar: (box) => box,
       };
@@ -246,6 +245,7 @@ void main() {
           'Paths',
           'Bitmaps',
           'Text',
+          'Window',
           'Help',
         ],
       );
@@ -398,28 +398,51 @@ void main() {
     });
   });
 
-  group('the dock holds Properties and Objects', () {
-    test('both are on screen, with the layers of the page', () {
+  group('the workspace docks its panels around the document', () {
+    test('Properties and Objects are docked beside the document', () {
       final harness = _Harness();
       harness.frame();
-      expect(harness.sizeOf(PluginArea)!.width, ChromeMetrics.pluginPanelWidth);
+      final workspace = harness.model.workspace;
+      expect(workspace.layout.hierarchy(nameInfo: true),
+          'R(IDocument,C(T(ITransform,IAlign,IFill & Outline),IObjects))');
       expect(harness.sizeOf(ObjectsPanel), isNotNull);
-      expect(harness.model.active.layers, isNotEmpty);
       harness.dispose();
     });
 
-    test('hiding the dock gives its width back to the canvas', () {
+    test('closing a panel gives its room to the canvas; Window brings it back',
+        () {
       final harness = _Harness();
       harness.frame();
-      final expanded =
+      final before =
           harness.rendersOfType<RenderVectorCanvas>().single.size.width;
-
-      harness.model.toggleDock();
+      final workspace = harness.model.workspace;
+      workspace.layout.removeItem(
+          item: workspace.layout.findDockingItem(WorkspacePanels.objects)!);
+      workspace.layout.removeItem(
+          item: workspace.layout.findDockingItem(WorkspacePanels.transform)!);
+      workspace.layout.removeItem(
+          item: workspace.layout.findDockingItem(WorkspacePanels.align)!);
+      workspace.layout.removeItem(
+          item: workspace.layout.findDockingItem(WorkspacePanels.fillStroke)!);
       harness.frame();
-
-      final collapsed =
+      final after =
           harness.rendersOfType<RenderVectorCanvas>().single.size.width;
-      expect(collapsed - expanded, ChromeMetrics.pluginPanelWidth);
+      expect(after, greaterThan(before));
+      harness.model.showPanelTab(WorkspacePanels.objects);
+      harness.frame();
+      expect(workspace.isDocked(WorkspacePanels.objects), isTrue);
+      workspace.reset();
+      expect(workspace.layout.hierarchy(nameInfo: true),
+          'R(IDocument,C(T(ITransform,IAlign,IFill & Outline),IObjects))');
+      harness.dispose();
+    });
+
+    test('the theme follows the View menu', () {
+      final harness = _Harness();
+      harness.model.setThemeMode(EditorThemeMode.light);
+      expect(harness.model.theme, same(ThemeData.studioLight));
+      harness.model.setThemeMode(EditorThemeMode.dark);
+      expect(harness.model.theme, same(ThemeData.studioDark));
       harness.dispose();
     });
 

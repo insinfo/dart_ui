@@ -9,6 +9,7 @@ import 'package:dart_ui/dart_ui.dart';
 
 import 'document_api.dart';
 import 'metrics.dart';
+import 'workspace.dart';
 
 /// One open document, with its own history, selection and viewport.
 ///
@@ -130,12 +131,47 @@ enum HorizontalAlign { left, centre, right }
 /// Vertical alignment targets.
 enum VerticalAlign { top, middle, bottom }
 
+/// Which look the editor wears.
+enum EditorThemeMode {
+  system('Follow the system'),
+  dark('Dark'),
+  light('Light');
+
+  const EditorThemeMode(this.label);
+
+  final String label;
+}
+
 /// The whole editor, minus the widgets.
 class EditorModel {
   EditorModel({required this.onChanged});
 
   /// Called whenever anything a widget shows has changed.
   final void Function() onChanged;
+
+  /// Bumped on every change, for widgets outside the main window's tree -
+  /// a panel floating in its own window - to rebuild with it.
+  final ValueNotifier<int> revision = ValueNotifier<int>(0);
+
+  /// The panels and where they are.
+  final EditorWorkspace workspace = EditorWorkspace();
+
+  EditorThemeMode themeMode = EditorThemeMode.system;
+
+  /// What the system said last time it was asked; null when it did not say.
+  bool? systemDark;
+
+  ThemeData get theme => switch (themeMode) {
+        EditorThemeMode.dark => ThemeData.studioDark,
+        EditorThemeMode.light => ThemeData.studioLight,
+        EditorThemeMode.system =>
+          systemDark == false ? ThemeData.studioLight : ThemeData.studioDark,
+      };
+
+  void setThemeMode(EditorThemeMode mode) {
+    themeMode = mode;
+    refresh('Theme: ${mode.label}');
+  }
 
   final List<DocumentSession> documents = <DocumentSession>[];
   int activeIndex = 0;
@@ -165,9 +201,6 @@ class EditorModel {
 
   /// The Properties tab on show.
   String? activePanel = PanelIds.transform;
-
-  /// Whether the right-hand dock is on screen.
-  bool showDock = true;
 
   TransformMode transformMode = TransformMode.position;
   AlignReference alignReference = AlignReference.page;
@@ -205,13 +238,18 @@ class EditorModel {
   void touch([String? message]) {
     if (hasDocument) active.modified = true;
     if (message != null) status = message;
-    onChanged();
+    _changed();
   }
 
   /// Rebuilds without claiming the document changed.
   void refresh([String? message]) {
     if (message != null) status = message;
+    _changed();
+  }
+
+  void _changed() {
     onChanged();
+    revision.value = revision.value + 1;
   }
 
   // -------------------------------------------------------------------------
@@ -939,17 +977,11 @@ class EditorModel {
   // Panels
   // -------------------------------------------------------------------------
 
-  /// Shows panel [id] in the Properties dock, opening the dock if hidden.
+  /// Shows panel [id], wherever it is - its tab, its window, or docked back.
   void showPanelTab(String id) {
     activePanel = id;
-    showDock = true;
+    workspace.show(id);
     refresh('${PanelIds.names[id]} shown');
-  }
-
-  /// Hides or shows the whole right-hand dock.
-  void toggleDock() {
-    showDock = !showDock;
-    refresh(showDock ? 'Panels shown' : 'Panels hidden');
   }
 
   // Small local trig, so the model does not pull in dart:math for two calls
