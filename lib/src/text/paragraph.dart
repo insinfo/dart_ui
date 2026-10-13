@@ -126,6 +126,25 @@
 ///    taller the moment someone types an emoji into it. A face whose glyphs
 ///    are taller than the span's line box therefore paints a little past it,
 ///    which is what every browser does with `line-height` set.
+///
+/// ## Placeholders
+///
+/// A span made with [TextSpan.placeholder] is a box the paragraph makes room
+/// for and does not draw - the widget layer puts a widget there, which is how
+/// an icon or a button sits inside a sentence. It is one U+FFFC (OBJECT
+/// REPLACEMENT CHARACTER) in [Paragraph.text], as in Flutter, so every offset
+/// stays an offset into a real string: a caret steps over the box in one
+/// move, a selection across it covers it, and copying gives the character
+/// that Unicode set aside for exactly this.
+///
+/// The character does the rest of the work. UAX #14 gives it class CB, which
+/// breaks on both sides (LB20), so the box wraps to the next line whole and
+/// never drags the word before it along; UAX #9 gives it class ON, so it takes
+/// the direction of the text around it and lands where a reader of that text
+/// expects. It is never shaped and never sent to font fallback - its run is
+/// the box's width and nothing else - and its height enters the line box
+/// through [PlaceholderAlignment], so a tall box makes its line taller.
+/// [Paragraph.placeholderBoxes] reports where each box ended up.
 library;
 
 import 'dart:math' as math;
@@ -410,21 +429,150 @@ typedef ParagraphTextStyle = TextStyle;
 /// caller nominated: mixed sizes on one line is the requirement that forces the
 /// paragraph to carry per-span metrics rather than one global one.
 final class TextSpan {
-  const TextSpan(this.text, this.style);
+  const TextSpan(this.text, this.style) : placeholder = null;
+
+  /// A box of [placeholder]'s size in the line instead of text - see the
+  /// library comment's "Placeholders".
+  ///
+  /// Its text is one [placeholderCodeUnit]. [style] is read for one thing:
+  /// its face's ascent and descent, which [PlaceholderAlignment.top],
+  /// [PlaceholderAlignment.bottom] and [PlaceholderAlignment.middle] align
+  /// to. Its colours and decorations are not drawn over the box - an
+  /// underline running through a button is not what the underlined sentence
+  /// asked for.
+  const TextSpan.placeholder(PlaceholderDimensions this.placeholder, this.style)
+      : text = '\uFFFC';
+
+  /// The character a placeholder stands as in the text, U+FFFC - the value
+  /// Flutter's `PlaceholderSpan.placeholderCodeUnit` names.
+  static const int placeholderCodeUnit = 0xFFFC;
 
   final String text;
   final TextStyle style;
 
+  /// The box this span stands for, or null for text.
+  final PlaceholderDimensions? placeholder;
+
   @override
   bool operator ==(Object other) =>
       identical(this, other) ||
-      other is TextSpan && other.text == text && other.style == style;
+      other is TextSpan &&
+          other.text == text &&
+          other.style == style &&
+          other.placeholder == placeholder;
 
   @override
-  int get hashCode => Object.hash(text, style);
+  int get hashCode => placeholder == null
+      ? Object.hash(text, style)
+      : Object.hash(text, style, placeholder);
 
   @override
-  String toString() => 'TextSpan(${text.length} units, $style)';
+  String toString() => placeholder == null
+      ? 'TextSpan(${text.length} units, $style)'
+      : 'TextSpan.placeholder($placeholder)';
+}
+
+/// Where a placeholder sits on its line, vertically - Flutter's
+/// `PlaceholderAlignment`, member for member and with Flutter's meaning.
+///
+/// A placeholder has no glyphs and so no baseline of its own; this is the
+/// rule that gives it one. Each member fixes how far the box reaches above
+/// the line's baseline and how far below, and those two numbers enter the
+/// line box as a run's ascent and descent would - which is how a 40 pixel
+/// tall image makes its line 40 pixels tall without a separate rule for it.
+enum PlaceholderAlignment {
+  /// The box's own baseline - [PlaceholderDimensions.baselineOffset] below
+  /// its top - on the line's baseline. For a widget with text in it, so its
+  /// text and the sentence's share a line.
+  baseline,
+
+  /// The box's bottom on the baseline: it stands on the line the letters
+  /// stand on, and its descent is zero.
+  aboveBaseline,
+
+  /// The box's top on the baseline: it hangs below the letters.
+  belowBaseline,
+
+  /// The box's top at the top of the text - the ascent of the span's face.
+  /// A box taller than the text grows downwards, past the descent.
+  top,
+
+  /// The box's bottom at the bottom of the text - the descent of the span's
+  /// face. A taller box grows upwards. Flutter's default for `WidgetSpan`,
+  /// and this one's.
+  bottom,
+
+  /// The box's centre at the centre of the text, half-way between the
+  /// face's ascent and descent. A taller box grows equally both ways.
+  middle,
+}
+
+/// The size of a placeholder and how it sits on its line - Flutter's
+/// `PlaceholderDimensions`.
+///
+/// Value equality, because it is part of a span and so part of the paragraph
+/// cache key: a widget that keeps its size lays the paragraph out from the
+/// cache.
+final class PlaceholderDimensions {
+  const PlaceholderDimensions({
+    required this.size,
+    this.alignment = PlaceholderAlignment.bottom,
+    this.baselineOffset,
+  });
+
+  /// The box's width - its advance on the line - and height.
+  final Size size;
+
+  final PlaceholderAlignment alignment;
+
+  /// For [PlaceholderAlignment.baseline]: the distance from the box's top to
+  /// its own baseline. Null there means the box's bottom, which is what a
+  /// box with no text in it reports as its baseline. Ignored by the other
+  /// alignments.
+  final double? baselineOffset;
+
+  /// How far the box reaches above the baseline and how far below it, on a
+  /// line of text set in [font].
+  ///
+  /// Either may be negative - a short box aligned to the top of a tall face
+  /// ends above the baseline - and the line box takes the larger of each
+  /// with its text's, so a negative one simply adds nothing.
+  ({double ascent, double descent}) extentIn(ScaledTypeface font) {
+    final double height = size.height;
+    switch (alignment) {
+      case PlaceholderAlignment.baseline:
+        final double above = baselineOffset ?? height;
+        return (ascent: above, descent: height - above);
+      case PlaceholderAlignment.aboveBaseline:
+        return (ascent: height, descent: 0);
+      case PlaceholderAlignment.belowBaseline:
+        return (ascent: 0, descent: height);
+      case PlaceholderAlignment.top:
+        return (ascent: font.ascent, descent: height - font.ascent);
+      case PlaceholderAlignment.bottom:
+        return (ascent: height - font.descent, descent: font.descent);
+      case PlaceholderAlignment.middle:
+        // The text's centre, measured up from the baseline.
+        final double centre = (font.ascent - font.descent) / 2;
+        return (ascent: height / 2 + centre, descent: height / 2 - centre);
+    }
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      other is PlaceholderDimensions &&
+          other.size == size &&
+          other.alignment == alignment &&
+          other.baselineOffset == baselineOffset;
+
+  @override
+  int get hashCode => Object.hash(size, alignment, baselineOffset);
+
+  @override
+  String toString() => 'PlaceholderDimensions(${size.width}x${size.height}, '
+      '${alignment.name}'
+      '${baselineOffset == null ? '' : ', baseline $baselineOffset'})';
 }
 
 /// Unambiguous public name for a paragraph span.
@@ -566,6 +714,7 @@ final class GlyphSpan {
     required this.style,
     required this.isEllipsis,
     required Float64List edges,
+    this.isPlaceholder = false,
   }) : _edges = edges;
 
   /// The positioned glyphs, origin at (`left`, the line's baseline).
@@ -594,6 +743,12 @@ final class GlyphSpan {
   /// Selection and hit testing skip it: it stands for text that was removed, so
   /// there is no offset it could honestly report.
   final bool isEllipsis;
+
+  /// Whether this span is a placeholder's box rather than text: no glyphs,
+  /// one source offset, and nothing for the painter to draw - not even the
+  /// style's background or underline, which belong to the text around it.
+  /// Carets and selection treat it as the one character it is.
+  final bool isPlaceholder;
 
   /// Prefix advances from the span's *logical* start, one per source offset
   /// plus one for the end.
@@ -731,6 +886,7 @@ final class Paragraph {
     required this.height,
     required this.longestLine,
     required this.didExceedMaxLines,
+    required this.placeholderBoxes,
   });
 
   /// Lays out [spans] into at most [maxWidth] pixels per line.
@@ -808,6 +964,22 @@ final class Paragraph {
 
   /// Whether [ParagraphStyle.maxLines] removed anything.
   final bool didExceedMaxLines;
+
+  /// Where each placeholder was laid out, in paragraph coordinates - what
+  /// Flutter's `Paragraph.getBoxesForPlaceholders` returns.
+  ///
+  /// One box per [TextSpan.placeholder] span, in the order the spans were
+  /// given, which is the order a caller with one widget per placeholder
+  /// keeps its widgets in. The rectangle is the box's full size, placed
+  /// where the line put it: its x is visual, after bidi reordering and
+  /// alignment, and its y follows its [PlaceholderAlignment] on its line's
+  /// baseline. The direction is that of the text around it.
+  ///
+  /// Shorter than the number of placeholders when [ParagraphStyle.maxLines]
+  /// or an ellipsis cut some off: those were not laid out and have no box.
+  /// The cut always removes the end of the text, so the boxes there are are
+  /// always those of the first placeholders.
+  final List<TextBox> placeholderBoxes;
 
   /// Whether any span has a colour, a background or a decoration of its own.
   ///
@@ -1166,6 +1338,9 @@ enum _RunKind {
   /// A mandatory-break character. Occupies no width and draws nothing: a
   /// newline shaped through `cmap` would otherwise come out as `.notdef`.
   control,
+
+  /// A placeholder's U+FFFC: as wide as its box, drawn by someone else.
+  placeholder,
 }
 
 const int _tab = 0x09;
@@ -1213,11 +1388,15 @@ final class _ShapedRun {
     required this.glyphCount,
     required this.width,
     required this.prefix,
+    this.placeholder,
   });
 
   final int start;
   final int end;
   final int level;
+
+  /// The box, for a [_RunKind.placeholder] run.
+  final PlaceholderDimensions? placeholder;
 
   /// The span's style: what the line box is measured from.
   final TextStyle style;
@@ -1277,6 +1456,35 @@ final class _ParagraphBuilder {
   late final BidiParagraph _bidi;
   late final List<_ShapedRun> _runs;
   late final double _tabStop;
+
+  /// The placeholders, by the offset of their U+FFFC. Empty - and never
+  /// consulted past an `isEmpty` - for the paragraphs that have none, which
+  /// is nearly all of them.
+  late final Map<int, PlaceholderDimensions> _placeholders =
+      _findPlaceholders();
+
+  /// Each placeholder's box once its line is built, by placeholder index -
+  /// the order of [_placeholders]' offsets, which is the spans' order.
+  late final List<TextBox?> _placeholderBoxes =
+      List<TextBox?>.filled(_placeholders.length, null);
+
+  /// Each placeholder's index - its place among the placeholders - by the
+  /// offset of its U+FFFC.
+  late final Map<int, int> _placeholderIndex = <int, int>{
+    for (final (int index, int offset) in _placeholders.keys.indexed)
+      offset: index,
+  };
+
+  Map<int, PlaceholderDimensions> _findPlaceholders() {
+    Map<int, PlaceholderDimensions>? found;
+    int offset = 0;
+    for (final TextSpan span in spans) {
+      final PlaceholderDimensions? box = span.placeholder;
+      if (box != null) (found ??= <int, PlaceholderDimensions>{})[offset] = box;
+      offset += span.text.length;
+    }
+    return found ?? const <int, PlaceholderDimensions>{};
+  }
 
   TextStyle get _defaultStyle => spans.first.style;
 
@@ -1347,6 +1555,12 @@ final class _ParagraphBuilder {
       height: top,
       longestLine: widest,
       didExceedMaxLines: exceeded,
+      placeholderBoxes: _placeholders.isEmpty
+          ? const <TextBox>[]
+          : List<TextBox>.unmodifiable(<TextBox>[
+              for (final TextBox? box in _placeholderBoxes)
+                if (box != null) box,
+            ]),
     );
   }
 
@@ -1430,6 +1644,29 @@ final class _ParagraphBuilder {
     if (kind != _RunKind.glyphs) {
       return _emptyRun(start, end, level, runStyle, kind);
     }
+    final PlaceholderDimensions? box =
+        _placeholders.isEmpty ? null : _placeholders[start];
+    if (box != null) {
+      // Never shaped: the box is the run. Its prefix has the one offset's
+      // advance, so the caret, the selection and line breaking measure it
+      // with the same arithmetic as a letter.
+      final double width = box.size.width;
+      return _ShapedRun(
+        start: start,
+        end: end,
+        level: level,
+        style: runStyle,
+        font: runStyle.font,
+        kind: _RunKind.placeholder,
+        glyphIds: _noGlyphs,
+        positions: _noPositions,
+        clusters: _noGlyphs,
+        glyphCount: 0,
+        width: width,
+        prefix: Float64List.fromList(<double>[0, width]),
+        placeholder: box,
+      );
+    }
 
     final Typeface? substitute = _fallbackFaces?[start];
     final ScaledTypeface font = substitute == null
@@ -1488,6 +1725,10 @@ final class _ParagraphBuilder {
     int index = 0;
     while (index < text.length) {
       final int rune = _runeAt(index);
+      if (_isPlaceholderAt(index)) {
+        index++;
+        continue;
+      }
       if (rune == 0xFE0F ||
           (!isDefaultIgnorable(rune) &&
               rune >= 0x20 &&
@@ -1505,6 +1746,9 @@ final class _ParagraphBuilder {
     for (int c = 1; c < marks.length; c++) {
       final int start = marks[c - 1];
       final int end = marks[c];
+      // A placeholder is its own cluster - U+FFFC is - and has no glyph to
+      // find a face for.
+      if (_isPlaceholderAt(start)) continue;
       final Typeface primary = _styleAt(start).font.typeface;
       int base = -1;
       bool emoji = false;
@@ -1535,6 +1779,10 @@ final class _ParagraphBuilder {
     }
     return any ? faces : null;
   }
+
+  /// Whether [index] is a placeholder's U+FFFC rather than a character.
+  bool _isPlaceholderAt(int index) =>
+      _placeholders.isNotEmpty && _placeholders.containsKey(index);
 
   /// The code point starting at UTF-16 [index].
   int _runeAt(int index) {
@@ -1835,6 +2083,7 @@ final class _ParagraphBuilder {
         case _RunKind.softHyphen:
           break;
         case _RunKind.glyphs:
+        case _RunKind.placeholder:
           x += run.prefix[b - run.start] - run.prefix[a - run.start];
       }
     }
@@ -2086,6 +2335,7 @@ final class _ParagraphBuilder {
               : 0;
         case _RunKind.control:
         case _RunKind.glyphs:
+        case _RunKind.placeholder:
           width = run.prefix[b - run.start] - run.prefix[a - run.start];
       }
       drafts.add(_Draft(run, a, b, width));
@@ -2146,6 +2396,16 @@ final class _ParagraphBuilder {
     double gap = 0;
     for (final _Draft draft in drafts) {
       final ScaledTypeface font = draft.style.font;
+      final PlaceholderDimensions? box = draft.run?.placeholder;
+      if (box != null) {
+        // The box's own reach above and below the baseline, and no line
+        // gap: a gap is the face's request for air between lines of its
+        // text, and a box is not text in that face.
+        final ({double ascent, double descent}) extent = box.extentIn(font);
+        ascent = math.max(ascent, extent.ascent);
+        descent = math.max(descent, extent.descent);
+        continue;
+      }
       ascent = math.max(ascent, font.ascent);
       descent = math.max(descent, font.descent);
       gap = math.max(gap, font.lineGap);
@@ -2176,6 +2436,22 @@ final class _ParagraphBuilder {
     // The multiplier's extra is split above and below rather than dropped below
     // the baseline, so raising it keeps text centred in its line box.
     final double leading = (height - natural) / 2;
+    final double baseline = top + leading + ascent;
+
+    // The boxes, now that the line has an x for each span and a baseline.
+    if (_placeholders.isNotEmpty) {
+      for (final GlyphSpan span in ordered) {
+        if (!span.isPlaceholder) continue;
+        final PlaceholderDimensions box = _placeholders[span.start]!;
+        final ({double ascent, double descent}) extent =
+            box.extentIn(span.style.font);
+        final double boxTop = baseline - extent.ascent;
+        _placeholderBoxes[_placeholderIndex[span.start]!] = TextBox(
+          Rect.fromLTWH(span.left, boxTop, span.width, box.size.height),
+          span.direction,
+        );
+      }
+    }
 
     return TextLine._(
       lineNumber: index,
@@ -2189,7 +2465,7 @@ final class _ParagraphBuilder {
       ascent: ascent,
       descent: descent,
       height: height,
-      baseline: top + leading + ascent,
+      baseline: baseline,
       spans: List<GlyphSpan>.unmodifiable(ordered),
       trailingAdvances: trailingAdvances,
     );
@@ -2298,8 +2574,8 @@ final class _Draft {
     final double leftEdge = source.isRightToLeft ? source.width - b : a;
 
     if (source.kind != _RunKind.glyphs) {
-      // A tab, or a soft hyphen that the break landed on. Neither has glyphs
-      // from the run itself; the hyphen borrows one from the face.
+      // A tab, a placeholder, or a soft hyphen that the break landed on. None
+      // has glyphs from the run itself; the hyphen borrows one from the face.
       final bool drawsHyphen = source.kind == _RunKind.softHyphen && width > 0;
       final _HyphenGlyph glyph = drawsHyphen
           ? _HyphenGlyph(
@@ -2339,6 +2615,7 @@ final class _Draft {
         style: style,
         isEllipsis: false,
         edges: edges,
+        isPlaceholder: source.kind == _RunKind.placeholder,
       );
     }
 

@@ -1,5 +1,7 @@
 library;
 
+import 'dart:math' as math;
+
 import '../geometry/offset.dart';
 import '../geometry/rect.dart';
 import '../geometry/size.dart';
@@ -551,7 +553,11 @@ final class DefaultTextStyle extends InheritedWidget {
 /// slant stays on the single shaped run every control label uses. Letter or
 /// word spacing, a background or a decoration moves it to the paragraph
 /// engine, which carries them per span; `Text.rich` always uses it.
-final class Text extends RenderObjectWidget {
+///
+/// A multi-child widget because a [WidgetSpan] puts a widget in the text:
+/// its [children] are those widgets, in text order, and a `Text` with none -
+/// every plain one - has none, so its render node is the leaf it always was.
+final class Text extends MultiChildRenderObjectWidget {
   const Text(
     String this._data, {
     super.key,
@@ -596,8 +602,19 @@ final class Text extends RenderObjectWidget {
   /// The rich content, or null for a plain `Text`.
   final InlineSpan? textSpan;
 
-  /// What is drawn, as plain text: the string, or the spans' text joined.
+  /// What is drawn, as plain text: the string, or the spans' text joined -
+  /// one U+FFFC for each [WidgetSpan], as Flutter's `toPlainText` gives.
   String get text => _data ?? textSpan!.toPlainText();
+
+  /// The widgets of [textSpan]'s [WidgetSpan]s, in text order; none for a
+  /// plain `Text`.
+  @override
+  List<Widget> get children {
+    final InlineSpan? span = textSpan;
+    return span == null
+        ? const <Widget>[]
+        : WidgetSpan.extractFromInlineSpan(span);
+  }
 
   /// Flutter-compatible style surface. Explicit legacy fields below win.
   final TextStyle? style;
@@ -628,9 +645,6 @@ final class Text extends RenderObjectWidget {
   /// Whether a word too wide for the line is cut between characters - a
   /// file name with no space in it, under an icon.
   final bool breakWords;
-
-  @override
-  RenderObjectElement createElement() => RenderObjectElement(this);
 
   @override
   RenderText createRenderObject(BuildContext context) {
@@ -713,7 +727,10 @@ final class Text extends RenderObjectWidget {
 /// inherits, and is usually what an application wants.
 ///
 /// Unlike [Text], it wraps by default ([softWrap] true), as in Flutter.
-final class RichText extends RenderObjectWidget {
+///
+/// Its [children] are the widgets of [text]'s [WidgetSpan]s, as for
+/// [Text.rich].
+final class RichText extends MultiChildRenderObjectWidget {
   const RichText({
     super.key,
     required this.text,
@@ -746,8 +763,9 @@ final class RichText extends RenderObjectWidget {
           ? '\u2026'
           : null;
 
+  /// The widgets of [text]'s [WidgetSpan]s, in text order.
   @override
-  RenderObjectElement createElement() => RenderObjectElement(this);
+  List<Widget> get children => WidgetSpan.extractFromInlineSpan(text);
 
   @override
   RenderText createRenderObject(BuildContext context) => RenderText(
@@ -797,7 +815,22 @@ final class RichText extends RenderObjectWidget {
 /// A leaf whose span has a recognizer makes the text hit-testable over that
 /// leaf's glyphs - and only there, so a click on plain text still reaches
 /// whatever is behind it - and hands the press to the recognizer.
-final class RenderText extends RenderBox
+///
+/// ## Widgets in the text
+///
+/// A container, for one reason: each [WidgetSpan] in [span] is a child, in
+/// text order. Layout lays every child out first, under the text's maximum
+/// width and no height limit; gives the paragraph a placeholder of each
+/// child's size, aligned as its span asks; and then moves each child to the
+/// box the paragraph placed it in. Children paint after the text, inside the
+/// same clip, and are hit-tested before it, so a button in a sentence takes
+/// its own clicks. A child whose box was cut off by [maxLines] is laid out -
+/// its size decided where the cut fell - but neither painted nor hit.
+///
+/// Text without a [WidgetSpan] has no children, and every one of those steps
+/// is skipped: such a node lays out, paints and hit-tests exactly as it did
+/// when it was a leaf.
+final class RenderText extends RenderBoxContainer<BoxParentData>
     implements PointerEventTarget, MouseCursorTarget {
   RenderText(
     String text, {
@@ -880,8 +913,12 @@ final class RenderText extends RenderBox
   void _textChanged() {
     _paragraph = null;
     _spans = null;
-    // Links are rebuilt with the spans; plain text has none to rebuild.
-    if (_span == null) _links = const [];
+    // Links and placeholders are rebuilt with the spans; plain text has none
+    // to rebuild.
+    if (_span == null) {
+      _links = const [];
+      _placeholders = const <_Placeholder>[];
+    }
     markNeedsLayout();
   }
 
@@ -1225,6 +1262,15 @@ final class RenderText extends RenderBox
   List<({int start, int end, GestureRecognizer recognizer})> _links =
       const <({int start, int end, GestureRecognizer recognizer})>[];
 
+  /// One per [WidgetSpan] in [span], in text order - which is the order of
+  /// the children and of the paragraph's placeholder boxes. Found by the
+  /// same flattening that finds [_links].
+  List<_Placeholder> _placeholders = const <_Placeholder>[];
+
+  /// How many children the last layout placed in a box. The rest were cut
+  /// off with the text around them, and are neither painted nor hit.
+  int _placedChildCount = 0;
+
   /// Recognizers this node handed a press to and that may still be
   /// following it.
   ///
@@ -1250,6 +1296,7 @@ final class RenderText extends RenderBox
     );
     final List<paragraph.TextSpan> spans = <paragraph.TextSpan>[];
     final links = <({int start, int end, GestureRecognizer recognizer})>[];
+    final List<_Placeholder> placeholders = <_Placeholder>[];
     final InlineSpan? root = _span;
     if (root == null) {
       spans.add(paragraph.TextSpan(_text, base));
@@ -1287,6 +1334,27 @@ final class RenderText extends RenderBox
                 visit(child, style);
               }
             }
+          case WidgetSpan(
+              :final paragraph.PlaceholderAlignment alignment,
+              :final TextBaseline? baseline,
+            ):
+            // A zero box for now: its size is the child's, known only once
+            // layout has laid the child out - see [_withBoxes].
+            final paragraph.TextStyle resolved =
+                _resolve(style, face, base, faces);
+            placeholders.add(_Placeholder(
+              spans.length,
+              alignment,
+              baseline ?? TextBaseline.alphabetic,
+            ));
+            spans.add(paragraph.TextSpan.placeholder(
+              paragraph.PlaceholderDimensions(
+                size: Size.zero,
+                alignment: alignment,
+              ),
+              resolved,
+            ));
+            offset += 1;
         }
       }
 
@@ -1296,8 +1364,91 @@ final class RenderText extends RenderBox
       if (spans.isEmpty) spans.add(paragraph.TextSpan('', base));
     }
     _links = links;
+    _placeholders = placeholders;
     _spansFace = face;
     return _spans = spans;
+  }
+
+  /// [spans] with each placeholder given its box from [boxes], one per
+  /// [_placeholders] entry.
+  List<paragraph.TextSpan> _withBoxes(
+    List<paragraph.TextSpan> spans,
+    List<paragraph.PlaceholderDimensions> boxes,
+  ) {
+    final List<paragraph.TextSpan> sized = List<paragraph.TextSpan>.of(spans);
+    for (int i = 0; i < _placeholders.length; i++) {
+      final int index = _placeholders[i].spanIndex;
+      sized[index] =
+          paragraph.TextSpan.placeholder(boxes[i], spans[index].style);
+    }
+    return sized;
+  }
+
+  // --- children ------------------------------------------------------------
+
+  /// Lays every child out under [maxWidth] and returns the placeholder box
+  /// each [_placeholders] entry gets: its child's size, and for
+  /// [paragraph.PlaceholderAlignment.baseline] its child's baseline. A
+  /// placeholder with no child yet - the child's widget has not built a
+  /// render node - is an empty box.
+  ///
+  /// Loose under the text's own maximum width, as in Flutter: an inline
+  /// widget can be as wide as a line and no wider, and as tall as it likes,
+  /// since the line grows to fit it.
+  List<paragraph.PlaceholderDimensions> _layoutChildren(double maxWidth) {
+    final BoxConstraints loose = BoxConstraints(maxWidth: maxWidth);
+    for (int i = 0; i < childCount; i++) {
+      childAt(i).layout(loose, parentUsesSize: true);
+    }
+    return <paragraph.PlaceholderDimensions>[
+      for (int i = 0; i < _placeholders.length; i++)
+        if (i < childCount)
+          paragraph.PlaceholderDimensions(
+            size: childAt(i).size,
+            alignment: _placeholders[i].alignment,
+            baselineOffset: _placeholders[i].alignment ==
+                    paragraph.PlaceholderAlignment.baseline
+                ? childAt(i).getDistanceToBaseline(_placeholders[i].baseline)
+                : null,
+          )
+        else
+          paragraph.PlaceholderDimensions(
+            size: Size.zero,
+            alignment: _placeholders[i].alignment,
+          ),
+    ];
+  }
+
+  /// The placeholder boxes for an intrinsic measurement, which must not lay
+  /// the children out: each child's maximum intrinsic width, and its height
+  /// at that width.
+  ///
+  /// A child's baseline is a product of its layout, so a
+  /// [paragraph.PlaceholderAlignment.baseline] box is measured as though it
+  /// stood on the line - the answer a box with no text gives. Off by the
+  /// child's descent at most, and only in the measurement.
+  List<paragraph.PlaceholderDimensions> _intrinsicBoxes() =>
+      <paragraph.PlaceholderDimensions>[
+        for (int i = 0; i < _placeholders.length; i++)
+          paragraph.PlaceholderDimensions(
+            size: i < childCount ? _intrinsicSizeOf(childAt(i)) : Size.zero,
+            alignment: _placeholders[i].alignment,
+          ),
+      ];
+
+  static Size _intrinsicSizeOf(RenderBox child) {
+    final double width = child.getMaxIntrinsicWidth(double.infinity);
+    return Size(width, child.getMaxIntrinsicHeight(width));
+  }
+
+  /// Moves each child to the box the paragraph laid its placeholder out in.
+  void _placeChildren(paragraph.Paragraph laid) {
+    final List<paragraph.TextBox> boxes = laid.placeholderBoxes;
+    final int placed = math.min(boxes.length, childCount);
+    for (int i = 0; i < placed; i++) {
+      childAt(i).parentData!.offset = boxes[i].rect.topLeft;
+    }
+    _placedChildCount = placed;
   }
 
   /// The paragraph style of one leaf: [style] - its ancestors' styles
@@ -1336,7 +1487,15 @@ final class RenderText extends RenderBox
   /// `uiTextPainter.layout`, keyed exactly as it was before spans could be
   /// styled, so a wrapped label shares its cache entry with every other
   /// wrapped label of the same text and face.
-  paragraph.Paragraph _layoutParagraph(ScaledTypeface face, double maxWidth) {
+  ///
+  /// [boxes] sizes the placeholders of a text with [WidgetSpan]s; layout
+  /// passes the children's laid-out sizes, and an intrinsic measurement
+  /// passes nothing and gets [_intrinsicBoxes].
+  paragraph.Paragraph _layoutParagraph(
+    ScaledTypeface face,
+    double maxWidth, {
+    List<paragraph.PlaceholderDimensions>? boxes,
+  }) {
     final paragraph.ParagraphStyle style = paragraph.ParagraphStyle(
       align: _textAlign,
       breakWords: _breakWords,
@@ -1352,8 +1511,11 @@ final class RenderText extends RenderBox
         style: style,
       );
     }
+    final List<paragraph.TextSpan> spans = _spansFor(face);
     return uiTextPainter.layoutSpans(
-      _spansFor(face),
+      _placeholders.isEmpty
+          ? spans
+          : _withBoxes(spans, boxes ?? _intrinsicBoxes()),
       maxWidth: maxWidth,
       style: style,
     );
@@ -1378,16 +1540,34 @@ final class RenderText extends RenderBox
   @override
   void performLayout() {
     final ScaledTypeface? face = font;
+    final double available =
+        constraints.hasBoundedWidth ? constraints.maxWidth : double.infinity;
     if (!_usesParagraph || face == null) {
       _paragraph = null;
+      // No face, no paragraph and no boxes: the children are still laid
+      // out, as every child must be, and placed nowhere.
+      if (childCount > 0) _layoutChildren(available);
+      _placedChildCount = 0;
       size = constraints.constrain(_naturalSize);
       return;
     }
+    List<paragraph.PlaceholderDimensions>? boxes;
+    if (_span != null) {
+      _spansFor(face); // Finds the placeholders; cached for the layout below.
+      if (_placeholders.isNotEmpty || childCount > 0) {
+        boxes = _layoutChildren(available);
+      }
+    }
     _paragraph = _layoutParagraph(
       face,
-      _layoutWidth(
-          constraints.hasBoundedWidth ? constraints.maxWidth : double.infinity),
+      _layoutWidth(available),
+      boxes: boxes,
     );
+    if (boxes != null) {
+      _placeChildren(_paragraph!);
+    } else {
+      _placedChildCount = 0;
+    }
     // Lines centred or right-aligned were placed across the layout width,
     // so the box is that wide: shrunk to the longest line, the offset would
     // count twice - once in the line, once more where a parent centres the
@@ -1480,6 +1660,22 @@ final class RenderText extends RenderBox
     return null;
   }
 
+  /// The placed children, front to back - the last painted first. A child
+  /// cut off with its text is not on screen and takes nothing.
+  @override
+  RenderBox? hitTestChildren(Offset position, {HitTestPath? path}) {
+    for (int i = _placedChildCount - 1; i >= 0; i--) {
+      final RenderBox child = childAt(i);
+      final Offset childOffset = child.offsetFromParent;
+      final RenderBox? hit = child.hitTest(
+        Offset(position.dx - childOffset.dx, position.dy - childOffset.dy),
+        path: path,
+      );
+      if (hit != null) return hit;
+    }
+    return null;
+  }
+
   /// Hit only over a link's glyphs - see the class comment.
   @override
   bool hitTestSelf(Offset position) =>
@@ -1542,6 +1738,11 @@ final class RenderText extends RenderBox
           );
       }
       uiTextPainter.paintParagraph(list, laidOut, offset, paint);
+      // Over the text, as Flutter paints them, and inside its clip: a
+      // widget on a line the box cuts is cut with that line.
+      for (int i = 0; i < _placedChildCount; i++) {
+        paintChild(list, childAt(i), offset);
+      }
       if (clip) list.restore();
       return;
     }
@@ -1564,6 +1765,17 @@ final class RenderText extends RenderBox
     );
     if (clip) list.restore();
   }
+}
+
+/// What [RenderText] remembers about one [WidgetSpan]: where its paragraph
+/// span is, and how its child aligns.
+final class _Placeholder {
+  const _Placeholder(this.spanIndex, this.alignment, this.baseline);
+
+  /// The index of its placeholder in the flattened paragraph spans.
+  final int spanIndex;
+  final paragraph.PlaceholderAlignment alignment;
+  final TextBaseline baseline;
 }
 
 /// Compatibility name; the implementation is the layout layer's real node.

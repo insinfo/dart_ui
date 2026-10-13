@@ -516,7 +516,9 @@ final class TextPainter {
 
     for (final GlyphSpan span in line.spans) {
       final Color? background = span.style.backgroundColor;
-      if (background == null || span.width <= 0) {
+      // A placeholder's box belongs to whatever is drawn in it, not to the
+      // highlighted text around it.
+      if (background == null || span.width <= 0 || span.isPlaceholder) {
         flush();
         continue;
       }
@@ -560,7 +562,9 @@ final class TextPainter {
     _DecorationSegment? pending;
     for (final GlyphSpan span in line.spans) {
       final TextStyle style = span.style;
-      if (!style.decoration.contains(kind) || span.width <= 0) {
+      if (!style.decoration.contains(kind) ||
+          span.width <= 0 ||
+          span.isPlaceholder) {
         if (pending != null) _drawDecoration(list, pending, topLeft.dx, paints);
         pending = null;
         continue;

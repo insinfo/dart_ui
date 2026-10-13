@@ -26,7 +26,7 @@ Isto compila quase sem edição vindo do Flutter:
 | Widgets base | `StatelessWidget`, `StatefulWidget`, `State`, `InheritedWidget`, `Widget`, `BuildContext`, `Key`, `ValueKey`, `GlobalKey`, `Builder`, `StatefulBuilder` |
 | Layout | `Row`, `Column`, `Stack`, `Positioned`, `Padding`, `Center`, `Align`, `SizedBox`, `Expanded`, `Flexible`, `Spacer`, `Wrap`, `AspectRatio`, `ConstrainedBox`, `FractionallySizedBox`, `IntrinsicWidth`, `IntrinsicHeight`, `LimitedBox`, `OverflowBox`, `SizedOverflowBox`, `Baseline`, `LayoutBuilder`, `SafeArea` |
 | Pintura | `Opacity`, `ClipRect`, `ClipRRect`, `DecoratedBox`, `BoxDecoration`, `ColoredBox`, `RepaintBoundary`, `IgnorePointer`, `AbsorbPointer` |
-| Conteúdo | `Text`, `Icon`, `Image`, `ListView`, `GridView`, `SingleChildScrollView`, `Card`, `Divider`, `VerticalDivider` |
+| Conteúdo | `Text`, `Text.rich`, `RichText`, `TextSpan`, `WidgetSpan`, `PlaceholderAlignment`, `Icon`, `Image`, `ListView`, `GridView`, `SingleChildScrollView`, `Card`, `Divider`, `VerticalDivider` |
 | Controles | `TextField`, `Radio`, `Switch`, `Slider`, `IconButton`, `Tooltip` |
 | Ambiente | `Theme`, `ThemeData`, `MediaQuery`, `Directionality`, `Navigator`, `Overlay`, `OverlayEntry` |
 | Foco e gestos | `FocusNode`, `FocusScope`, `GestureDetector` |
@@ -64,6 +64,7 @@ e cada um diz isso no comentário da própria classe:
 | `FractionallySizedBox` | um fator num eixo sem limite é erro com nome, em vez de infinito propagado para cima |
 | `OverflowBox` | num eixo sem limite colapsa para o mínimo (`BoxConstraints.largestFinite`) em vez de disparar uma asserção |
 | `Divider` | a cor padrão é `theme.borderSubtle`, o divisor *dentro* de uma superfície |
+| `WidgetSpan` | `baseline` nulo com `PlaceholderAlignment.baseline` vale `TextBaseline.alphabetic` em vez de disparar a asserção do Flutter. De resto é o do Flutter (desde 13/10/2026): o filho é medido com a largura máxima do texto, a linha cresce para caber, quebra de linha trata o widget como uma unidade, o filho recebe cliques e fica na árvore semântica, e no texto puro ele é um U+FFFC. O `style` do span não estiliza o filho — só escolhe a fonte cujas métricas `top`/`middle`/`bottom` usam |
 
 ---
 
@@ -167,8 +168,6 @@ Sem justificativa de projeto — simplesmente não escrito:
 - **Layout**: `Flow`. (`Table`, `CustomMultiChildLayout` com `LayoutId`,
   `FittedBox`, `UnconstrainedBox`, `Placeholder` e `Container` existem desde
   outubro de 2026.)
-- **Texto rico**: `WidgetSpan`. (`RichText`, `Text.rich` e `TextSpan` no
-  nível de widget existem.)
 - **Animação**: nada de essencial. (`Hero`, `AnimatedBuilder`,
   `ListenableBuilder`, as `*Transition` (com `SizeTransition`),
   `TweenAnimationBuilder`, `AnimatedList`,
