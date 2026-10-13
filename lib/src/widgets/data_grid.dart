@@ -38,6 +38,7 @@ import '../graphics/display_list.dart';
 import '../layout/box_constraints.dart';
 import '../layout/render_box.dart';
 import '../layout/render_flex.dart';
+import '../layout/render_proxy_box.dart' show BoxBorder, BoxDecoration;
 import '../layout/render_viewport.dart';
 import '../platform/editing_convention.dart';
 import '../platform/input_events.dart';
@@ -53,8 +54,10 @@ import 'element.dart';
 import 'focus.dart';
 import 'focus_scope.dart';
 import 'pointer_router.dart';
+import 'proxy.dart' show DecoratedBox;
 import 'scrollbar.dart';
 import 'style.dart';
+import 'text_field.dart';
 import 'theme.dart';
 import 'virtualization.dart';
 import 'widget.dart';
@@ -69,6 +72,7 @@ final class DataGridColumn {
     this.minWidth = 40.0,
     this.resizable = true,
     this.sortable = true,
+    this.editable = false,
   });
 
   final String title;
@@ -83,6 +87,10 @@ final class DataGridColumn {
   final double minWidth;
   final bool resizable;
   final bool sortable;
+
+  /// Whether F2 or a double click on the column's cell opens a text editor
+  /// on it; see [DataGrid.onCellEdited].
+  final bool editable;
 
   Object get identity => id ?? title;
 }
@@ -128,6 +136,8 @@ final class DataGrid extends StatefulWidget {
     this.controller,
     this.horizontalController,
     this.scrollbar = ScrollbarVisibility.always,
+    this.cellText,
+    this.onCellEdited,
     this.decorated = true,
     this.headerMenu,
     this.columnFitWidth,
@@ -196,6 +206,20 @@ final class DataGrid extends StatefulWidget {
   /// When the scroll bars show; each only while its axis overflows.
   final ScrollbarVisibility scrollbar;
 
+  /// The text an [DataGridColumn.editable] cell's editor starts from - the
+  /// value, which the cell's widget may show formatted.
+  final String Function(int row, int column)? cellText;
+
+  /// The text an edit of cell ([row], [column]) ended with, when it changed.
+  /// The grid is controlled here too: the owner stores the value and
+  /// rebuilds.
+  ///
+  /// An edit opens with F2 on the cursor row (its first editable column) or
+  /// a double click on an editable cell, with the text selected. Enter and
+  /// a click elsewhere keep it, Tab keeps it and opens the next editable
+  /// cell of the row (Shift+Tab the previous), Escape drops it.
+  final void Function(int row, int column, String text)? onCellEdited;
+
   /// What dragging rows out carries - the selection as file paths, as text -
   /// or null when these rows cannot be dragged at all.
   ///
@@ -256,6 +280,14 @@ final class _DataGridState extends State<DataGrid> {
   /// The row a drop would land on, drawn as the target; null for none.
   int? _dropRow;
   late final FocusNode _focusNode = FocusNode(debugLabel: 'DataGrid');
+
+  /// The cell being edited, or -1s; the editor's text and keyboard.
+  int _editRow = -1;
+  int _editColumn = -1;
+  String _editOriginal = '';
+  TextEditingController? _editor;
+  late final FocusNode _editorFocus = FocusNode(debugLabel: 'DataGrid cell')
+    ..addListener(_onEditorFocus);
   double _viewportExtent = 0;
 
   /// Widths the user has dragged, keyed by column identity so they survive a
@@ -281,6 +313,7 @@ final class _DataGridState extends State<DataGrid> {
   @override
   void dispose() {
     _position.removeListener(_onScrolled);
+    _editorFocus.dispose();
     _focusNode.dispose();
     super.dispose();
   }
@@ -360,10 +393,90 @@ final class _DataGridState extends State<DataGrid> {
     if (target != null) _position.jumpTo(target);
   }
 
+  bool _canEdit(int column) =>
+      widget.onCellEdited != null &&
+      widget.cellText != null &&
+      column >= 0 &&
+      column < widget.columns.length &&
+      widget.columns[column].editable;
+
+  bool get _editing => _editRow >= 0;
+
+  /// The next editable column after [column] in [step]'s direction, or -1.
+  int _nextEditable(int column, int step) {
+    for (int c = column + step;
+        c >= 0 && c < widget.columns.length;
+        c += step) {
+      if (_canEdit(c)) return c;
+    }
+    return -1;
+  }
+
+  /// Opens the editor on cell ([row], [column]) with its text selected.
+  bool _beginEdit(int row, int column) {
+    if (!_canEdit(column) || row < 0 || row >= widget.rowCount) return false;
+    if (_editing) _endEdit(commit: true, refocus: false);
+    final String text = widget.cellText!(row, column);
+    _editor = TextEditingController(text)..setSelection(0, text.length);
+    _editOriginal = text;
+    _editRow = row;
+    _editColumn = column;
+    _cursor = row;
+    _reveal(row);
+    // Taken as the editor mounts, this frame.
+    _editorFocus.requestFocus();
+    setState(() {});
+    return true;
+  }
+
+  /// Closes the editor, reporting its text when [commit] and it changed, and
+  /// gives the keyboard back to the rows when [refocus].
+  void _endEdit({required bool commit, bool refocus = true}) {
+    if (!_editing) return;
+    final int row = _editRow;
+    final int column = _editColumn;
+    final String text = _editor!.value;
+    // Cleared first: giving the rows the keyboard takes it from the editor,
+    // which would land here again.
+    _editRow = _editColumn = -1;
+    if (refocus) _focusNode.requestFocus();
+    if (mounted) setState(() {});
+    if (commit && text != _editOriginal) {
+      widget.onCellEdited?.call(row, column, text);
+    }
+  }
+
+  /// A click elsewhere keeps the edit, as in every spreadsheet.
+  void _onEditorFocus(FocusNode node) {
+    if (_editing && !node.hasFocus) _endEdit(commit: true, refocus: false);
+  }
+
+  /// The editor's keys beyond the field's own: Escape drops the edit, Tab
+  /// and Shift+Tab keep it and move along the row.
+  bool _handleEditorKey(KeyEvent event) {
+    if (event is! KeyDownEvent || !_editing) return false;
+    switch (event.logicalKey) {
+      case logicalKeyEscape:
+        _endEdit(commit: false);
+        return true;
+      case logicalKeyTab:
+        final int row = _editRow;
+        final int next = _nextEditable(
+            _editColumn, event.modifiers.contains(KeyModifier.shift) ? -1 : 1);
+        _endEdit(commit: true, refocus: next < 0);
+        if (next >= 0) _beginEdit(row, next);
+        return true;
+      default:
+        return false;
+    }
+  }
+
   /// A press on the body: [index] is the row, or -1 for the empty space
   /// below the last one.
   void _handlePress(int index, Set<KeyModifier> modifiers,
-      {PointerButton button = PointerButton.primary, int clickCount = 1}) {
+      {PointerButton button = PointerButton.primary,
+      int clickCount = 1,
+      int column = -1}) {
     final bool onRow = index >= 0 && index < widget.rowCount;
     if (button == PointerButton.primary) _pressedRow = onRow ? index : -1;
     switch (button) {
@@ -378,6 +491,7 @@ final class _DataGridState extends State<DataGrid> {
           }
           return;
         }
+        if (clickCount >= 2 && _beginEdit(index, column)) return;
         if (clickCount >= 2) {
           // The first click of the pair already selected the row.
           widget.onRowActivated?.call(index);
@@ -470,6 +584,9 @@ final class _DataGridState extends State<DataGrid> {
         }
         _moveCursor(_cursor);
         return true;
+      case logicalKeyF2:
+        final int column = _canEdit(0) ? 0 : _nextEditable(0, 1);
+        return column >= 0 && _beginEdit(_cursor, column);
       case logicalKeyArrowLeft || logicalKeyArrowRight:
         if (_horizontal.maxScrollExtent <= 0) return false;
         final bool towardEnd = (event.logicalKey == logicalKeyArrowRight) !=
@@ -569,10 +686,19 @@ final class _DataGridState extends State<DataGrid> {
                     dropTarget: _dropRow == row,
                     textDirection: direction,
                     theme: theme,
+                    editingColumn: row == _editRow ? _editColumn : -1,
                     children: <Widget>[
                       for (int column = 0;
                           column < widget.columns.length;
                           column++)
+                        if (row == _editRow && column == _editColumn)
+                          _CellEditor(
+                            controller: _editor!,
+                            focusNode: _editorFocus,
+                            onSubmitted: (_) => _endEdit(commit: true),
+                            onKey: _handleEditorKey,
+                          )
+                        else
                         // A selected row publishes its text colour to the
                         // cells rather than recolouring them: the cell is the
                         // application's widget, and the row is the only thing
@@ -670,6 +796,63 @@ final class _DataGridState extends State<DataGrid> {
       );
     }
     return result;
+  }
+}
+
+/// A cell's text editor: a field without its frame - the cell is the frame -
+/// that offers the grid the keys it does not take.
+final class _CellEditor extends StatefulWidget {
+  const _CellEditor({
+    required this.controller,
+    required this.focusNode,
+    required this.onSubmitted,
+    required this.onKey,
+  });
+
+  final TextEditingController controller;
+  final FocusNode focusNode;
+  final void Function(String text) onSubmitted;
+  final bool Function(KeyEvent event) onKey;
+
+  @override
+  State<_CellEditor> createState() => _CellEditorState();
+}
+
+final class _CellEditorState extends State<_CellEditor> {
+  BuildOwner? _owner;
+
+  @override
+  void initState() {
+    super.initState();
+    _owner = (context as Element).owner;
+    // Escape and Tab reach the window when the field declines them; ahead of
+    // a dialog's Escape and of focus traversal's Tab.
+    _owner?.addWindowKeyHandler(_key, modalDepth: 1 << 30, first: true);
+  }
+
+  @override
+  void dispose() {
+    _owner?.removeWindowKeyHandler(_key);
+    super.dispose();
+  }
+
+  bool _key(KeyEvent event) => widget.focusNode.hasFocus && widget.onKey(event);
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: theme.surface,
+        border: BoxBorder(color: theme.accent, width: 1),
+      ),
+      child: TextField(
+        controller: widget.controller,
+        focusNode: widget.focusNode,
+        decorated: false,
+        onSubmitted: widget.onSubmitted,
+      ),
+    );
   }
 }
 
@@ -1047,6 +1230,7 @@ final class _DataGridRowWidget extends MultiChildRenderObjectWidget {
     required this.theme,
     required super.children,
     this.dropTarget = false,
+    this.editingColumn = -1,
   });
 
   final int index;
@@ -1054,6 +1238,7 @@ final class _DataGridRowWidget extends MultiChildRenderObjectWidget {
   final List<double> widths;
   final bool selected;
   final bool dropTarget;
+  final int editingColumn;
   final TextDirection textDirection;
   final ThemeData theme;
 
@@ -1065,6 +1250,7 @@ final class _DataGridRowWidget extends MultiChildRenderObjectWidget {
         ..widths = widths
         ..selected = selected
         ..dropTarget = dropTarget
+        ..editingColumn = editingColumn
         ..textDirection = textDirection
         ..theme = theme;
 
@@ -1079,6 +1265,7 @@ final class _DataGridRowWidget extends MultiChildRenderObjectWidget {
       ..widths = widths
       ..selected = selected
       ..dropTarget = dropTarget
+      ..editingColumn = editingColumn
       ..textDirection = textDirection
       ..theme = theme;
   }
@@ -1150,6 +1337,30 @@ final class RenderDataGridRow extends RenderBoxContainer<BoxParentData>
         if (_selected) PseudoClass.selected,
       };
 
+  /// The column whose cell is an editor, which fills the whole cell rather
+  /// than sitting inside its padding; -1 for none.
+  int get editingColumn => _editingColumn;
+  int _editingColumn = -1;
+
+  set editingColumn(int value) {
+    if (value == _editingColumn) return;
+    _editingColumn = value;
+    markNeedsLayout();
+  }
+
+  /// The column containing [dx], in this row's coordinates, or -1.
+  int columnAt(double dx) {
+    double cumulative = 0;
+    for (int i = 0; i < _widths.length; i++) {
+      final double start = _textDirection.isRightToLeft
+          ? size.width - cumulative - _widths[i]
+          : cumulative;
+      if (dx >= start && dx < start + _widths[i]) return i;
+      cumulative += _widths[i];
+    }
+    return -1;
+  }
+
   @override
   void performLayout() {
     final double width = constraints.hasBoundedWidth
@@ -1161,20 +1372,26 @@ final class RenderDataGridRow extends RenderBoxContainer<BoxParentData>
     for (int i = 0; i < childCount; i++) {
       final double columnWidth = i < _widths.length ? _widths[i] : 0;
       final RenderBox child = childAt(i);
+      final double start = _textDirection.isRightToLeft
+          ? size.width - cumulative - columnWidth
+          : cumulative;
+      cumulative += columnWidth;
+      if (i == _editingColumn) {
+        child.layout(BoxConstraints.tight(Size(columnWidth, _extent)),
+            parentUsesSize: true);
+        child.parentData!.offset = Offset(start, 0);
+        continue;
+      }
       final double cellWidth =
           (columnWidth - padding * 2).clamp(0.0, double.infinity);
       child.layout(
         BoxConstraints(maxWidth: cellWidth, maxHeight: _extent),
         parentUsesSize: true,
       );
-      final double start = _textDirection.isRightToLeft
-          ? size.width - cumulative - columnWidth
-          : cumulative;
       child.parentData!.offset = Offset(
         start + padding,
         ((_extent - child.size.height) / 2).roundToDouble().clamp(0.0, _extent),
       );
-      cumulative += columnWidth;
     }
   }
 
@@ -1288,7 +1505,7 @@ final class _DataGridBodyWidget extends MultiChildRenderObjectWidget {
   final int cursor;
   final bool Function(KeyEvent event) onKeyEvent;
   final void Function(int index, Set<KeyModifier> modifiers,
-      {PointerButton button, int clickCount}) onRowPressed;
+      {PointerButton button, int clickCount, int column}) onRowPressed;
   final void Function(double extent) onViewportExtent;
 
   @override
@@ -1358,7 +1575,7 @@ final class RenderDataGridBody extends RenderBoxContainer<BoxParentData>
   int cursor;
   bool Function(KeyEvent event) onKeyEvent;
   void Function(int index, Set<KeyModifier> modifiers,
-      {PointerButton button, int clickCount}) onRowPressed;
+      {PointerButton button, int clickCount, int column}) onRowPressed;
   void Function(double extent) onViewportExtent;
 
   ScrollPosition get position => _position;
@@ -1522,13 +1739,26 @@ final class RenderDataGridBody extends RenderBoxContainer<BoxParentData>
       final int index = contentY >= _virtualization.totalExtent
           ? -1
           : _virtualization.indexAt(contentY);
+      final bool onRow = index >= 0 && index < _virtualization.itemCount;
       onRowPressed(
-        index >= 0 && index < _virtualization.itemCount ? index : -1,
+        onRow ? index : -1,
         _modifiers,
         button: event.button,
         clickCount: event.clickCount,
+        column: onRow ? _columnAt(index, event.logicalPosition) : -1,
       );
     }
+  }
+
+  /// The column of row [index] under [global], or -1.
+  int _columnAt(int index, Offset global) {
+    for (int i = 0; i < childCount; i++) {
+      final RenderBox child = childAt(i);
+      if (child is RenderDataGridRow && child.index == index) {
+        return child.columnAt(child.globalToLocal(global).dx);
+      }
+    }
+    return -1;
   }
 
   /// The modifiers reported by the most recent key transition.

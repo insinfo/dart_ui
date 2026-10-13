@@ -210,7 +210,15 @@ class FocusNode {
     for (final FocusNode child in _children) {
       child._attach(manager);
     }
+    final FocusChangeReason? pending = _focusWhenAttached;
+    if (manager != null && pending != null) {
+      _focusWhenAttached = null;
+      requestFocus(pending);
+    }
   }
+
+  /// A [requestFocus] made before this node was in a tree, kept until it is.
+  FocusChangeReason? _focusWhenAttached;
 
   void _detach() {
     final FocusManager? manager = _manager;
@@ -238,16 +246,25 @@ class FocusNode {
   /// Returns false when this node refuses focus ([canRequestFocus] false, or
   /// not attached to a manager). Requesting focus on a scope focuses the child
   /// it remembers, or its first focusable descendant.
+  ///
+  /// A node not attached yet takes focus as it is attached: the field a
+  /// "Rename" command is about to show can be asked for the keyboard in the
+  /// same breath, with no wait for the frame that mounts it. [unfocus]
+  /// withdraws such a request.
   bool requestFocus([
     FocusChangeReason reason = FocusChangeReason.programmatic,
   ]) {
     final FocusManager? manager = _manager;
-    if (manager == null) return false;
+    if (manager == null) {
+      _focusWhenAttached = reason;
+      return false;
+    }
     return manager._requestFocus(this, reason);
   }
 
   /// Gives up focus, letting the enclosing scope decide where it goes.
   void unfocus() {
+    _focusWhenAttached = null;
     if (!_hasPrimaryFocus) return;
     _manager?._focusChanged(null, FocusChangeReason.programmatic);
   }
