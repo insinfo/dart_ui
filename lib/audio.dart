@@ -5,9 +5,11 @@
 /// audio buffers.
 library;
 
+export 'src/audio/apple/apple_audio.dart';
 export 'src/audio/audio.dart';
 export 'src/audio/codecs/audio_codecs.dart';
 export 'src/audio/dsp/dsp.dart';
 export 'src/audio/native/native_audio.dart';
 export 'src/audio/playback/playback.dart';
+export 'src/audio/realtime/realtime.dart';
 export 'src/audio/windows/windows_audio.dart';

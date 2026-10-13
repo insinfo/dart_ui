@@ -24,8 +24,11 @@ import 'dart:typed_data';
 import 'package:dart_ui/audio.dart';
 import 'package:test/test.dart';
 
+import 'apple_endpoint.dart';
+
 /// Whether this machine can render audio at all.
 bool _hasRenderEndpoint() {
+  if (Platform.isMacOS) return appleQueueStarts();
   if (!Platform.isWindows) return false;
   try {
     final WasapiAudioBackend backend = WasapiAudioBackend();

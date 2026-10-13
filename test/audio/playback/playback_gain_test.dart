@@ -13,7 +13,10 @@ import 'package:dart_ui/audio.dart';
 import 'package:dart_ui/src/audio/playback/wasapi_playback_control_block.dart';
 import 'package:test/test.dart';
 
+import 'apple_endpoint.dart';
+
 bool _hasRenderEndpoint() {
+  if (Platform.isMacOS) return appleQueueStarts();
   if (!Platform.isWindows) return false;
   try {
     final WasapiAudioBackend backend = WasapiAudioBackend();

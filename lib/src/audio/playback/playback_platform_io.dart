@@ -3,17 +3,22 @@ library;
 
 import 'dart:io';
 
+import '../apple/audio_queue_player.dart';
+import '../apple/ext_audio_file_decoder.dart';
 import '../native/native_pcm_audio_buffer.dart';
 import '../windows/media_foundation_audio_decoder.dart';
 import 'media_clock.dart';
 import 'wasapi_pcm_audio_player.dart';
 
+bool get _apple => Platform.isMacOS || Platform.isIOS;
+
 /// Opens a player, or returns null when this machine cannot render audio.
 ///
-/// Windows is the only implemented backend today. On macOS and Linux this is
-/// null rather than a throw, because "no audio output" is a state a video
-/// player has to keep running through, not an error it should crash on.
+/// WASAPI on Windows, an Audio Queue on macOS and iOS. On Linux this is null
+/// rather than a throw, because "no audio output" is a state a video player
+/// has to keep running through, not an error it should crash on.
 PcmAudioPlayer? openPcmAudioPlayer(NativePcmAudioBuffer pcm) {
+  if (_apple) return AudioQueuePcmPlayer.open(pcm);
   if (!Platform.isWindows) return null;
   return WasapiPcmAudioPlayer.open(pcm);
 }
@@ -25,6 +30,16 @@ PcmAudioPlayer? openPcmAudioPlayer(NativePcmAudioBuffer pcm) {
 /// codec Windows cannot decode, an unreadable path, a machine with no render
 /// endpoint. All of them mean "play this silently off the wall clock".
 PcmAudioPlayer? openPcmAudioFilePlayer(String path) {
+  if (_apple) {
+    // Decoded whole by the system's codecs, then played from memory: the
+    // Windows path streams, and this one can when a file is too long to
+    // hold, which no example reaches yet.
+    final NativePcmAudioBuffer? pcm = ExtAudioFileDecoder.decodeFile(path);
+    if (pcm == null) return null;
+    final PcmAudioPlayer? player = AudioQueuePcmPlayer.open(pcm, ownsPcm: true);
+    if (player == null) pcm.dispose();
+    return player;
+  }
   if (!Platform.isWindows) return null;
   try {
     return WasapiPcmAudioPlayer.openFile(path);
@@ -50,6 +65,7 @@ PcmAudioPlayer? openPcmAudioFilePlayer(String path) {
 /// that refuses to show a film because its soundtrack could not be decoded is
 /// worse than one that plays it silently off the wall clock.
 NativePcmAudioBuffer? decodeMediaAudioTrack(String path) {
+  if (_apple) return ExtAudioFileDecoder.decodeFile(path);
   if (!Platform.isWindows) return null;
   NativePcmAudioBuffer? decoded;
   try {

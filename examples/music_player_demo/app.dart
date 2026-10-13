@@ -80,15 +80,21 @@ final class _MusicPlayerAppState extends State<MusicPlayerApp> {
   }
 
   Future<void> _open() async {
-    final PickedFile? selected = await FilePicker.openFile(
-      title: 'Adicionar música à lista',
-      filters: const <FilePickerFilter>[
-        FilePickerFilter(
-          label: 'Áudio compatível (*.wav;*.mp3)',
-          extensions: <String>['wav', 'mp3'],
-        ),
-      ],
-    );
+    final PickedFile? selected;
+    try {
+      selected = await FilePicker.openFile(
+        title: 'Adicionar música à lista',
+        filters: const <FilePickerFilter>[
+          FilePickerFilter(
+            label: 'Áudio compatível',
+            extensions: _audioExtensions,
+          ),
+        ],
+      );
+    } on FilePickerException catch (error) {
+      setState(() => _error = 'O seletor de arquivos falhou: ${error.reason}');
+      return;
+    }
     if (selected == null) return;
     if (selected.path == null) {
       setState(() => _error = 'O player desktop precisa de um caminho local.');
@@ -107,7 +113,7 @@ final class _MusicPlayerAppState extends State<MusicPlayerApp> {
       final String extension = _extension(file.path);
       final String canonical = file.absolute.path;
       if (!file.existsSync() ||
-          (extension != 'wav' && extension != 'mp3') ||
+          !_audioExtensions.contains(extension) ||
           !known.add(canonical.toLowerCase())) {
         continue;
       }
@@ -270,7 +276,7 @@ final class _MusicPlayerAppState extends State<MusicPlayerApp> {
         formats: const <String>[DragFormats.uriList],
         onDrop: _dropFiles,
         highlightColor: const Color(0x443A8DFF),
-        semanticLabel: 'Solte arquivos WAV ou MP3 para adicionar à playlist',
+        semanticLabel: 'Solte arquivos de áudio para adicionar à playlist',
         child: ColoredBox(
           color: page,
           child: Column(
@@ -329,7 +335,7 @@ final class _MusicPlayerAppState extends State<MusicPlayerApp> {
                   children: <Widget>[
                     Text('DART MEDIA PLAYER', color: bright, fontSize: 16),
                     Text(
-                      'WAV · MP3 · WASAPI · DSP realtime',
+                      'WAV · MP3 · AAC · FLAC · DSP realtime',
                       color: muted,
                       fontSize: 10,
                     ),
@@ -412,7 +418,7 @@ final class _MusicPlayerAppState extends State<MusicPlayerApp> {
             const SizedBox(height: 7),
             Text(
               current == null
-                  ? 'Aceita vários arquivos WAV e MP3 do Explorer'
+                  ? 'Aceita WAV, MP3, AAC/M4A e FLAC'
                   : '${widget.engine.sampleRate} Hz · ${widget.engine.channels} canais · float32',
               color: muted,
               fontSize: 12,
@@ -532,7 +538,7 @@ final class _MusicPlayerAppState extends State<MusicPlayerApp> {
                 children: <Widget>[
                   Expanded(
                     child: Text(
-                      'Solte vários WAV/MP3 nesta janela',
+                      'Solte vários arquivos de áudio nesta janela',
                       color: muted,
                       fontSize: 10,
                       softWrap: true,
@@ -723,6 +729,17 @@ final class _MusicPlayerAppState extends State<MusicPlayerApp> {
 
   static String _nameFromPath(String path) =>
       path.replaceAll('\\', '/').split('/').last;
+
+  /// What the system decoders behind `MediaAudioTracks` read on both
+  /// Windows (Media Foundation) and macOS (ExtAudioFile); WAV is decoded in
+  /// Dart everywhere.
+  static const List<String> _audioExtensions = <String>[
+    'wav',
+    'mp3',
+    'm4a',
+    'aac',
+    'flac',
+  ];
 
   static String _extension(String path) {
     final String name = _nameFromPath(path);

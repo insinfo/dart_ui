@@ -6,11 +6,6 @@ import 'app.dart';
 import 'music_player_engine.dart';
 
 Future<void> main(List<String> arguments) async {
-  if (!Platform.isWindows) {
-    stderr.writeln('Este exemplo requer Windows 10 ou posterior.');
-    exitCode = 2;
-    return;
-  }
   FrameworkFonts.install();
   FontRegistry.warmSystemFonts();
   final MusicPlayerEngine engine = MusicPlayerEngine();
