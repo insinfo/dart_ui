@@ -948,10 +948,10 @@ final class RenderDataGridHeader extends RenderBox
 
   /// A column edge shows the resize arrow, so it can be found at all.
   @override
-  SystemCursor? cursorFor(PointerEvent event) =>
-      _gripAt(globalToLocal(event.logicalPosition).dx) >= 0
-          ? SystemCursor.resizeHorizontal
-          : null;
+  SystemCursor? cursorFor(PointerEvent event) => (_resizingColumn >= 0 ||
+          _gripAt(globalToLocal(event.logicalPosition).dx) >= 0)
+      ? SystemCursor.resizeHorizontal
+      : null;
 
   /// A double click on an edge: size the column to its content.
   void Function(int column)? onFit;

@@ -76,6 +76,10 @@ import 'x11_keyboard.dart';
 import 'x11_libc.dart';
 import 'x11_protocol.dart';
 
+/// The child XID occupies bytes 8..11; translated coordinates follow it.
+({int x, int y}) decodeX11TranslatedOrigin(Pointer<Uint8> reply) =>
+    (x: readI16(reply, 12), y: readI16(reply, 14));
+
 /// One X event, decoded into fields. Reused; never retained.
 ///
 /// Only the fields this backend reads are decoded. Everything else stays in

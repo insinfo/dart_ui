@@ -24,6 +24,13 @@ abstract interface class PointerEventTarget {
 /// scrollable document below them.
 abstract interface class PointerEventBarrier implements PointerEventTarget {}
 
+/// Stops only the events a target handles exclusively, leaving other gestures
+/// free to bubble through the same render node.
+abstract interface class ConditionalPointerEventBarrier
+    implements PointerEventTarget {
+  bool stopsPointerEvent(PointerEvent event);
+}
+
 /// A render node that has a persistent pointer-hover visual state.
 ///
 /// Pointer moves are hit-tested independently. Without an explicit leave
@@ -246,7 +253,11 @@ final class PointerRouter {
       if (entry case final PointerEventTarget target) {
         target.handlePointerEvent(event);
         captureInto?.add(target);
-        if (target is PointerEventBarrier) break;
+        if (target is PointerEventBarrier ||
+            (target is ConditionalPointerEventBarrier &&
+                target.stopsPointerEvent(event))) {
+          break;
+        }
       }
     }
   }

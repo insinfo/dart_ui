@@ -89,6 +89,15 @@ X11RawEvent _raw({
 }
 
 void main() {
+  test('TranslateCoordinates reads signed coordinates after the child XID', () {
+    _withNativeEvent((reply) {
+      reply.cast<Uint32>()[2] = 0x0080abcd;
+      (reply + 12).cast<Int16>().value = -120;
+      (reply + 14).cast<Int16>().value = 51;
+      expect(decodeX11TranslatedOrigin(reply), (x: -120, y: 51));
+    });
+  });
+
   group('X11RawEvent.decodeFrom', () {
     test('decodes an Expose including signed coordinates and send-event flag',
         () {

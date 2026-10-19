@@ -18,6 +18,7 @@ import 'dart:typed_data';
 
 import '../../foundation/diagnostics.dart';
 import '../../foundation/lifecycle.dart';
+import '../../platform/native_window.dart' show SystemCursor;
 import '../../rendering/framebuffer.dart';
 import 'x11_bindings.dart';
 import 'x11_clipboard.dart';
@@ -185,6 +186,12 @@ abstract interface class X11WindowClient implements X11BackendConnection {
   ({int x, int y})? translateToRoot(int window);
   int flush();
   void recordError(String message);
+}
+
+/// Native cursor installation, separate from window test doubles that do not
+/// own X server resources.
+abstract interface class X11CursorClient {
+  void setTopLevelCursor(int window, SystemCursor cursor);
 }
 
 /// `_NET_WM_STATE` and `WM_STATE`, read back and asked for.
@@ -378,7 +385,8 @@ final class X11Connection
         X11ClipboardClient,
         X11ScreenClient,
         X11MonitorClient,
-        X11WindowStateClient {
+        X11WindowStateClient,
+        X11CursorClient {
   X11Connection._(this.xcb, this.libc, this._handle);
 
   /// Opens `$DISPLAY`, or reports exactly what stopped it.
@@ -1918,6 +1926,51 @@ final class X11Connection
     xcb.flush(_handle);
   }
 
+  final Map<SystemCursor, int> _nativeCursors = <SystemCursor, int>{};
+  int _cursorFont = 0;
+
+  @override
+  void setTopLevelCursor(int window, SystemCursor cursor) {
+    throwIfDisposed();
+    final int resource = cursor == SystemCursor.arrow
+        ? 0
+        : _nativeCursors.putIfAbsent(cursor, () {
+            if (_cursorFont == 0) {
+              final bytes = ascii.encode('cursor');
+              final name = libc.allocateZeroed(bytes.length);
+              if (name == nullptr) {
+                throw StateError('Cannot allocate X11 cursor font name');
+              }
+              try {
+                name.asTypedList(bytes.length).setAll(0, bytes);
+                _cursorFont = xcb.generateId(_handle);
+                xcb.openFont(_handle, _cursorFont, bytes.length, name);
+              } finally {
+                libc.free(name);
+              }
+            }
+            final int glyph = switch (cursor) {
+              SystemCursor.arrow => xcGlyphLeftPtr,
+              SystemCursor.text => xcGlyphXterm,
+              SystemCursor.hand => xcGlyphHand2,
+              SystemCursor.resizeHorizontal => xcGlyphSbHDoubleArrow,
+              SystemCursor.resizeVertical => xcGlyphSbVDoubleArrow,
+              SystemCursor.resizeDiagonalDown => xcGlyphTopLeftCorner,
+              SystemCursor.resizeDiagonalUp => xcGlyphTopRightCorner,
+              SystemCursor.wait => xcGlyphWatch,
+              SystemCursor.crosshair => xcGlyphCrosshair,
+              SystemCursor.notAllowed => xcGlyphCircle,
+            };
+            final int id = xcb.generateId(_handle);
+            xcb.createGlyphCursor(_handle, id, _cursorFont, _cursorFont, glyph,
+                glyph + 1, 0, 0, 0, 65535, 65535, 65535);
+            return id;
+          });
+    valueScratch[0] = resource;
+    xcb.changeWindowAttributes(_handle, window, xcbCwCursor, valueScratch);
+    xcb.flush(_handle);
+  }
+
   @override
   void requestTopLevelRedraw(int window, X11RedrawRegion? region) {
     throwIfDisposed();
@@ -2140,7 +2193,7 @@ final class X11Connection
       return null;
     }
     try {
-      return (x: readI16(reply, 8), y: readI16(reply, 10));
+      return decodeX11TranslatedOrigin(reply);
     } finally {
       libc.free(reply);
     }
@@ -2249,6 +2302,14 @@ final class X11Connection
 
   @override
   void onDispose() {
+    for (final cursor in _nativeCursors.values) {
+      xcb.freeCursor(_handle, cursor);
+    }
+    _nativeCursors.clear();
+    if (_cursorFont != 0) {
+      xcb.closeFont(_handle, _cursorFont);
+      _cursorFont = 0;
+    }
     _bag.dispose();
   }
 }

@@ -252,10 +252,12 @@ Future<void> _reportPopup(
       if (observed == null) {
         stdout.writeln('X11_POPUP=FAIL the server did not answer '
             'GetWindowAttributes for the popup');
-        return;
+        throw StateError('No X11 popup attributes');
       }
       final ownerXid = (owner as X11Window).xcbWindow;
-      final passed = observed.overrideRedirect &&
+      final origin = popup.clientToScreen(Offset.zero);
+      final passed = origin == const Offset(48, 48) &&
+          observed.overrideRedirect &&
           observed.windowTypeName == '_NET_WM_WINDOW_TYPE_POPUP_MENU' &&
           observed.transientFor == ownerXid;
       stdout.writeln(
@@ -264,14 +266,18 @@ Future<void> _reportPopup(
         'type=${observed.windowTypeName ?? 'none'} '
         'transient_for=0x${observed.transientFor.toRadixString(16)} '
         'owner=0x${ownerXid.toRadixString(16)} '
-        'grab=none',
+        'origin=$origin grab=none',
       );
+      if (!passed) {
+        throw StateError('X11 popup properties or position mismatch');
+      }
     } finally {
       popup.close();
       backend.pumpEvents(timeout: const Duration(milliseconds: 25));
     }
   } on Object catch (error) {
     stdout.writeln('X11_POPUP=FAIL $error');
+    rethrow;
   }
 }
 

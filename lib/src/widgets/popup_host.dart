@@ -371,11 +371,19 @@ final class PopupWindowFrame extends InheritedWidget {
   const PopupWindowFrame({
     super.key,
     required this.outlined,
+    this.opaque = false,
     required super.child,
   });
 
   /// Whether the platform outlines the popup's shape itself.
   final bool outlined;
+
+  /// The native surface cannot composite alpha, so its corners need a fill.
+  final bool opaque;
+
+  static bool opaqueOf(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<PopupWindowFrame>()?.opaque ??
+      false;
 
   /// [outlined] of the nearest frame, false with none.
   static bool outlinedOf(BuildContext context) =>
@@ -386,7 +394,7 @@ final class PopupWindowFrame extends InheritedWidget {
 
   @override
   bool updateShouldNotify(PopupWindowFrame oldWidget) =>
-      oldWidget.outlined != outlined;
+      oldWidget.outlined != outlined || oldWidget.opaque != opaque;
 }
 
 // ---------------------------------------------------------------------------

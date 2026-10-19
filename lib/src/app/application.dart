@@ -1906,6 +1906,9 @@ final class ApplicationWindow with DisposableMixin {
       return result;
     } finally {
       _inFrame = false;
+      // A callback can queue a build while presentation is awaiting the host.
+      // That build arrived after the settle loop, so it needs another frame.
+      if (buildOwner.hasScheduledBuilds) requestFrame();
       endFramePhase();
     }
   }

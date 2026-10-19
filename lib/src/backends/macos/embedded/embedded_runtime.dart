@@ -31,7 +31,9 @@ const String macosEmbeddedRunApplicationSymbol = 'Dart_DartUiRunApplication';
 
 /// What [MacosEmbeddedRuntime.status] found, in the words a probe reports.
 enum MacosEmbeddedRuntimeStatus {
-  /// The patched runtime, main-thread mode on, and this isolate on thread 0.
+  /// A supported embedded loop adapter keeps this isolate on thread 0.
+  /// The default detector recognizes the patched SDK runtime; a backend may
+  /// supply an independently validated adapter through its constructor hooks.
   active,
 
   /// Not macOS.
@@ -55,7 +57,7 @@ enum MacosEmbeddedRuntimeStatus {
 
   /// One line for the probe's diagnostic.
   String get description => switch (this) {
-        active => 'patched Dart runtime: main isolate on the main thread',
+        active => 'embedded runtime: main isolate on the main thread',
         notMacos => 'not macOS',
         stockRuntime => 'not the dart_ui embedded runtime (no '
             '$macosEmbeddedLoopSymbol in the process); build a .app with '

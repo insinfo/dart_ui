@@ -54,31 +54,45 @@ final class _ContextMenuAreaState extends State<ContextMenuArea> {
   Widget build(BuildContext context) => MenuAnchor(
         controller: _controller,
         menuChildren: widget.menuChildren(),
-        child: _SecondaryPress(onPress: _open, child: widget.child),
+        child: _SecondaryPress(
+            enabled: widget.enabled, onPress: _open, child: widget.child),
       );
 }
 
 final class _SecondaryPress extends SingleChildRenderObjectWidget {
-  const _SecondaryPress({required this.onPress, required super.child});
+  const _SecondaryPress(
+      {required this.enabled, required this.onPress, required super.child});
+
+  final bool enabled;
 
   final void Function(Offset local) onPress;
 
   @override
   _RenderSecondaryPress createRenderObject(BuildContext context) =>
-      _RenderSecondaryPress(onPress);
+      _RenderSecondaryPress(onPress, enabled);
 
   @override
   void updateRenderObject(
       BuildContext context, covariant _RenderSecondaryPress renderObject) {
-    renderObject.onPress = onPress;
+    renderObject
+      ..onPress = onPress
+      ..enabled = enabled;
   }
 }
 
 /// Watches for a secondary press without claiming any other event, so the
 /// child's own gestures are untouched.
 final class _RenderSecondaryPress extends RenderProxyBox
-    implements PointerEventTarget {
-  _RenderSecondaryPress(this.onPress);
+    implements ConditionalPointerEventBarrier {
+  _RenderSecondaryPress(this.onPress, this.enabled);
+
+  bool enabled;
+
+  @override
+  bool stopsPointerEvent(PointerEvent event) =>
+      enabled &&
+      event is PointerDownEvent &&
+      event.button == PointerButton.secondary;
 
   void Function(Offset local) onPress;
 
@@ -87,7 +101,7 @@ final class _RenderSecondaryPress extends RenderProxyBox
 
   @override
   void handlePointerEvent(PointerEvent event) {
-    if (event is! PointerDownEvent || event.button != PointerButton.secondary) {
+    if (!stopsPointerEvent(event)) {
       return;
     }
     onPress(globalToLocal(event.logicalPosition));

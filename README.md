@@ -247,12 +247,14 @@ surpresa:
   Continua **não existindo**: `MeshShading.wireframe` desenha sólido sem
   iluminação, porque `VK_POLYGON_MODE_LINE` exige `fillModeNonSolid`, que este
   dispositivo não habilita.
-- **O X11 só rodou sob Xvfb.** Nenhum gerenciador de janelas jamais administrou
-  uma janela deste backend, então `WM_TRANSIENT_FOR`, `_NET_WM_STATE` e
-  decorações seguem sem prova. Não há visual ARGB de 32 bits nem compositor
-  ali, então `EGL_NATIVE_VISUAL_ID` contra um Xorg com composição continua sem
-  teste. **XInput2 e RandR por monitor não existem** — a geometria de tela é a
-  caixa envolvente de todos os monitores.
+- **O X11 também foi executado no Xfce/Xorg em Ubuntu ARM64**, com Mesa virgl
+  acelerado: File Explorer pela VM Dart e por AOT com OpenGL, navegação e menus.
+  A validação e as correções de coordenadas, cursor e cantos dos menus estão em
+  [FILE_EXPLORER_LINUX_2026-10-18.md](doc/logs/FILE_EXPLORER_LINUX_2026-10-18.md).
+  Isso não prova todos os estados de janela nem todos os gerenciadores. As
+  janelas ainda usam o visual da raiz: popups sem alpha preenchem os cantos
+  com a cor do painel. **XInput2 e RandR por monitor não existem** — a geometria
+  de tela é a caixa envolvente de todos os monitores.
 - **O Wayland só rodou sob Weston.** GNOME, KDE e wlroots, nenhum.
 - **O dono INCR do clipboard X11 foi provado contra o `xclip`**, que é um
   estranho e é a parte que importa. GTK e Qt implementam o mesmo ICCCM com

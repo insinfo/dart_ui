@@ -191,7 +191,9 @@ final class X11Window
       visible: options.visible,
       onClosed: onClosed,
       managed: !plan.overrideRedirect,
-    );
+    )
+      .._protocol.originX = x ?? 0
+      .._protocol.originY = y ?? 0;
   }
 
   final X11WindowClient _client;
@@ -452,9 +454,10 @@ final class X11Window
   @override
   void setCursor(SystemCursor cursor) {
     throwIfDisposed();
-    // Cursor-font resources are intentionally deferred. Remembering the
-    // requested cursor keeps the contract deterministic without pretending a
-    // native cursor was installed.
+    if (_cursor == cursor) return;
+    if (_client case final X11CursorClient client) {
+      client.setTopLevelCursor(xcbWindow, cursor);
+    }
     _cursor = cursor;
   }
 

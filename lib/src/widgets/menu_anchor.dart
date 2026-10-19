@@ -801,6 +801,7 @@ final class _MenuPanelRenderWidget extends MultiChildRenderObjectWidget {
     )
       ..theme = theme
       ..platformOutline = PopupWindowFrame.outlinedOf(context)
+      ..opaqueWindow = PopupWindowFrame.opaqueOf(context)
       ..focusNode = focusNode
       ..onDismiss = onDismiss
       ..onArrowLeftEscape = onArrowLeftEscape
@@ -819,6 +820,7 @@ final class _MenuPanelRenderWidget extends MultiChildRenderObjectWidget {
       ..decorated = decorated
       ..theme = theme
       ..platformOutline = PopupWindowFrame.outlinedOf(context)
+      ..opaqueWindow = PopupWindowFrame.opaqueOf(context)
       ..focusNode = focusNode
       ..onDismiss = onDismiss
       ..onArrowLeftEscape = onArrowLeftEscape
@@ -920,6 +922,16 @@ final class RenderMenuPanel extends RenderBoxContainer<BoxParentData>
   set platformOutline(bool value) {
     if (value == _platformOutline) return;
     _platformOutline = value;
+    markNeedsPaint();
+  }
+
+  bool _opaqueWindow = false;
+
+  /// Fills every pixel of a native surface that cannot composite alpha.
+  bool get opaqueWindow => _opaqueWindow;
+  set opaqueWindow(bool value) {
+    if (_opaqueWindow == value) return;
+    _opaqueWindow = value;
     markNeedsPaint();
   }
 
@@ -1340,6 +1352,10 @@ final class RenderMenuPanel extends RenderBoxContainer<BoxParentData>
       // and `RenderContextMenuSurface` paint, so a menu looks the same however
       // it was built.
       final double radius = MenuLook.of(theme).radius;
+      if (_opaqueWindow) {
+        list.drawRect(rect.left, rect.top, rect.right, rect.bottom,
+            list.addPaint(colorArgb: theme.surfaceRaised.value));
+      }
       paintRoundedFill(list, rect, theme.surfaceRaised, radius);
       if (!_platformOutline) {
         paintRoundedBorder(list, rect, theme.border, radius);

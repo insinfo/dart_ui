@@ -31,7 +31,16 @@ final class _FakeCpuBuffer implements X11CpuBuffer {
   final Framebuffer framebuffer;
 }
 
-final class _FakeX11WindowClient implements X11WindowClient, X11CpuClient {
+final class _FakeX11WindowClient
+    implements X11WindowClient, X11CpuClient, X11CursorClient {
+  final List<SystemCursor> installedCursors = <SystemCursor>[];
+
+  @override
+  void setTopLevelCursor(int window, SystemCursor cursor) {
+    expect(window, nextWindow);
+    installedCursors.add(cursor);
+  }
+
   final int nextWindow = 0x220011;
 
   @override
@@ -283,6 +292,8 @@ void main() {
     expect(request.height, 120);
     expect(request.x, 16);
     expect(request.y, -7);
+    expect(
+        window.clientToScreen(Offset.zero), const Offset(16 / 1.5, -7 / 1.5));
     expect(request.title, 'Janela λ');
     expect(request.resizable, isFalse);
     expect(request.decorated, isFalse);
@@ -340,6 +351,17 @@ void main() {
 
     expect(client.mappedWindows, <int>[client.nextWindow]);
     expect(client.unmappedWindows, <int>[client.nextWindow]);
+  });
+
+  test('cursor transitions reach X11 once and restore the arrow', () {
+    final client = _FakeX11WindowClient();
+    final window = _createWindow(client);
+    addTearDown(window.dispose);
+    window.setCursor(SystemCursor.resizeHorizontal);
+    window.setCursor(SystemCursor.resizeHorizontal);
+    window.setCursor(SystemCursor.arrow);
+    expect(client.installedCursors,
+        <SystemCursor>[SystemCursor.resizeHorizontal, SystemCursor.arrow]);
   });
 
   test('title, bounds, cursor and redraw operations use device pixels', () {

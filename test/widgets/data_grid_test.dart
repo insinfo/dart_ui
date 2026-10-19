@@ -53,6 +53,17 @@ void main() {
   });
 
   group('DataGrid column edges', () {
+    test('the resize cursor stays active until the drag is released', () {
+      final harness = _GridHarness(rowCount: 3)..frame();
+      addTearDown(harness.dispose);
+      final outsideGrip = _move(const Offset(50, 10));
+      harness.header.handlePointerEvent(_press(const Offset(100, 10)));
+      expect(
+          harness.header.cursorFor(outsideGrip), SystemCursor.resizeHorizontal);
+      harness.header.handlePointerEvent(_release(const Offset(100, 10)));
+      expect(harness.header.cursorFor(outsideGrip), isNull);
+    });
+
     test('an edge shows the resize arrow; a double click fits the column', () {
       final harness = _GridHarness(rowCount: 3);
       harness.frame();

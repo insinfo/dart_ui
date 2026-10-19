@@ -55,10 +55,19 @@ final class MacosEmbeddedWindowingBackend
         MacosEmbeddedSink {
   MacosEmbeddedWindowingBackend({
     MacosEmbeddedRuntimeStatus Function()? runtimeStatus,
+    void Function()? requestRunApplication,
     this.applicationName,
-  }) : _runtimeStatus = runtimeStatus ?? (() => MacosEmbeddedRuntime.status);
+  })  : _runtimeStatus = runtimeStatus ?? (() => MacosEmbeddedRuntime.status),
+        _requestRunApplication =
+            requestRunApplication ?? MacosEmbeddedRuntime.requestRunApplication;
 
   final MacosEmbeddedRuntimeStatus Function() _runtimeStatus;
+
+  /// Starts the application loop after delegates and menus are installed.
+  /// A supplied adapter must run on the process main thread, deliver the
+  /// launch notification and continue native event dispatch without blocking
+  /// Dart progress. The default retains the patched SDK runtime's behavior.
+  final void Function() _requestRunApplication;
 
   /// Shown in the application menu's Hide and Quit items; the process name
   /// when null.
@@ -128,38 +137,46 @@ final class MacosEmbeddedWindowingBackend
         detail: status.description,
       );
     }
-    DynamicLibrary.open('/System/Library/Frameworks/AppKit.framework/AppKit');
-    DynamicLibrary.open(
-        '/System/Library/Frameworks/QuartzCore.framework/QuartzCore');
-    _kick = RawReceivePort(
-        (Object? _) => _kickPending = false, 'dart_ui macos embedded')
-      // The program ends when its own ports close, not this one.
-      ..keepIsolateAlive = false;
-    final MacosEmbeddedClasses classes =
-        _classes = MacosEmbeddedClasses.register();
-    MacosEmbeddedClasses.sink = this;
-    ObjCAutoreleasePool.run(() {
-      _application = objcRetain(objcSendPointer(
-          objcClass('NSApplication'), objcSelector('sharedApplication')));
-      // NSApplicationActivationPolicyRegular: a Dock icon and a menu bar.
-      objcSendVoid1(_application, objcSelector('setActivationPolicy:'), 0);
-      _applicationDelegate =
-          objcSendPointer(classes.applicationDelegate, objcSelector('new'));
-      objcSendVoid1(_application, objcSelector('setDelegate:'),
-          _applicationDelegate.address);
-      _windowDelegate =
-          objcSendPointer(classes.windowDelegate, objcSelector('new'));
-      _installMainMenu();
-    });
-    final Stopwatch launch = Stopwatch()..start();
-    MacosEmbeddedRuntime.requestRunApplication();
-    // The runtime runs [NSApp run] when this message ends; finishLaunching
-    // calls the delegate on a later turn of the run loop.
-    await _launched.future.timeout(const Duration(seconds: 30));
-    launchDuration = launch.elapsed;
-    ObjCAutoreleasePool.run(() => objcSendVoid1(
-        _application, objcSelector('activateIgnoringOtherApps:'), 1));
-    _initialized = true;
+    try {
+      DynamicLibrary.open('/System/Library/Frameworks/AppKit.framework/AppKit');
+      DynamicLibrary.open(
+          '/System/Library/Frameworks/QuartzCore.framework/QuartzCore');
+      _kick = RawReceivePort(
+          (Object? _) => _kickPending = false, 'dart_ui macos embedded')
+        // The program ends when its own ports close, not this one.
+        ..keepIsolateAlive = false;
+      final MacosEmbeddedClasses classes =
+          _classes = MacosEmbeddedClasses.register();
+      MacosEmbeddedClasses.sink = this;
+      ObjCAutoreleasePool.run(() {
+        _application = objcRetain(objcSendPointer(
+            objcClass('NSApplication'), objcSelector('sharedApplication')));
+        // NSApplicationActivationPolicyRegular: a Dock icon and a menu bar.
+        objcSendVoid1(_application, objcSelector('setActivationPolicy:'), 0);
+        _applicationDelegate =
+            objcSendPointer(classes.applicationDelegate, objcSelector('new'));
+        objcSendVoid1(_application, objcSelector('setDelegate:'),
+            _applicationDelegate.address);
+        _windowDelegate =
+            objcSendPointer(classes.windowDelegate, objcSelector('new'));
+        _installMainMenu();
+      });
+      final Stopwatch launch = Stopwatch()..start();
+      _requestRunApplication();
+      // The patched runtime runs [NSApp run] after this message. A supplied
+      // adapter may call finishLaunching and notify the delegate synchronously;
+      // the completed launch future is valid in either case.
+      await _launched.future.timeout(const Duration(seconds: 30));
+      launchDuration = launch.elapsed;
+      ObjCAutoreleasePool.run(() => objcSendVoid1(
+          _application, objcSelector('activateIgnoringOtherApps:'), 1));
+      _initialized = true;
+    } catch (_) {
+      // Initialization may fail after a kick port, callbacks or Objective-C
+      // objects were installed. Release those resources even before success.
+      await shutdown();
+      rethrow;
+    }
   }
 
   /// The application menu - Hide, Quit - and a Window menu - Minimise,
@@ -364,7 +381,12 @@ final class MacosEmbeddedWindowingBackend
 
   @override
   Future<void> shutdown() async {
-    if (!_initialized) return;
+    if (!_initialized &&
+        _application == nullptr &&
+        _kick == null &&
+        _classes == null) {
+      return;
+    }
     _initialized = false;
     _quitRequested = true;
     // Popups before their owners: a child window goes with its parent.
@@ -388,6 +410,7 @@ final class MacosEmbeddedWindowingBackend
     _applicationDelegate = nullptr;
     _windowDelegate = nullptr;
     _application = nullptr;
+    _classes = null;
     _kick?.close();
     _kick = null;
     final Completer<void>? waiter = _waiter;

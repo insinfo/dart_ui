@@ -122,8 +122,10 @@ void main() {
         final host = WindowPopupHost(application: app, owner: owner);
 
         bool? outlined;
+        bool? opaque;
         host.open(_spec(builder: (BuildContext context) {
           outlined = PopupWindowFrame.outlinedOf(context);
+          opaque = PopupWindowFrame.opaqueOf(context);
           return const _Recorder(
             colour: _colourPopup,
             fixedSize: Size(80, 40),
@@ -133,6 +135,7 @@ void main() {
         // The builder's context is the popup window's root, under the frame
         // the window puts there.
         expect(outlined, transparent);
+        expect(opaque, !transparent);
 
         await _stop(app);
       }

@@ -35,3 +35,6 @@ doc/api/
 
 # Marcas do Windows ("baixado da internet") que viram arquivos ao copiar de NTFS/WSL.
 *:Zone.Identifier
+
+# macOS Finder metadata
+.DS_Store

@@ -8,6 +8,31 @@ referência de recursos e layout (nenhum código copiado).
 dart run bin/file_explorer.dart [pasta]
 ```
 
+## Linux (Ubuntu/Debian)
+
+Use Dart 3.6.2 e execute `dart pub get` na raiz do projeto e nesta pasta.
+Para X11 com OpenGL, as bibliotecas de execução são:
+
+```sh
+sudo apt install libxcb1 libx11-6 libegl1 libgl1 libgl1-mesa-dri
+cd examples/file_explorer
+dart pub get
+dart run bin/file_explorer.dart "$HOME" --backend=x11 --presentation=opengl
+```
+
+Execute dentro da sessão gráfica, como o usuário conectado. Sem aceleração,
+`--cpu` permite usar a apresentação por CPU. Vulkan não é necessário para
+este caminho. `glxinfo -B` (`mesa-utils`) permite conferir o driver e a
+aceleração disponíveis.
+
+Em uma VM com pasta compartilhada do macOS, mantenha uma cópia de trabalho
+local no Linux e rode `dart pub get` nela: `.dart_tool` contém caminhos
+específicos do sistema. O executável AOT é gerado pelo comando de distribuição
+abaixo. Depois, execute `./build/FileExplorer "$HOME"`.
+
+A validação em Ubuntu ARM64, Xfce/Xorg e Mesa virgl está registrada em
+[FILE_EXPLORER_LINUX_2026-10-18.md](../../doc/logs/FILE_EXPLORER_LINUX_2026-10-18.md).
+
 ## Arquitetura
 
 - `lib/src/engine/` - o motor, sem widgets: `FileSystem` (interface),
