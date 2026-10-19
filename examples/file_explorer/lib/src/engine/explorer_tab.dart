@@ -6,6 +6,7 @@ import 'dart:async';
 
 import 'file_system.dart';
 import 'location.dart';
+import 'name_filter.dart';
 
 /// The state of one tab. The model owns the tabs and changes them; the
 /// window reads them.
@@ -24,6 +25,9 @@ final class ExplorerTab {
 
   /// [entries] sorted and filtered - what the view shows, in its order.
   List<FileEntry> visible = const <FileEntry>[];
+
+  /// Empty means all names. Filter choices are local to this tab/location.
+  final Set<NameRange> nameRanges = <NameRange>{};
 
   /// The selected items, by path.
   final Set<String> selection = <String>{};

@@ -4,6 +4,7 @@ import 'package:dart_ui/dart_ui.dart';
 import 'package:file_explorer/src/engine/demo_disk.dart';
 import 'package:file_explorer/src/engine/explorer_model.dart';
 import 'package:file_explorer/src/engine/location.dart';
+import 'package:file_explorer/src/engine/name_filter.dart';
 import 'package:file_explorer/src/ui/app.dart';
 import 'package:file_explorer/src/ui/explorer_window.dart';
 import 'package:test/test.dart';
@@ -143,6 +144,79 @@ Set<KeyModifier> get _command =>
 void main() {
   setUpAll(FrameworkFonts.install);
   tearDownAll(FontRegistry.instance.reset);
+
+  test('Name dropdown filters in place, clears and survives an empty result',
+      () async {
+    final h = _Harness();
+    addTearDown(h.dispose);
+    await h.settle();
+    final before = h.model.tab.visible.length;
+    final header = h.renders<RenderDataGridHeader>().single;
+    final sort = h.model.sortField;
+    final at = header.localToGlobal(Offset(header.widths.first - 15, 10));
+    h.owner.dispatchPointerEvent(PointerDownEvent(
+        windowId: const NativeWindowId(1),
+        generation: 1,
+        timestamp: Duration.zero,
+        pointerId: 1,
+        kind: PointerKind.mouse,
+        button: PointerButton.primary,
+        logicalPosition: at));
+    h.owner.dispatchPointerEvent(PointerUpEvent(
+        windowId: const NativeWindowId(1),
+        generation: 1,
+        timestamp: const Duration(milliseconds: 20),
+        pointerId: 1,
+        kind: PointerKind.mouse,
+        button: PointerButton.primary,
+        logicalPosition: at));
+    await h.settle();
+    expect(h.popupHost.openCount, 1);
+    expect(h.model.sortField, sort);
+    final checks = h
+        .renders<RenderToggle>()
+        .where((r) => r.describeSemantics().role == SemanticsRole.checkbox)
+        .toList();
+    expect(checks, isNotEmpty);
+    final choice = checks.first.describeSemantics().label;
+    final checkPoint = checks.first.localToGlobal(const Offset(8, 8));
+    h.owner.dispatchPointerEvent(PointerDownEvent(
+        windowId: const NativeWindowId(1),
+        generation: 1,
+        timestamp: const Duration(milliseconds: 100),
+        pointerId: 1,
+        kind: PointerKind.mouse,
+        button: PointerButton.primary,
+        logicalPosition: checkPoint));
+    h.owner.dispatchPointerEvent(PointerUpEvent(
+        windowId: const NativeWindowId(1),
+        generation: 1,
+        timestamp: const Duration(milliseconds: 120),
+        pointerId: 1,
+        kind: PointerKind.mouse,
+        button: PointerButton.primary,
+        logicalPosition: checkPoint));
+    await h.settle();
+    expect(h.popupHost.openCount, 1, reason: 'multi-choice remains open');
+    expect(h.model.tab.nameRanges, isNotEmpty);
+    expect(
+        h.model.tab.visible.every((e) => NameRange.of(e.name).label == choice),
+        isTrue);
+    h
+        .renders<RenderButton>()
+        .firstWhere((r) => r.label == 'Clear filter')
+        .activate();
+    await h.settle();
+    expect(h.model.tab.visible.length, before);
+    h.key(logicalKeyEscape);
+    await h.settle();
+    expect(h.popupHost.openCount, 0);
+    h.model.setNameRanges([NameRange.digits]);
+    await h.settle();
+    expect(h.model.tab.visible, isEmpty);
+    expect(h.renders<RenderDataGridHeader>(), hasLength(1),
+        reason: 'header must remain reachable to clear an empty filter');
+  });
 
   test('column chooser remains usable at the minimum window size', () async {
     final h = _Harness();

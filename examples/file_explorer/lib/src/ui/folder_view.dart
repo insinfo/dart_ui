@@ -13,6 +13,7 @@ import '../engine/location.dart';
 import 'column_options.dart' show measureColumnWidth;
 import 'drag_support.dart';
 import 'file_icon.dart';
+import 'name_filter_popup.dart';
 import 'selected_name_rename.dart';
 import 'thumbnails.dart';
 
@@ -194,7 +195,9 @@ class _FolderViewState extends State<FolderView> {
     if (tab.error != null) {
       return _Message(icon: PhosphorIcons.warningCircle, text: tab.error!);
     }
-    if (tab.visible.isEmpty && !tab.loading) {
+    if (tab.visible.isEmpty &&
+        !tab.loading &&
+        !(model.viewMode == ViewMode.details && tab.nameRanges.isNotEmpty)) {
       return _background(_Message(
         icon: tab.location is SearchLocation
             ? PhosphorIcons.magnifyingGlass
@@ -232,6 +235,7 @@ class _FolderViewState extends State<FolderView> {
         model.notify();
       },
       headerMenu: headerMenu,
+      onColumnFilter: (_, anchor) => showNameFilter(context, model, anchor),
       columnFitWidth: (int column) =>
           _fitWidth(theme, columns[column].identity as String, items),
       columns: columns,
@@ -390,6 +394,8 @@ class _FolderViewState extends State<FolderView> {
   DataGridColumn _column(DetailsColumn c) => DataGridColumn(
       title: c.label(model.strings),
       id: c.id,
+      filterable: c == DetailsColumn.name,
+      filtered: c == DetailsColumn.name && tab.nameRanges.isNotEmpty,
       width: model.columnWidths[c.id] ?? c.defaultWidth);
 
   /// A double click on a column edge fits the same values the cells display.

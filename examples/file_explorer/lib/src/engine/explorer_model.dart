@@ -12,6 +12,7 @@ import 'file_system.dart';
 import 'file_types.dart';
 import 'location.dart';
 import 'move_history.dart';
+import 'name_filter.dart';
 import 'preferences.dart';
 import 'search_query.dart';
 import 'sorting.dart';
@@ -524,6 +525,7 @@ final class ExplorerModel {
     _restoreView(to);
     t.back.add(t.location);
     t.forward.clear();
+    t.nameRanges.clear();
     t.location = to;
     return _load(t);
   }
@@ -533,6 +535,7 @@ final class ExplorerModel {
     if (t.back.isEmpty) return idle;
     t.forward.add(t.location);
     _rememberView();
+    t.nameRanges.clear();
     t.location = t.back.removeLast();
     _restoreView(t.location);
     return _load(t);
@@ -543,6 +546,7 @@ final class ExplorerModel {
     if (t.forward.isEmpty) return idle;
     t.back.add(t.location);
     _rememberView();
+    t.nameRanges.clear();
     t.location = t.forward.removeLast();
     _restoreView(t.location);
     return _load(t);
@@ -726,11 +730,31 @@ final class ExplorerModel {
   void _resort(ExplorerTab t) {
     final List<FileEntry> shown = <FileEntry>[
       for (final FileEntry e in t.entries)
-        if (_shows(e)) e,
+        if (_shows(e) &&
+            (t.nameRanges.isEmpty ||
+                t.nameRanges.contains(NameRange.of(e.name))))
+          e,
     ];
     t.visible = sortEntries(shown, sortField, ascending, strings);
     final Set<String> present = <String>{for (final e in t.visible) e.path};
     t.selection.removeWhere((String p) => !present.contains(p));
+  }
+
+  /// Nonempty choices from the unfiltered listing, so a checked range never
+  /// hides the other choices. Retain active ranges after files disappear.
+  Set<NameRange> get availableNameRanges => {
+        ...tab.nameRanges,
+        for (final entry in tab.entries)
+          if (_shows(entry)) NameRange.of(entry.name),
+      };
+
+  void setNameRanges(Iterable<NameRange> ranges) {
+    final selected = ranges.toSet();
+    tab.nameRanges
+      ..clear()
+      ..addAll(selected);
+    _resort(tab);
+    notify();
   }
 
   /// Sorts every tab by [field]; the same field again flips the direction.

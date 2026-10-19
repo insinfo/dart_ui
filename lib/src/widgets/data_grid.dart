@@ -74,6 +74,8 @@ final class DataGridColumn {
     this.resizable = true,
     this.sortable = true,
     this.editable = false,
+    this.filterable = false,
+    this.filtered = false,
   });
 
   final String title;
@@ -88,6 +90,12 @@ final class DataGridColumn {
   final double minWidth;
   final bool resizable;
   final bool sortable;
+
+  /// Shows a separate dropdown affordance for [DataGrid.onColumnFilter].
+  final bool filterable;
+
+  /// Whether the caller currently filters this column.
+  final bool filtered;
 
   /// Whether F2 or a double click on the column's cell opens a text editor
   /// on it; see [DataGrid.onCellEdited].
@@ -128,6 +136,7 @@ final class DataGrid extends StatefulWidget {
     this.cacheExtent = 48.0,
     this.sort,
     this.onSortChanged,
+    this.onColumnFilter,
     this.selectionMode = DataGridSelectionMode.single,
     this.selectedRows = const <int>{},
     this.onSelectionChanged,
@@ -172,6 +181,10 @@ final class DataGrid extends StatefulWidget {
   final DataGridSort? sort;
 
   final void Function(DataGridSort sort)? onSortChanged;
+
+  /// Opens a column filter at its header rectangle in window coordinates.
+  /// The caller owns the choices and filters the rows, independently of sort.
+  final void Function(int column, Rect anchor)? onColumnFilter;
 
   final DataGridSelectionMode selectionMode;
   final Set<int> selectedRows;
@@ -664,6 +677,7 @@ final class _DataGridState extends State<DataGrid> {
           theme: theme,
           horizontal: _horizontal,
           onSortRequest: _requestSort,
+          onColumnFilter: widget.onColumnFilter,
           onResize: _resizeColumn,
           onFit: (int column) {
             final double? width = widget.columnFitWidth?.call(column);
@@ -893,6 +907,7 @@ final class _DataGridHeaderWidget extends RenderObjectWidget {
     required this.theme,
     required this.horizontal,
     required this.onSortRequest,
+    required this.onColumnFilter,
     required this.onResize,
     required this.onFit,
   });
@@ -906,6 +921,7 @@ final class _DataGridHeaderWidget extends RenderObjectWidget {
   final TextDirection textDirection;
   final ThemeData theme;
   final void Function(int column) onSortRequest;
+  final void Function(int column, Rect anchor)? onColumnFilter;
   final void Function(int column, double width) onResize;
   final void Function(int column) onFit;
 
@@ -922,6 +938,7 @@ final class _DataGridHeaderWidget extends RenderObjectWidget {
         ..textDirection = textDirection
         ..horizontal = horizontal
         ..onSortRequest = onSortRequest
+        ..onColumnFilter = onColumnFilter
         ..onResize = onResize
         ..onFit = onFit
         ..theme = theme;
@@ -939,6 +956,7 @@ final class _DataGridHeaderWidget extends RenderObjectWidget {
       ..textDirection = textDirection
       ..horizontal = horizontal
       ..onSortRequest = onSortRequest
+      ..onColumnFilter = onColumnFilter
       ..onResize = onResize
       ..onFit = onFit
       ..theme = theme;
@@ -968,6 +986,7 @@ final class RenderDataGridHeader extends RenderBox
   DataGridSort? _sort;
   TextDirection _textDirection = TextDirection.leftToRight;
   void Function(int column)? onSortRequest;
+  void Function(int column, Rect anchor)? onColumnFilter;
   void Function(int column, double width)? onResize;
 
   List<DataGridColumn> get columns => _columns;
@@ -1095,9 +1114,25 @@ final class RenderDataGridHeader extends RenderBox
   double _resizeStartX = 0;
   double _resizeStartWidth = 0;
   int _pressedColumn = -1;
+  bool _pressedFilter = false;
+
+  bool _filterAt(int column, double x) {
+    if (column < 0 || !_columns[column].filterable) return false;
+    final start = columnStart(column);
+    return textDirection.isRightToLeft
+        ? x < start + 24
+        : x >= start + _widths[column] - 24;
+  }
 
   @override
   void handlePointerEvent(PointerEvent event) {
+    if (event is PointerUpEvent && _pressedFilter) {
+      final x = globalToLocal(event.logicalPosition).dx;
+      if (_columnAt(x) != _pressedColumn || !_filterAt(_pressedColumn, x)) {
+        _pressedColumn = -1;
+        _pressedFilter = false;
+      }
+    }
     super.handlePointerEvent(event);
     if (!enabled) return;
     switch (event) {
@@ -1116,6 +1151,7 @@ final class RenderDataGridHeader extends RenderBox
         } else {
           _resizingColumn = -1;
           _pressedColumn = _columnAt(local.dx);
+          _pressedFilter = _filterAt(_pressedColumn, local.dx);
         }
       case PointerMoveEvent():
         if (_resizingColumn < 0) return;
@@ -1141,6 +1177,13 @@ final class RenderDataGridHeader extends RenderBox
   void activate() {
     final int column = _pressedColumn;
     _pressedColumn = -1;
+    if (_pressedFilter && column >= 0) {
+      _pressedFilter = false;
+      final origin = localToGlobal(Offset(columnStart(column), 0));
+      onColumnFilter?.call(column,
+          Rect.fromLTWH(origin.dx, origin.dy, _widths[column], size.height));
+      return;
+    }
     if (column >= 0 && column < _columns.length && _columns[column].sortable) {
       onSortRequest?.call(column);
     }
@@ -1181,11 +1224,18 @@ final class RenderDataGridHeader extends RenderBox
       final double start = columnStart(i);
       final double columnWidth = _widths[i];
       final bool sorted = _sort?.columnIndex == i;
-      final double arrowSpace = sorted ? 12 : 0;
+      final double filterSpace = _columns[i].filterable ? 24 : 0;
+      final double arrowSpace = (sorted ? 12 : 0) + filterSpace;
       paintLabel(
         list,
         _columns[i].title,
-        Offset((offset.dx + start + padding).roundToDouble(), labelTopIn(rect)),
+        Offset(
+            (offset.dx +
+                    start +
+                    padding +
+                    (_textDirection.isRightToLeft ? filterSpace : 0))
+                .roundToDouble(),
+            labelTopIn(rect)),
         theme.foregroundSecondary,
         maxWidth: (columnWidth - padding * 2 - arrowSpace)
             .clamp(0.0, double.infinity),
@@ -1194,11 +1244,27 @@ final class RenderDataGridHeader extends RenderBox
         _paintSortArrow(
           list,
           Offset(
-            offset.dx + start + columnWidth - padding - 8,
+            offset.dx +
+                start +
+                columnWidth -
+                padding -
+                8 -
+                (_textDirection.isRightToLeft ? 0 : filterSpace),
             offset.dy + size.height / 2,
           ),
           _sort!.direction,
         );
+      }
+      if (_columns[i].filterable) {
+        final x = offset.dx +
+            start +
+            (_textDirection.isRightToLeft ? 15 : columnWidth - 15);
+        final y = offset.dy + size.height / 2;
+        paintPolylineMark(
+            list,
+            [Offset(x - 3, y - 2), Offset(x, y + 1), Offset(x + 3, y - 2)],
+            _columns[i].filtered ? 2 : 1,
+            _columns[i].filtered ? theme.accent : theme.foregroundSecondary);
       }
       // The boundary line doubles as the visual for the resize grip. Drawn in
       // the subtle colour: a column rule is a division *inside* one surface,

@@ -271,6 +271,28 @@ void main() {
   });
 
   group('DataGrid header', () {
+    test('filter dropdown is independent of sorting, resize and RTL', () {
+      for (final direction in TextDirection.values) {
+        final harness =
+            _GridHarness(rowCount: 10, filterable: true, direction: direction);
+        harness.frame();
+        final start = harness.header.columnStart(0);
+        final x = start + (direction.isRightToLeft ? 15 : 85);
+        harness.clickHeader(Offset(x, 10));
+        expect(harness.filterAnchors, hasLength(1));
+        expect(harness.filterAnchors.single.width, 100);
+        expect(harness.sort, isNull);
+        harness.header.handlePointerEvent(_press(Offset(x, 10)));
+        harness.header.handlePointerEvent(_release(Offset(start + 45, 10)));
+        expect(harness.filterAnchors, hasLength(1),
+            reason: 'release outside the button cancels the filter click');
+        harness.clickHeader(Offset(start + 45, 10));
+        expect(harness.sort?.columnIndex, 0);
+        expect(harness.filterAnchors, hasLength(1));
+        harness.dispose();
+      }
+    });
+
     test('clicking a sortable column cycles ascending then descending', () {
       final harness = _GridHarness(rowCount: 10);
       harness.frame();
@@ -453,6 +475,7 @@ final class _GridHarness {
     required this.rowCount,
     this.selectionMode = DataGridSelectionMode.single,
     this.sortable = true,
+    this.filterable = false,
     this.singleClick = false,
     this.widths = const <double>[100, 80],
     this.direction = TextDirection.leftToRight,
@@ -469,6 +492,7 @@ final class _GridHarness {
   final int rowCount;
   final DataGridSelectionMode selectionMode;
   final bool sortable;
+  final bool filterable;
   final bool singleClick;
   final List<double> widths;
   final TextDirection direction;
@@ -477,6 +501,7 @@ final class _GridHarness {
   late final BuildOwner owner;
   Set<int> selection = <int>{};
   DataGridSort? sort;
+  final List<Rect> filterAnchors = [];
   final List<String> resized = <String>[];
   final List<int> activated = <int>[];
   final List<int?> secondary = <int?>[];
@@ -485,7 +510,11 @@ final class _GridHarness {
         textDirection: direction,
         child: DataGrid(
           columns: <DataGridColumn>[
-            DataGridColumn(title: 'Name', width: widths[0], sortable: sortable),
+            DataGridColumn(
+                title: 'Name',
+                width: widths[0],
+                sortable: sortable,
+                filterable: filterable),
             DataGridColumn(title: 'Size', width: widths[1], sortable: sortable),
           ],
           rowCount: rowCount,
@@ -498,6 +527,7 @@ final class _GridHarness {
           onSelectionChanged: (Set<int> rows) => selection = rows,
           sort: sort,
           onSortChanged: (DataGridSort next) => sort = next,
+          onColumnFilter: (_, anchor) => filterAnchors.add(anchor),
           onColumnResized: (int column, double width) =>
               resized.add('$column:$width'),
           onRowActivated: activated.add,
