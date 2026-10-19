@@ -350,7 +350,7 @@ final class Win32Window
       // the window that opened it. Without it, `ShowWindow` on the popup sends
       // the owner a WM_ACTIVATE(WA_INACTIVE) and every focus ring in it goes
       // grey while the user is merely reading a menu.
-      exStyle |= _wsExNoactivate | _wsExTopmost;
+      exStyle |= _wsExNoactivate | _wsExTopmost | 0x00080000; // WS_EX_LAYERED
     }
 
     // The window is created at the system DPI and corrected once its real
@@ -2391,6 +2391,7 @@ final class Win32Window
     if (_pixelWidth <= 0 || _pixelHeight <= 0) return;
     try {
       _surface = Win32DibSurface.create(
+        layered: kind.isDismissable,
         api: _api,
         hwnd: _hwnd,
         pixelWidth: _pixelWidth,

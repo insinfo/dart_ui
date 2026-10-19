@@ -859,6 +859,8 @@ final class WaylandWindowingBackend
               // no OS window handle to show for it, so every proxy for "can
               // you make a popup" answers no here and is wrong.
               Capability.nativePopups,
+              // Both wl_shm and the GBM/DMA-BUF presentation use ARGB8888.
+              Capability.transparentPopups,
               Capability.pointerInput,
               Capability.scrollInput,
               Capability.keyboardInput,

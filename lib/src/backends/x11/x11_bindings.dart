@@ -238,6 +238,9 @@ typedef XcbReplyD = Pointer<Uint8> Function(
     Pointer<Void>, XcbCookie, Pointer<Pointer<Uint8>>);
 typedef XcbReqChkN = Pointer<Uint8> Function(Pointer<Void>, XcbCookie);
 typedef XcbReqChkD = Pointer<Uint8> Function(Pointer<Void>, XcbCookie);
+typedef XcbColormapN = XcbCookie Function(
+    Pointer<Void>, Uint8, Uint32, Uint32, Uint32);
+typedef XcbColormapD = XcbCookie Function(Pointer<Void>, int, int, int, int);
 typedef XcbCrtWinN = XcbCookie Function(
     Pointer<Void>,
     Uint8,
@@ -503,6 +506,10 @@ final class XcbBindings {
       library.lookupFunction<XcbPLnN, XcbPLnD>('xcb_get_atom_name_name_length');
   late final XcbSendEvtD sendEvent =
       library.lookupFunction<XcbSendEvtN, XcbSendEvtD>('xcb_send_event');
+  late final XcbColormapD createColormapChecked =
+      library.lookupFunction<XcbColormapN, XcbColormapD>(
+          'xcb_create_colormap_checked');
+  late final XcbWinD freeColormap = _win('xcb_free_colormap');
   late final XcbCrtGcD createGc =
       library.lookupFunction<XcbCrtGcN, XcbCrtGcD>('xcb_create_gc');
   late final XcbCrtGcD createGcChecked =

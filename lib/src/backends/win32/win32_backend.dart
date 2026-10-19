@@ -580,6 +580,7 @@ final class Win32WindowingBackend
         // SW_SHOWNOACTIVATE, on a window class of its own carrying
         // CS_DROPSHADOW. Everything a menu needs, and none of it conditional.
         Capability.nativePopups,
+        Capability.transparentPopups,
         Capability.cpuPresentation,
         Capability.partialPresent,
         Capability.keyboardInput,

@@ -255,6 +255,12 @@ abstract interface class X11KeyboardClient {
   X11ModifierMapping? readModifierMapping();
 }
 
+/// Optional native alpha capability; test clients need not implement it.
+abstract interface class X11AlphaWindowClient {
+  bool get transparentPopups;
+  int visualForWindow(int window);
+}
+
 /// Device-pixel creation parameters for one top-level X11 window.
 ///
 /// The three kind-bearing fields ([overrideRedirect], [windowTypeAtom],
@@ -379,6 +385,7 @@ final class X11Connection
     with DisposableMixin
     implements
         X11WindowClient,
+        X11AlphaWindowClient,
         X11CpuClient,
         X11DragDropClient,
         X11KeyboardClient,
@@ -514,6 +521,22 @@ final class X11Connection
 
   @override
   int root = 0;
+  int _argbVisual = 0;
+  bool _argbPixmapCompatible = false;
+  final _alphaColormaps = <int, int>{};
+  @override
+  bool get transparentPopups =>
+      _argbVisual != 0 &&
+      _argbPixmapCompatible &&
+      getSelectionOwner(internAtom('_NET_WM_CM_S0')) != 0;
+  @override
+  int visualForWindow(int window) =>
+      _alphaColormaps.containsKey(window) ? _argbVisual : rootVisual;
+  void _releaseAlphaWindow(int window) {
+    final colormap = _alphaColormaps.remove(window);
+    if (colormap != null) xcb.freeColormap(_handle, colormap);
+  }
+
   @override
   int rootVisual = 0;
   int rootDepth = 0;
@@ -745,7 +768,11 @@ final class X11Connection
         if (format.depth == rootDepth) {
           rootBitsPerPixel = format.bitsPerPixel;
           rootScanlinePad = format.scanlinePad;
-          return;
+        }
+        if (format.depth == 32 &&
+            format.bitsPerPixel == 32 &&
+            format.scanlinePad == 32) {
+          _argbPixmapCompatible = true;
         }
         xcb.formatNext(iterator);
       }
@@ -783,7 +810,14 @@ final class X11Connection
             rootRedMask = visual.redMask;
             rootGreenMask = visual.greenMask;
             rootBlueMask = visual.blueMask;
-            return;
+          }
+          if (_argbVisual == 0 &&
+              depths.ref.data.ref.depth == 32 &&
+              visual.visualClass == 4 &&
+              visual.redMask == 0x00ff0000 &&
+              visual.greenMask == 0x0000ff00 &&
+              visual.blueMask == 0x000000ff) {
+            _argbVisual = visual.visualId;
           }
           xcb.visualTypeNext(visuals);
         }
@@ -1577,7 +1611,18 @@ final class X11Connection
     // **the client owns the position**. Nothing will move an override-redirect
     // window onto the screen, off a monitor edge, or out from under a panel;
     // whatever x/y we ask for is exactly where it stays.
+    final alpha = request.overrideRedirect && transparentPopups;
+    int? colormap;
+    if (alpha) {
+      colormap = xcb.generateId(_handle);
+      final error = checkRequest(
+          xcb.createColormapChecked(_handle, 0, colormap, root, _argbVisual),
+          'CreateColormap(ARGB popup)');
+      if (error != null) throw StateError(error);
+      _alphaColormaps[window] = colormap;
+    }
     final attributes = X11CreateWindowAttributes(
+      colormap: colormap,
       borderPixel: blackPixel,
       eventMask: eventMask,
       overrideRedirect: request.overrideRedirect,
@@ -1593,7 +1638,7 @@ final class X11Connection
     final height = _clampU16Extent(request.height);
     final createCookie = xcb.createWindowChecked(
       _handle,
-      rootDepth,
+      alpha ? 32 : rootDepth,
       window,
       root,
       x,
@@ -1602,7 +1647,7 @@ final class X11Connection
       height,
       0,
       xcbWindowClassInputOutput,
-      rootVisual,
+      alpha ? _argbVisual : rootVisual,
       valueMask,
       valueScratch,
     );
@@ -1610,7 +1655,10 @@ final class X11Connection
       createCookie,
       'CreateWindow(0x${window.toRadixString(16)})',
     );
-    if (creationError != null) throw StateError(creationError);
+    if (creationError != null) {
+      _releaseAlphaWindow(window);
+      throw StateError(creationError);
+    }
 
     try {
       _configureTopLevelProtocols(window);
@@ -1625,6 +1673,7 @@ final class X11Connection
       return window;
     } on Object {
       xcb.destroyWindow(_handle, window);
+      _releaseAlphaWindow(window);
       xcb.flush(_handle);
       rethrow;
     }
@@ -1842,6 +1891,7 @@ final class X11Connection
   void destroyTopLevelWindow(int window) {
     if (isDisposed || window == 0) return;
     xcb.destroyWindow(_handle, window);
+    _releaseAlphaWindow(window);
     xcb.flush(_handle);
   }
 
@@ -2104,7 +2154,7 @@ final class X11Connection
         segment.x,
         segment.y,
         0,
-        rootDepth,
+        _alphaColormaps.containsKey(xcbWindow) ? 32 : rootDepth,
         segment.byteLength,
         native.pixels + segment.sourceOffset,
       );

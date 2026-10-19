@@ -275,6 +275,16 @@ final class Win32Api {
   late final void Function(int) postQuitMessage;
   late final int Function(int, Pointer<Win32Rect>) getClientRect;
   late final int Function(int, Pointer<Win32Rect>) getWindowRect;
+  late final int Function(
+      int,
+      int,
+      Pointer<Win32Point>,
+      Pointer<Win32Size>,
+      int,
+      Pointer<Win32Point>,
+      int,
+      Pointer<Win32BlendFunction>,
+      int) updateLayeredWindow;
   late final int Function(int, Pointer<Win32Point>) clientToScreen;
   late final int Function(int, Pointer<Win32Point>) screenToClient;
   late final int Function(int, Pointer<Win32Rect>, int) invalidateRect;
@@ -376,6 +386,27 @@ final class Win32Api {
   late final int Function(int, int, int) setClassLongPtrW;
 
   void _bindUser32() {
+    updateLayeredWindow = _user32.lookupFunction<
+        Int32 Function(
+            IntPtr,
+            IntPtr,
+            Pointer<Win32Point>,
+            Pointer<Win32Size>,
+            IntPtr,
+            Pointer<Win32Point>,
+            Uint32,
+            Pointer<Win32BlendFunction>,
+            Uint32),
+        int Function(
+            int,
+            int,
+            Pointer<Win32Point>,
+            Pointer<Win32Size>,
+            int,
+            Pointer<Win32Point>,
+            int,
+            Pointer<Win32BlendFunction>,
+            int)>('UpdateLayeredWindow');
     registerClassExW = _user32.lookupFunction<
         Uint16 Function(Pointer<WndClassExW>),
         int Function(Pointer<WndClassExW>)>('RegisterClassExW');

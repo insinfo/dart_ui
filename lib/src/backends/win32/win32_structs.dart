@@ -105,6 +105,26 @@ final class Win32Point extends Struct {
   external int y;
 }
 
+/// `SIZE` in physical pixels.
+final class Win32Size extends Struct {
+  @Int32()
+  external int cx;
+  @Int32()
+  external int cy;
+}
+
+/// `BLENDFUNCTION` for premultiplied per-pixel alpha.
+final class Win32BlendFunction extends Struct {
+  @Uint8()
+  external int operation;
+  @Uint8()
+  external int flags;
+  @Uint8()
+  external int sourceAlpha;
+  @Uint8()
+  external int alphaFormat;
+}
+
 /// `MINMAXINFO`, the structure `WM_GETMINMAXINFO` hands out for the handler to
 /// *write into*.
 ///

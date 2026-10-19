@@ -265,8 +265,46 @@ final class PlatformBackendResolver {
         backend: const CpuRendererBackend(),
         name: 'headless-cpu',
       ),
-    ];
+    ]
+        .map((path) => platform == 'windows' && path.name != 'headless-cpu'
+            ? _withPopupAlpha(path)
+            : path)
+        .toList();
   }
+
+  /// HWND GPU swap chains ignore per-pixel window alpha. Small native popups
+  /// use a retained layered DIB; the main window retains its selected GPU path.
+  static PresentationPathEntry _withPopupAlpha(PresentationPathEntry path) =>
+      PresentationPathEntry(
+        name: path.name,
+        kind: path.kind,
+        probe: path.probe,
+        rasterizationApproach: path.rasterizationApproach,
+        backend: path.backend,
+        compatibleWindowingBackends: path.compatibleWindowingBackends,
+        experimental: path.experimental,
+        sharesDevice: path.sharesDevice,
+        createMeshRenderer: path.createMeshRenderer,
+        attach: (native, {devices}) {
+          if (native is Win32Window && native.kind.isDismissable) {
+            return _layeredPopup.attach(native);
+          }
+          return path.attach(native, devices: devices);
+        },
+      );
+
+  static final _layeredPopup = PresentationPathEntry.retainedCpu(
+    name: 'win32-layered-popup',
+    deviceDescription: 'premultiplied BGRA popup through UpdateLayeredWindow',
+    create: (native) {
+      final presenter = Win32CpuPresenter(native as Win32Window);
+      return (
+        present: presenter.renderDisplayList,
+        presentNow: presenter.renderDisplayListNow,
+        release: presenter.dispose
+      );
+    },
+  );
 
   static PresentationPathEntry _win32D3d11() {
     const D3d11RendererBackend renderer = D3d11RendererBackend();

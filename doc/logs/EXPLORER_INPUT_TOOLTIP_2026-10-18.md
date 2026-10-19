@@ -42,6 +42,11 @@ e ausência do glifo `.notdef` na lista efetivamente desenhada.
 
 ## Transparência de popups
 
+Atualização posterior: a integração foi concluída em Windows, Wayland e X11;
+consulte [o relatório de alpha, hover e renomeação](POPUP_ALPHA_HOVER_RENAME_2026-10-18.md)
+para os caminhos utilizados e a validação. O texto abaixo registra o estado
+anterior a essa correção.
+
 Apenas os backends macOS anunciam `Capability.transparentPopups` nesta revisão.
 Nos demais, `Application.openPopup` conserva o fundo opaco e o fallback dos
 widgets preenche os cantos para não deixá-los pretos. Isso é uma limitação de

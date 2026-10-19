@@ -10,8 +10,8 @@
 /// The pixels are BGRA in memory order, which is
 /// [PixelFormat.bgra8888Premultiplied] - the format the framework already
 /// committed to. GDI ignores the alpha byte for `BitBlt`, so a premultiplied
-/// buffer presents correctly against an opaque window; per-pixel window
-/// transparency needs `UpdateLayeredWindow` and is deferred.
+/// buffer presents correctly against an opaque window. Popup surfaces instead
+/// use `UpdateLayeredWindow` to preserve premultiplied per-pixel alpha.
 library;
 
 import 'dart:ffi';
@@ -52,6 +52,7 @@ final class Win32DibSurface with DisposableMixin implements Win32CpuSurface {
     required this.pixelHeight,
     required this.scale,
     required this.generation,
+    required this.layered,
     required int memoryDc,
     required int bitmap,
     required int previousBitmap,
@@ -89,6 +90,7 @@ final class Win32DibSurface with DisposableMixin implements Win32CpuSurface {
     required int pixelHeight,
     required double scale,
     required int generation,
+    bool layered = false,
     void Function(int width, int height)? onFullPresent,
   }) {
     assert(pixelWidth > 0 && pixelHeight > 0);
@@ -147,6 +149,7 @@ final class Win32DibSurface with DisposableMixin implements Win32CpuSurface {
         pixelHeight: pixelHeight,
         scale: scale,
         generation: generation,
+        layered: layered,
         memoryDc: memoryDc,
         bitmap: bitmap,
         previousBitmap: previousBitmap,
@@ -165,6 +168,7 @@ final class Win32DibSurface with DisposableMixin implements Win32CpuSurface {
 
   /// The window this surface presents to.
   final int hwnd;
+  final bool layered;
 
   final int _memoryDc;
   final int _bitmap;
@@ -225,6 +229,7 @@ final class Win32DibSurface with DisposableMixin implements Win32CpuSurface {
   @override
   BackendDiagnostic? present({Rect? damage}) {
     throwIfDisposed();
+    if (layered) return _presentLayered();
     var left = 0;
     var top = 0;
     var right = pixelWidth;
@@ -274,6 +279,47 @@ final class Win32DibSurface with DisposableMixin implements Win32CpuSurface {
     }
     if (full) _onFullPresent?.call(pixelWidth, pixelHeight);
     return null;
+  }
+
+  BackendDiagnostic? _presentLayered() {
+    final bounds = _api.allocator<Win32Rect>();
+    final destination = _api.allocator<Win32Point>();
+    final source = _api.allocator<Win32Point>();
+    final extent = _api.allocator<Win32Size>();
+    final blend = _api.allocator<Win32BlendFunction>();
+    try {
+      if (_api.getWindowRect(hwnd, bounds) == 0) {
+        return win32CallFailed('GetWindowRect', _api.getLastError());
+      }
+      destination.ref
+        ..x = bounds.ref.left
+        ..y = bounds.ref.top;
+      source.ref
+        ..x = 0
+        ..y = 0;
+      extent.ref
+        ..cx = pixelWidth
+        ..cy = pixelHeight;
+      blend.ref
+        ..operation = 0
+        ..flags = 0
+        ..sourceAlpha = 255
+        ..alphaFormat = 1;
+      if (_api.updateLayeredWindow(
+              hwnd, 0, destination, extent, _memoryDc, source, 0, blend, 2) ==
+          0) {
+        return win32CallFailed('UpdateLayeredWindow', _api.getLastError());
+      }
+      _onFullPresent?.call(pixelWidth, pixelHeight);
+      return null;
+    } finally {
+      _api.allocator
+        ..free(bounds)
+        ..free(destination)
+        ..free(source)
+        ..free(extent)
+        ..free(blend);
+    }
   }
 
   @override

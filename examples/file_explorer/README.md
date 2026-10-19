@@ -100,3 +100,12 @@ dart run tool/headless_shot.dart shot.png icons --dark --lang=pt
 
 Cenários: `home`, `details`, `icons`, `tiles`, `rename`, `search`,
 `thispc`, `details-pane`.
+
+## Renomeação e menus
+
+Para renomear no próprio lugar, selecione um item e clique novamente no nome,
+com uma pausa entre os cliques. F2 continua disponível; duplo clique abre o item.
+O comportamento funciona nos oito modos de exibição e respeita a opção de
+abrir com clique único. Menus bloqueiam o hover da pasta enquanto estão abertos.
+
+[Transparência dos popups e validação por plataforma](../../doc/logs/POPUP_ALPHA_HOVER_RENAME_2026-10-18.md).

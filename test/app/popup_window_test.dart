@@ -38,6 +38,64 @@ const ScreenInfo _screen = ScreenInfo(
 );
 
 void main() {
+  test('native menus clear and shield owner hover; tooltip windows do not',
+      () async {
+    var ownerMoves = 0;
+    var popupMoves = 0;
+    var hovered = false;
+    final app = await _start(root: HoverBuilder(builder: (_, value) {
+      hovered = value;
+      return PointerListener(
+          onPointerMove: (_) => ownerMoves++,
+          child: const SizedBox(width: 200, height: 150));
+    }));
+    final owner = app.primaryWindow;
+    PointerMoveEvent move(ApplicationWindow w) => PointerMoveEvent(
+        windowId: w.id,
+        generation: w.nativeWindow.generation,
+        timestamp: Duration.zero,
+        pointerId: 0,
+        kind: PointerKind.mouse,
+        logicalPosition: const Offset(20, 20));
+    await app.drawFrame();
+    app.handleEvent(move(owner));
+    await app.drawFrame();
+    expect(hovered, isTrue);
+    final host = WindowPopupHost(application: app, owner: owner);
+    final menu = host.open(_spec(
+        builder: (_) => PointerListener(
+            onPointerMove: (_) => popupMoves++,
+            child: const SizedBox(width: 80, height: 40))));
+    await _settle();
+    await app.drawFrame();
+    expect(hovered, isFalse);
+    app.handleEvent(move(owner));
+    app.handleEvent(move(app.popupsOf(owner).single));
+    await app.drawFrame();
+    expect(ownerMoves, 1);
+    expect(popupMoves, 1);
+    expect(hovered, isFalse);
+    menu.close();
+    final menuBar = host.open(PopupSpec(
+        anchorRect: const Rect.fromLTWH(10, 10, 50, 20),
+        kind: PopupKind.menu,
+        passThrough: () => const Rect.fromLTWH(0, 0, 100, 100),
+        builder: (_) => const SizedBox(width: 80, height: 40)));
+    await _settle();
+    app.handleEvent(move(owner));
+    await app.drawFrame();
+    expect(ownerMoves, 2, reason: 'menu-bar pass-through still receives hover');
+    menuBar.close();
+    final tip = host.open(_spec(kind: PopupKind.tooltip));
+    await _settle();
+    app.handleEvent(move(owner));
+    await app.drawFrame();
+    expect(ownerMoves, 3);
+    expect(hovered, isTrue);
+    tip.close();
+    await _stop(app);
+  });
+
   group('screens', () {
     test('a backend that describes its monitors is believed', () async {
       final app = await _start();

@@ -11,6 +11,7 @@ import '../engine/file_types.dart';
 import '../engine/location.dart';
 import 'drag_support.dart';
 import 'file_icon.dart';
+import 'selected_name_rename.dart';
 import 'thumbnails.dart';
 
 /// The items of the active tab.
@@ -36,6 +37,35 @@ class FolderView extends StatelessWidget {
 
   /// Pictures' thumbnails for the icon views and Tiles.
   final ThumbnailCache? thumbnails;
+
+  bool _popupBlocksRename(BuildContext context) {
+    for (var popup = PopupHost.maybeOf(context)?.topmost;
+        popup != null;
+        popup = popup.parent) {
+      if (popup.kind.takesPointer) return true;
+    }
+    return false;
+  }
+
+  Widget _nameLabel(BuildContext context, ThemeData theme, FileEntry entry,
+          {TextAlign textAlign = TextAlign.start}) =>
+      SelectedNameRename(
+        key: ValueKey((tab, entry.path)),
+        isEligible: () =>
+            model.canCreateHere &&
+            !model.preferences['singleClick'] &&
+            tab.renaming == null &&
+            tab.selection.length == 1 &&
+            tab.selection.contains(entry.path) &&
+            !_popupBlocksRename(context),
+        onRename: () => registry.execute('file.rename'),
+        child: Text(model.shownName(entry),
+            style: theme.textTheme.bodyMedium,
+            color: theme.foreground,
+            maxLines: 1,
+            ellipsis: '…',
+            textAlign: textAlign),
+      );
 
   /// [entry]'s picture in a [size] box - its thumbnail cropped to fill the
   /// box, as Files shows photographs - or its icon.
@@ -240,13 +270,7 @@ class FolderView extends StatelessWidget {
                 Expanded(
                   child: tab.renaming == entry.path
                       ? renameField(entry)
-                      : Text(
-                          model.shownName(entry),
-                          style: theme.textTheme.bodyMedium,
-                          color: theme.foreground,
-                          maxLines: 1,
-                          ellipsis: '…',
-                        ),
+                      : _nameLabel(context, theme, entry),
                 ),
               ],
             ),
@@ -316,8 +340,7 @@ class FolderView extends StatelessWidget {
                             if (tab.renaming == e.path)
                               renameField(e)
                             else
-                              Text(model.shownName(e),
-                                  maxLines: 1, ellipsis: '…'),
+                              _nameLabel(context, theme, e),
                             Text(
                                 '${typeNameOf(e, model.strings)}  ${e.isDirectory ? '' : humanSize(e.size ?? 0, model.strings)}',
                                 color: theme.foregroundSecondary),
@@ -504,12 +527,8 @@ class FolderView extends StatelessWidget {
                           child: renaming
                               ? renameField(entry)
                               : tiles
-                                  ? _tileText(theme, entry)
-                                  : Text(model.shownName(entry),
-                                      style: theme.textTheme.bodyMedium,
-                                      color: theme.foreground,
-                                      maxLines: 1,
-                                      ellipsis: '…'),
+                                  ? _tileText(context, theme, entry)
+                                  : _nameLabel(context, theme, entry),
                         ),
                       ],
                     ),
@@ -526,14 +545,8 @@ class FolderView extends StatelessWidget {
                         if (renaming)
                           SizedBox(height: 28, child: renameField(entry))
                         else
-                          Text(
-                            model.shownName(entry),
-                            style: theme.textTheme.bodyMedium,
-                            color: theme.foreground,
-                            maxLines: 1,
-                            ellipsis: '…',
-                            textAlign: TextAlign.center,
-                          ),
+                          _nameLabel(context, theme, entry,
+                              textAlign: TextAlign.center),
                       ],
                     ),
                   ),
@@ -565,15 +578,12 @@ class FolderView extends StatelessWidget {
     );
   }
 
-  Widget _tileText(ThemeData theme, FileEntry entry) => Column(
+  Widget _tileText(BuildContext context, ThemeData theme, FileEntry entry) =>
+      Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         mainAxisAlignment: MainAxisAlignment.center,
         children: <Widget>[
-          Text(model.shownName(entry),
-              style: theme.textTheme.bodyMedium,
-              color: theme.foreground,
-              maxLines: 1,
-              ellipsis: '…'),
+          _nameLabel(context, theme, entry),
           Text(typeNameOf(entry, model.strings),
               style: theme.textTheme.bodySmall,
               color: theme.foregroundSecondary,

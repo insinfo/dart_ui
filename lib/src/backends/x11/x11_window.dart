@@ -202,6 +202,7 @@ final class X11Window
   /// False for an override-redirect window, which no window manager sees and
   /// so none can maximise.
   final bool _managed;
+
   WindowState _state = WindowState.normal;
   final NativeWindowId _id;
   final void Function(X11Window window) _onClosed;
@@ -268,7 +269,9 @@ final class X11Window
   /// against the EGL config's. Until it did, the mismatch that makes
   /// `eglCreateWindowSurface` return `EGL_BAD_MATCH` could only be reported as
   /// half a fact - the config's visual, with nothing to compare it to.
-  int get visualId => _client.rootVisual;
+  int get visualId => _client is X11AlphaWindowClient
+      ? (_client as X11AlphaWindowClient).visualForWindow(xcbWindow)
+      : _client.rootVisual;
 
   @override
   double get renderScale => _scale;

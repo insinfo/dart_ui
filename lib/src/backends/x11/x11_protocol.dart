@@ -124,6 +124,7 @@ final class X11CreateWindowAttributes {
     required int borderPixel,
     required int eventMask,
     required bool overrideRedirect,
+    int? colormap,
   }) {
     var mask = xcbCwBackPixmap |
         xcbCwBorderPixel |
@@ -142,6 +143,10 @@ final class X11CreateWindowAttributes {
     }
     // Last, because `event_mask` is bit 11 and `override_redirect` is bit 9.
     values.add(eventMask);
+    if (colormap != null) {
+      mask |= xcbCwColormap;
+      values.add(colormap);
+    }
     return X11CreateWindowAttributes._(mask, values);
   }
 

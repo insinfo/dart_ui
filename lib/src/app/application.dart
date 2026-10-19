@@ -1156,6 +1156,7 @@ final class ApplicationWindow with DisposableMixin {
   /// immediately preceding popup, and a wrong parent is a protocol error that
   /// takes the whole connection - every window of the process - down with it.
   PopupHost? _popupHost;
+  Rect? Function()? _popupPassThrough;
   bool _popupHostResolved = false;
 
   /// Called from [Application._retire] when this popup window goes away by any
@@ -3520,12 +3521,10 @@ final class Application with DisposableMixin {
   ///
   /// ## Rendering
   ///
-  /// None. A popup goes through the application's already-chosen presentation
-  /// path, exactly like every other window, because [openWindow] does and this
-  /// method does not add an exception. Section 3.7 of the popup plan is
-  /// explicit about why: a menu rasterised on the CPU over a window rasterised
-  /// on the GPU shows the two rasterisers' divergences side by side on one
-  /// screen, and no number of milliseconds buys that back.
+  /// The selected presentation entry attaches each popup. Platform defaults
+  /// may adapt its transport for alpha: Win32 popups use a retained layered
+  /// DIB while the main window keeps its chosen GPU/CPU renderer. Wayland and
+  /// X11 retain their chosen renderer on alpha-capable surfaces.
   Future<ApplicationWindow> openPopup({
     required ApplicationWindow owner,
     required Rect anchorRect,
@@ -3543,6 +3542,7 @@ final class Application with DisposableMixin {
     BoxConstraints? constraints,
     ApplicationWindow? parentPopup,
     PopupHost? host,
+    Rect? Function()? passThrough,
     void Function()? onDismissed,
   }) async {
     throwIfDisposed();
@@ -3566,6 +3566,12 @@ final class Application with DisposableMixin {
 
     // --- 1. hidden, at a provisional size ------------------------------
     final Size provisional = _boundedSize(workArea.size, constraints);
+    // Dismiss hover tooltips before creating another native popup. Wayland
+    // requires destroying popup roles in stack order.
+    if (kind.takesPointer && owner.popupKind == null && !owner.isDisposed) {
+      owner.buildOwner.clearPointerHover();
+      owner.requestFrame();
+    }
     final ApplicationWindow popup = await openWindow(
       rootWidget: content,
       size: provisional,
@@ -3582,6 +3588,7 @@ final class Application with DisposableMixin {
       backgroundColor: popupWindowsAreTransparent ? popupClearColor : null,
     );
     popup.popupKind = kind;
+    popup._popupPassThrough = passThrough;
     // Both before the tree mounts, which [measureRoot] below is about to do.
     // The host in particular: it is what a submenu opened from inside this
     // popup finds, and a popup that mounted without it would resolve a root
@@ -4255,6 +4262,20 @@ final class Application with DisposableMixin {
 
     switch (event) {
       case PointerEvent():
+        // Native tracking areas may keep sending owner moves underneath a
+        // separate popup window. Menus shield content just like in-tree
+        // popup layers; parent menus still need moves to switch submenus.
+        if (window.popupKind == null &&
+            (event is PointerMoveEvent || event is PointerScrollEvent) &&
+            popupsOf(window).any((p) => p.popupKind!.takesPointer) &&
+            !popupsOf(window).any((p) =>
+                p.ownerId == window.id &&
+                (p._popupPassThrough?.call()?.contains(event.logicalPosition) ??
+                    false))) {
+          window.buildOwner.clearPointerHover();
+          window.requestFrame();
+          return true;
+        }
         // A press aimed at a window that owns live popups dismisses them
         // *before* anything is hit-tested, and then either stops or goes on.
         //

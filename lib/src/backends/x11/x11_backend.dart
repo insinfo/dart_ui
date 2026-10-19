@@ -164,6 +164,7 @@ final class X11WindowingBackend
   // ignore: prefer_final_fields
   bool _hasXkb = false;
   bool _supportsCpuPresentation = false;
+  bool _supportsTransparentPopups = false;
   bool _supportsDragAndDrop = false;
   bool _supportsClipboard = false;
 
@@ -978,6 +979,8 @@ final class X11WindowingBackend
     final cpuClient =
         connection is X11CpuClient ? connection as X11CpuClient : null;
     _supportsCpuPresentation = cpuClient?.supportsBgraPutImage ?? false;
+    _supportsTransparentPopups = connection is X11AlphaWindowClient &&
+        (connection as X11AlphaWindowClient).transparentPopups;
     // XDND rides on the core protocol, so there is no extension to detect: the
     // only question is whether this connection exposes the requests the state
     // machine needs, which is exactly what the seam says.
@@ -1111,6 +1114,7 @@ final class X11WindowingBackend
               // manager, and positioned by this client. Unconditional, because
               // override-redirect is core protocol and needs no extension.
               Capability.nativePopups,
+              if (_supportsTransparentPopups) Capability.transparentPopups,
               Capability.pointerInput,
               Capability.scrollInput,
               Capability.orderlyShutdown,

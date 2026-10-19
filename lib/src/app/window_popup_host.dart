@@ -199,6 +199,7 @@ final class _PopupChain {
         offset: spec.offset,
         adjustments: spec.adjustments,
         constraints: spec.constraints,
+        passThrough: spec.passThrough,
         // The popup's own tree publishes a view of this same host that knows
         // it is inside this popup, so a submenu opened from it chains here.
         host: WindowPopupHost._(this, handle),

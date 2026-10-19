@@ -10,7 +10,7 @@ import 'package:test/test.dart';
 
 /// The window on the made-up disk, with no screen.
 final class _Harness {
-  _Harness({ViewMode mode = ViewMode.details}) {
+  _Harness({ViewMode mode = ViewMode.details, UiDispatcher? dispatcher}) {
     model = ExplorerModel(
       fs: demoDisk(),
       places: kDemoPlaces,
@@ -21,14 +21,17 @@ final class _Harness {
         rootConstraints: BoxConstraints.tight(const Size(1280, 800)),
       ),
     );
-    owner.updateRoot(PopupScope(
+    final root = PopupScope(
       host: InTreePopupHost(),
       child: FileExplorerApp(
         model: model,
         onReady: (ExplorerWindowState w) => window = w,
         onClose: () => closed = true,
       ),
-    ));
+    );
+    owner.updateRoot(dispatcher == null
+        ? root
+        : GestureScope(dispatcher: dispatcher, child: root));
   }
 
   late final ExplorerModel model;
@@ -111,6 +114,56 @@ void main() {
     // the next modifier press read State.widget after dispose and threw.
     h.key(0x11, modifiers: {KeyModifier.control});
     await h.settle();
+  });
+
+  test('a slow click on the selected name edits in place in every layout',
+      () async {
+    for (final mode in ViewMode.values) {
+      final clock = ManualDispatcher();
+      final h = _Harness(mode: mode, dispatcher: clock);
+      try {
+        await h.settle();
+        final entry = h.model.tab.visible.first;
+        void click(int milliseconds) {
+          final label = h
+              .renders<RenderText>()
+              .firstWhere((t) => t.text == h.model.shownName(entry));
+          final position = label.localToGlobal(const Offset(2, 2));
+          h.owner.dispatchPointerEvent(PointerDownEvent(
+              windowId: const NativeWindowId(1),
+              generation: 1,
+              timestamp: Duration(milliseconds: milliseconds),
+              pointerId: 0,
+              kind: PointerKind.mouse,
+              logicalPosition: position,
+              button: PointerButton.primary));
+          h.owner.dispatchPointerEvent(PointerUpEvent(
+              windowId: const NativeWindowId(1),
+              generation: 1,
+              timestamp: Duration(milliseconds: milliseconds + 1),
+              pointerId: 0,
+              kind: PointerKind.mouse,
+              logicalPosition: position,
+              button: PointerButton.primary));
+        }
+
+        click(0);
+        await h.settle();
+        clock.advance(const Duration(milliseconds: 600));
+        await h.settle();
+        expect(h.model.tab.selection, contains(entry.path),
+            reason: '$mode selects first');
+        expect(h.model.tab.renaming, isNull,
+            reason: '$mode must not rename on first click');
+        click(1000);
+        clock.advance(const Duration(milliseconds: 500));
+        await h.settle();
+        expect(h.model.tab.renaming, entry.path,
+            reason: '$mode enters rename on the selected name');
+      } finally {
+        h.dispose();
+      }
+    }
   });
 
   test('Folder Options keeps drafts isolated, applies and can clear history',
