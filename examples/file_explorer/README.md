@@ -125,3 +125,7 @@ Na dart_ui, use `Tooltip(mode: TooltipMode.overlay, ...)` ou
 `TooltipPresentation(mode: TooltipMode.window, child: ...)`. O modo `auto`
 acompanha o backend; `window` exige suporte nativo e `overlay` usa a camada
 composta instalada por `PopupScope`/`DartUiApp`.
+
+As dicas ao passar sobre arquivos e as caixas de seleção dos itens ficam
+desativadas por padrão. Quem desejar pode ativá-las em Opções de Pasta →
+Exibir; a escolha explícita é preservada nas próximas execuções.

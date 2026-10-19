@@ -23,7 +23,7 @@ final class ExplorerPreferences {
     'showThumbnails': true,
     'showStatusBar': true,
     'showFullPath': false,
-    'showFolderTips': true,
+    'showFolderTips': false,
     'overlayTooltips': false,
     'rememberFolderViews': true,
     'searchSubfolders': true,

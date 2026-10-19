@@ -2,12 +2,30 @@ import 'dart:io';
 import 'package:file_explorer/src/engine/explorer_model.dart';
 import 'package:file_explorer/src/engine/file_system.dart';
 import 'package:file_explorer/src/engine/location.dart';
+import 'package:file_explorer/src/engine/preferences.dart';
 import 'package:file_explorer/src/engine/search_query.dart';
 import 'package:file_explorer/src/io/io_file_system.dart';
 import 'package:file_explorer/src/io/preferences_store.dart';
 import 'package:test/test.dart';
 
 void main() {
+  test(
+      'item tooltips and selection checkboxes are opt-in and explicit choices persist',
+      () {
+    for (final prefs in [
+      ExplorerPreferences(),
+      ExplorerPreferences({'showFolderTips': 'invalid', 'itemCheckboxes': null})
+    ]) {
+      expect(prefs['showFolderTips'], isFalse);
+      expect(prefs['itemCheckboxes'], isFalse);
+    }
+    final optedIn =
+        ExplorerPreferences({'showFolderTips': true, 'itemCheckboxes': true});
+    final restored = ExplorerPreferences(optedIn.toJson());
+    expect(restored['showFolderTips'], isTrue);
+    expect(restored['itemCheckboxes'], isTrue);
+  });
+
   ExplorerModel make(MemoryFileSystem fs) => ExplorerModel(
       fs: fs, places: const {}, start: const FolderLocation('/docs'));
 

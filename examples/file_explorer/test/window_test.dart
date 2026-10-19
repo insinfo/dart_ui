@@ -369,6 +369,34 @@ void main() {
     expect(h.renders<RenderDataGridBody>(), isEmpty);
   });
 
+  test('folder items have no tooltip or checkbox by default in every layout',
+      () async {
+    for (final mode in ViewMode.values) {
+      final h = _Harness(mode: mode);
+      try {
+        await h.settle();
+        expect(h.renders<RenderToggle>(), isEmpty,
+            reason: '$mode has no selection checkboxes by default');
+        final entry = h.model.tab.visible.first;
+        final label = h
+            .renders<RenderText>()
+            .firstWhere((t) => t.text == h.model.shownName(entry));
+        h.owner.dispatchPointerEvent(PointerMoveEvent(
+            windowId: const NativeWindowId(1),
+            generation: 1,
+            timestamp: Duration.zero,
+            pointerId: 0,
+            kind: PointerKind.mouse,
+            logicalPosition: label.localToGlobal(const Offset(2, 2))));
+        await h.settle();
+        expect(h.renders<RenderTooltip>(), isEmpty,
+            reason: '$mode does not show a file tooltip');
+      } finally {
+        h.dispose();
+      }
+    }
+  });
+
   test('clicking a checkbox toggles independently of row selection and opening',
       () async {
     final h = _Harness();
