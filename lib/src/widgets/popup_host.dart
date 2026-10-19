@@ -346,13 +346,18 @@ abstract interface class PopupHost {
 /// where the menu is, and closing one would leave the other pointing at a
 /// dismissed popup — the same reason `ContextMenuScope` is per window.
 final class PopupHostScope extends InheritedWidget {
-  const PopupHostScope({super.key, required this.host, required super.child});
+  const PopupHostScope(
+      {super.key, required this.host, this.overlayHost, required super.child});
 
   final PopupHost host;
 
+  /// The same window's composited layer, independent of native menu routing.
+  final InTreePopupHost? overlayHost;
+
   @override
   bool updateShouldNotify(PopupHostScope oldWidget) =>
-      !identical(oldWidget.host, host);
+      !identical(oldWidget.host, host) ||
+      !identical(oldWidget.overlayHost, overlayHost);
 }
 
 /// What the window a popup is drawn in already draws around it.
@@ -709,19 +714,18 @@ final class _PopupScopeState extends State<PopupScope> {
   @override
   Widget build(BuildContext context) {
     final PopupHost host = _host;
-    // Only an in-tree host has a layer to draw: a window host puts its pixels
-    // in another window, and wrapping the content in a layer that can never
-    // have children would cost a render object per window for nothing.
+    // Keep a composited layer available even when menus use native windows:
+    // individual tooltips may choose overlay presentation independently.
     // Dialogs open here too, under the popups so a dialog's combo box drops
     // its list above the dialog: any tree that can show a menu can show a
     // dialog, with no second wrapper to forget.
     final Widget content = DialogLayer(child: widget.child);
-    if (host is! InTreePopupHost) {
-      return PopupHostScope(host: host, child: content);
-    }
+    final overlay =
+        host is InTreePopupHost ? host : (_owned ??= InTreePopupHost());
     return PopupHostScope(
       host: host,
-      child: PopupLayer(host: host, child: content),
+      overlayHost: overlay,
+      child: PopupLayer(host: overlay, child: content),
     );
   }
 }
@@ -732,7 +736,8 @@ final class _PopupContent extends StatelessWidget {
   final InTreePopupHandle handle;
 
   @override
-  Widget build(BuildContext context) => handle.spec.builder(context);
+  Widget build(BuildContext context) =>
+      PopupWindowFrame(outlined: false, child: handle.spec.builder(context));
 }
 
 final class _PopupLayerRenderWidget extends MultiChildRenderObjectWidget {

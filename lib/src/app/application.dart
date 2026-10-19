@@ -3452,23 +3452,12 @@ final class Application with DisposableMixin {
     // A popup window's host was handed to it by [openPopup] before it mounted,
     // so reaching here for one means it was opened as a bare window rather
     // than as a popup; a root host is the honest answer for that.
-    final ApplicationWindow root = _topLevelOwnerOf(window);
+    // An owned non-modal window has its own client coordinates and popup
+    // parent. Only popup windows inherit the host explicitly in openPopup.
     return _popupHosts.putIfAbsent(
-      root.id,
-      () => WindowPopupHost(application: this, owner: root),
+      window.id,
+      () => WindowPopupHost(application: this, owner: window),
     );
-  }
-
-  /// The window at the top of [window]'s owner chain - itself, when it has no
-  /// owner.
-  ApplicationWindow _topLevelOwnerOf(ApplicationWindow window) {
-    ApplicationWindow node = window;
-    while (true) {
-      final NativeWindowId? ownerId = node.ownerId;
-      final ApplicationWindow? owner = ownerId == null ? null : _byId[ownerId];
-      if (owner == null) return node;
-      node = owner;
-    }
   }
 
   /// Refuses [PopupPolicy.window] loudly on a backend that has no windows to

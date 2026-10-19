@@ -402,30 +402,34 @@ class ExplorerWindowState extends State<ExplorerWindow>
   @override
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
-    return CallbackShortcuts(
-      bindings: registry.keyBindings(),
-      child: ColoredBox(
-        color: theme.surfaceBase,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: <Widget>[
-            _tabStrip(theme),
-            Expanded(
-              child: ColoredBox(
-                color: theme.surface,
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: <Widget>[
-                    _addressRow(theme),
-                    Expanded(child: _body(theme)),
-                  ],
+    return TooltipPresentation(
+        mode: model.preferences['overlayTooltips']
+            ? TooltipMode.overlay
+            : TooltipMode.auto,
+        child: CallbackShortcuts(
+          bindings: registry.keyBindings(),
+          child: ColoredBox(
+            color: theme.surfaceBase,
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: <Widget>[
+                _tabStrip(theme),
+                Expanded(
+                  child: ColoredBox(
+                    color: theme.surface,
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: <Widget>[
+                        _addressRow(theme),
+                        Expanded(child: _body(theme)),
+                      ],
+                    ),
+                  ),
                 ),
-              ),
+              ],
             ),
-          ],
-        ),
-      ),
-    );
+          ),
+        ));
   }
 
   /// The tabs, where the title bar was: clear of the window buttons the

@@ -38,6 +38,51 @@ const ScreenInfo _screen = ScreenInfo(
 );
 
 void main() {
+  test(
+      'tooltip presentation selects native windows or the owner overlay independently',
+      () async {
+    for (final mode in [
+      TooltipMode.overlay,
+      TooltipMode.window,
+      TooltipMode.auto
+    ]) {
+      final app = await _start();
+      final owner = app.primaryWindow;
+      final native = WindowPopupHost(application: app, owner: owner);
+      // Install the production scope with a real window host, rather than
+      // relying on headless's intentionally in-tree default.
+      owner.updateRoot(PopupScope(
+          host: native,
+          child: TooltipPresentation(
+              mode: mode,
+              child: const Tooltip(
+                  message: 'Information',
+                  waitDuration: Duration.zero,
+                  child: SizedBox(width: 100, height: 100)))));
+      await app.drawFrame();
+      app.handleEvent(PointerMoveEvent(
+          windowId: owner.id,
+          generation: owner.nativeWindow.generation,
+          timestamp: Duration.zero,
+          pointerId: 0,
+          kind: PointerKind.mouse,
+          logicalPosition: const Offset(20, 20)));
+      await _settle();
+      await app.drawFrame();
+      var overlays = 0;
+      void walk(RenderBox node) {
+        if (node is RenderTooltip) overlays++;
+        node.visitChildren(walk);
+      }
+
+      walk(owner.buildOwner.renderRoot!);
+      expect(overlays, mode == TooltipMode.overlay ? 1 : 0);
+      expect(app.popupsOf(owner).length, mode == TooltipMode.overlay ? 0 : 1);
+      expect(native.openCount, mode == TooltipMode.overlay ? 0 : 1);
+      await _stop(app);
+    }
+  });
+
   test('native menus clear and shield owner hover; tooltip windows do not',
       () async {
     var ownerMoves = 0;

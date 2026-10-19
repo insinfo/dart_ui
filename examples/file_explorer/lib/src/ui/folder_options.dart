@@ -175,6 +175,10 @@ class _FolderOptionsState extends State<FolderOptions> {
                             'showFolderTips',
                             'Show item information in tooltips',
                             'Mostrar informações dos itens nas dicas'),
+                        check(
+                            'overlayTooltips',
+                            'Show tooltips as overlays (otherwise separate windows)',
+                            'Mostrar dicas como sobreposição (senão, janelas separadas)'),
                         check('showStatusBar', 'Show status bar',
                             'Mostrar barra de status'),
                         check(

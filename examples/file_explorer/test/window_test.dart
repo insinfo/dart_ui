@@ -8,6 +8,49 @@ import 'package:file_explorer/src/ui/app.dart';
 import 'package:file_explorer/src/ui/explorer_window.dart';
 import 'package:test/test.dart';
 
+final class _TestWindow implements WindowController, ChildWindow {
+  final children = <_TestWindow>[];
+  BuildOwner? surface;
+  String title = '';
+  void Function()? onClosed;
+  @override
+  bool isOpen = true;
+  @override
+  HiddenTitleBarWindow? get hiddenTitleBar => null;
+  @override
+  bool get hasNativeMenuBar => false;
+  @override
+  void setTitle(String value) => title = value;
+  @override
+  void close() {
+    if (!isOpen) return;
+    isOpen = false;
+    surface?.dispose();
+    onClosed?.call();
+  }
+
+  @override
+  Future<ChildWindow> openChildWindow(
+      {required Widget child,
+      String? title,
+      Size size = const Size(320, 480),
+      Offset? position,
+      void Function()? onClosed}) async {
+    final window = _TestWindow()
+      ..title = title ?? ''
+      ..onClosed = onClosed;
+    window.surface = BuildOwner(
+        pipelineOwner:
+            PipelineOwner(rootConstraints: BoxConstraints.tight(size)));
+    window.surface!.updateRoot(WindowScope(controller: window, child: child));
+    children.add(window);
+    return window;
+  }
+
+  @override
+  dynamic noSuchMethod(Invocation invocation) => null;
+}
+
 /// The window on the made-up disk, with no screen.
 final class _Harness {
   _Harness({ViewMode mode = ViewMode.details, UiDispatcher? dispatcher}) {
@@ -29,11 +72,14 @@ final class _Harness {
         onClose: () => closed = true,
       ),
     );
-    owner.updateRoot(dispatcher == null
-        ? root
-        : GestureScope(dispatcher: dispatcher, child: root));
+    owner.updateRoot(WindowScope(
+        controller: native,
+        child: dispatcher == null
+            ? root
+            : GestureScope(dispatcher: dispatcher, child: root)));
   }
 
+  final native = _TestWindow();
   late final ExplorerModel model;
   late final BuildOwner owner;
   late ExplorerWindowState window;
@@ -47,18 +93,22 @@ final class _Harness {
       await model.idle;
       owner.buildScope();
       owner.pipelineOwner.drawFrame(DisplayList());
+      for (final window in native.children.where((w) => w.isOpen)) {
+        window.surface!.buildScope();
+        window.surface!.pipelineOwner.drawFrame(DisplayList());
+      }
       if (!owner.hasScheduledBuilds) return;
     }
   }
 
-  List<T> renders<T extends RenderBox>() {
+  List<T> renders<T extends RenderBox>([BuildOwner? target]) {
     final List<T> found = <T>[];
     void walk(RenderBox node) {
       if (node is T) found.add(node);
       node.visitChildren(walk);
     }
 
-    walk(owner.renderRoot!);
+    walk((target ?? owner).renderRoot!);
     return found;
   }
 
@@ -78,6 +128,9 @@ final class _Harness {
   }
 
   void dispose() {
+    for (final child in native.children) {
+      child.close();
+    }
     owner.dispose();
     model.dispose();
   }
@@ -324,30 +377,33 @@ void main() {
     h.dispose();
   });
 
-  test('Alt+Enter opens Properties over the window, which it keeps from keys',
+  test(
+      'Alt+Enter opens an independent properties window and preserves owner input',
       () async {
-    final _Harness h = _Harness();
+    final h = _Harness();
     await h.settle();
     h.registry.execute('select.byName', <String, Object?>{'prefix': 'annual'});
     await h.settle();
     h.key(logicalKeyEnter, modifiers: const <KeyModifier>{KeyModifier.alt});
     await h.settle();
-    expect(h.renders<RenderDialog>().single.title,
-        'Annual Report 2025.pdf Properties');
-    expect(h.texts, contains('2.30 MB (2,411,724 bytes)'));
-    expect(h.owner.modalDepth, 1);
-
-    // Delete is the window's key: under the dialog it must not trash the
-    // file behind it.
-    h.key(logicalKeyDelete);
-    await h.settle();
-    expect(await h.model.fs.stat('/Users/ana/Documents/Annual Report 2025.pdf'),
-        isNotNull);
-
-    h.key(logicalKeyEscape);
-    await h.settle();
-    expect(h.renders<RenderDialog>(), isEmpty);
+    final child = h.native.children.single;
+    expect(child.title, 'Annual Report 2025.pdf Properties');
+    expect(h.renders<RenderText>(child.surface).map((t) => t.text),
+        contains('2.30 MB (2,411,724 bytes)'));
     expect(h.owner.modalDepth, 0);
+    expect(h.renders<RenderDialog>(), isEmpty);
+    h.registry.execute('select.byName', <String, Object?>{'prefix': 'license'});
+    await h.settle();
+    expect(h.model.tab.selection.single, endsWith('license.txt'));
+    expect(child.isOpen, isTrue);
+    child.surface!.dispatchKeyEvent(const KeyDownEvent(
+        windowId: NativeWindowId(2),
+        generation: 1,
+        timestamp: Duration.zero,
+        physicalKey: logicalKeyEscape,
+        logicalKey: logicalKeyEscape));
+    await h.settle();
+    expect(child.isOpen, isFalse);
     h.dispose();
   });
 
@@ -357,17 +413,46 @@ void main() {
     h.registry.execute('select.byName', <String, Object?>{'prefix': 'license'});
     h.registry.execute('file.properties');
     await h.settle();
+    final child = h.native.children.single;
     final RenderTextField name = h
-        .renders<RenderTextField>()
+        .renders<RenderTextField>(child.surface)
         .firstWhere((RenderTextField f) => f.controller.value == 'license.txt');
     name.controller.value = 'COPYING.txt';
     h
-        .renders<RenderButton>()
+        .renders<RenderButton>(child.surface)
         .firstWhere((RenderButton b) => b.label == 'OK')
         .activate();
     await h.settle();
-    expect(h.renders<RenderDialog>(), isEmpty);
+    expect(child.isOpen, isFalse);
     expect(h.texts, contains('COPYING.txt'));
+    h.dispose();
+  });
+
+  test(
+      'properties windows keep separate selections and Cancel discards a draft',
+      () async {
+    final h = _Harness();
+    await h.settle();
+    h.registry.execute('select.byName', <String, Object?>{'prefix': 'license'});
+    h.registry.execute('file.properties');
+    await h.settle();
+    final first = h.native.children.single;
+    h.renders<RenderTextField>(first.surface).single.controller.value =
+        'Discarded.txt';
+    h.registry.execute('select.byName', <String, Object?>{'prefix': 'annual'});
+    h.registry.execute('file.properties');
+    await h.settle();
+    expect(h.native.children, hasLength(2));
+    expect(h.native.children.last.title, 'Annual Report 2025.pdf Properties');
+    h
+        .renders<RenderButton>(first.surface)
+        .firstWhere((b) => b.label == 'Cancel')
+        .activate();
+    await h.settle();
+    expect(
+        await h.model.fs.stat('/Users/ana/Documents/license.txt'), isNotNull);
+    expect(await h.model.fs.stat('/Users/ana/Documents/Discarded.txt'), isNull);
+    expect(h.native.children.last.isOpen, isTrue);
     h.dispose();
   });
 

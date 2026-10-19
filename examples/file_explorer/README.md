@@ -109,3 +109,19 @@ O comportamento funciona nos oito modos de exibição e respeita a opção de
 abrir com clique único. Menus bloqueiam o hover da pasta enquanto estão abertos.
 
 [Transparência dos popups e validação por plataforma](../../doc/logs/POPUP_ALPHA_HOVER_RENAME_2026-10-18.md).
+
+## Propriedades e dicas
+
+Alt+Enter e o comando Propriedades abrem uma janela independente, sem bloquear
+o Explorador. É possível manter propriedades de vários itens abertas. OK aplica
+e fecha, Aplicar mantém a janela aberta e Cancelar descarta o nome editado.
+
+Em Opções de Pasta → Exibir, “Mostrar dicas como sobreposição” escolhe dicas
+dentro da janela; desmarcada usa janelas nativas quando disponíveis. A escolha
+é salva nas preferências e não muda os menus. Sobreposições ficam limitadas à
+área da janela; dicas nativas podem ultrapassá-la.
+
+Na dart_ui, use `Tooltip(mode: TooltipMode.overlay, ...)` ou
+`TooltipPresentation(mode: TooltipMode.window, child: ...)`. O modo `auto`
+acompanha o backend; `window` exige suporte nativo e `overlay` usa a camada
+composta instalada por `PopupScope`/`DartUiApp`.

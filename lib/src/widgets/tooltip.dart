@@ -88,6 +88,31 @@ enum TooltipTriggerMode {
   tap,
 }
 
+/// Where a tooltip is presented. Menus keep their own popup policy.
+enum TooltipMode {
+  /// Follow the window's popup host, including its portable fallback.
+  auto,
+
+  /// Use a native popup window; requires a window-capable popup host.
+  window,
+
+  /// Composite inside the owner window, bounded by its client area.
+  overlay,
+}
+
+/// Selects the default presentation for tooltips in a subtree.
+final class TooltipPresentation extends InheritedWidget {
+  const TooltipPresentation(
+      {super.key, required this.mode, required super.child});
+  final TooltipMode mode;
+  static TooltipMode of(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<TooltipPresentation>()?.mode ??
+      TooltipMode.auto;
+  @override
+  bool updateShouldNotify(TooltipPresentation oldWidget) =>
+      oldWidget.mode != mode;
+}
+
 /// The tooltip currently on screen, anywhere in this isolate.
 ///
 /// One at a time: a second label appearing while the first is still up is
@@ -132,6 +157,7 @@ final class Tooltip extends StatefulWidget {
     this.verticalOffset = 24.0,
     this.triggerMode = TooltipTriggerMode.longPress,
     this.dispatcher,
+    this.mode,
     required this.child,
   });
 
@@ -170,6 +196,9 @@ final class Tooltip extends StatefulWidget {
   /// Flutter call site never mentions it.
   final UiDispatcher? dispatcher;
 
+  /// Overrides [TooltipPresentation]; null follows the ambient mode.
+  final TooltipMode? mode;
+
   final Widget child;
 
   @override
@@ -179,6 +208,7 @@ final class Tooltip extends StatefulWidget {
 final class _TooltipState extends State<Tooltip> {
   UiDispatcher? _dispatcher;
   PopupHost? _host;
+  TooltipMode _mode = TooltipMode.auto;
   _RenderTooltipTrigger? _trigger;
 
   PopupHandle? _handle;
@@ -212,8 +242,15 @@ final class _TooltipState extends State<Tooltip> {
   @override
   Widget build(BuildContext context) {
     _dispatcher = widget.dispatcher ?? GestureScope.of(context);
-    final PopupHost? host = PopupHost.maybeOf(context);
+    final scope = context.dependOnInheritedWidgetOfExactType<PopupHostScope>();
+    final normal = scope?.host;
+    final mode = widget.mode ?? TooltipPresentation.of(context);
+    final PopupHost? host = mode == TooltipMode.overlay
+        ? scope?.overlayHost ?? (normal is InTreePopupHost ? normal : null)
+        : normal;
+    if (!identical(_host, host)) _hide();
     _host = host;
+    _mode = mode;
     // `maybeOf`, and the child alone when there is none. A tooltip is the one
     // control for which silence is right: a backend with no popups still has
     // to render the button, and a thrown "no PopupHostScope" would turn a
@@ -291,6 +328,9 @@ final class _TooltipState extends State<Tooltip> {
     // control can be scrolled out of the tree while the wait runs, and asking
     // an unlaid-out box where it is on screen would throw.
     if (host == null || box == null || !box.hasSize) return;
+    if (_mode == TooltipMode.window && !host.escapesOwnerWindow) {
+      throw StateError('TooltipMode.window requires native popup windows');
+    }
 
     // One tooltip at a time. The previous one goes away *before* this one is
     // opened, so the shared variable never names a closed popup.

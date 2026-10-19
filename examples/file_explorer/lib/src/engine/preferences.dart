@@ -24,6 +24,7 @@ final class ExplorerPreferences {
     'showStatusBar': true,
     'showFullPath': false,
     'showFolderTips': true,
+    'overlayTooltips': false,
     'rememberFolderViews': true,
     'searchSubfolders': true,
     'navigationPane': true,
