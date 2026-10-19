@@ -434,7 +434,7 @@ final class _PopupContent extends StatelessWidget {
   /// and not a second one inside the platform's.
   @override
   Widget build(BuildContext context) => PopupWindowFrame(
-        outlined: handle._chain.application.popupWindowsAreTransparent,
+        outlined: handle._chain.application.popupWindowsHaveOutline,
         opaque: !handle._chain.application.popupWindowsAreTransparent,
         // Built under the frame, so the context the builder is handed - and
         // everything it builds - can ask it.

@@ -10,6 +10,8 @@ import 'dart:io' show Platform;
 
 import 'package:dart_ui/src/backends/win32/win32_backend.dart';
 import 'package:dart_ui/src/backends/win32/win32_window.dart';
+import 'package:dart_ui/src/geometry/offset.dart';
+import 'package:dart_ui/src/geometry/rect.dart';
 import 'package:dart_ui/src/geometry/size.dart';
 import 'package:dart_ui/src/platform/native_window.dart';
 import 'package:dart_ui/src/platform/window_events.dart';
@@ -59,6 +61,27 @@ void main() {
         WindowState.maximised,
         WindowState.normal,
       ]);
+    });
+
+    test('activation preserves maximised state and client bounds', () {
+      window.show();
+      window.requestState(WindowState.maximised);
+      final before = window.clientSize;
+      final origin = window.clientToScreen(Offset.zero);
+      window.activate();
+      expect(window.state, WindowState.maximised);
+      expect(window.clientSize, before);
+      expect(window.clientToScreen(Offset.zero), origin);
+    });
+
+    test('activation preserves an explicitly positioned normal window', () {
+      window.show();
+      window.setBounds(const Rect.fromLTWH(120, 130, 350, 240));
+      final before = window.clientSize;
+      final origin = window.clientToScreen(Offset.zero);
+      window.activate();
+      expect(window.clientSize, before);
+      expect(window.clientToScreen(Offset.zero), origin);
     });
 
     test('fullscreen covers the monitor and leaving it restores the window',

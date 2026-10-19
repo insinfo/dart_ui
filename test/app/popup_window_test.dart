@@ -39,6 +39,27 @@ const ScreenInfo _screen = ScreenInfo(
 
 void main() {
   test(
+      'transparent native popups retain widget borders unless the platform draws an outline',
+      () async {
+    final app = await _start(transparentPopups: true);
+    expect(app.popupWindowsAreTransparent, isTrue);
+    expect(app.popupWindowsHaveOutline, isFalse);
+    final host = WindowPopupHost(application: app, owner: app.primaryWindow);
+    bool? outlined;
+    bool? opaque;
+    host.open(_spec(builder: (context) {
+      outlined = PopupWindowFrame.outlinedOf(context);
+      opaque = PopupWindowFrame.opaqueOf(context);
+      return const SizedBox(width: 80, height: 40);
+    }));
+    await _settle();
+    await app.drawFrame();
+    expect(outlined, isFalse);
+    expect(opaque, isFalse);
+    await _stop(app);
+  });
+
+  test(
       'tooltip presentation selects native windows or the owner overlay independently',
       () async {
     for (final mode in [
@@ -217,7 +238,8 @@ void main() {
       }
     });
 
-    test('the surface is told the platform outlines it', () async {
+    test('alpha and opaque surfaces both retain a widget outline on headless',
+        () async {
       for (final bool transparent in <bool>[false, true]) {
         final app = await _start(transparentPopups: transparent);
         final owner = app.primaryWindow;
@@ -237,7 +259,7 @@ void main() {
         await _settle();
         // The builder's context is the popup window's root, under the frame
         // the window puts there.
-        expect(outlined, transparent);
+        expect(outlined, isFalse);
         expect(opaque, !transparent);
 
         await _stop(app);

@@ -842,8 +842,9 @@ final class _PanelHandle {
 /// starts 16 px in, a filled accent pill 5 px in from each side with the
 /// row's text and icons turned [ColorScheme.onPrimary] on it, and
 /// separators inset 10 px from both edges. Every other theme keeps the
-/// look its numbers encode, which is WinUI's: the theme's large radius,
-/// 4 px of padding, and a subtle accent pill 4 px in.
+/// look its numbers encode. Windows and Linux use an 8 px panel radius,
+/// 4 px of padding, and a subtle accent pill 4 px in. Unadapted themes keep
+/// their configured large radius.
 ///
 /// One object so the panel, its rows, its separators and the offset that
 /// lines a submenu up with its opener all read the same numbers.
@@ -870,12 +871,18 @@ final class MenuLook {
           filledHighlight: true,
         )
       : MenuLook(
-          radius: theme.cornerRadiusLarge,
+          radius: theme.desktop == DesktopPlatform.windows ||
+                  theme.desktop == DesktopPlatform.linux
+              ? 8
+              : theme.cornerRadiusLarge,
           verticalPadding: 4,
           rowPadding: theme.effectiveControlPadding,
           highlightInset: 4,
-          highlightRadius: theme.cornerRadiusSmall,
-          separatorInset: 4,
+          highlightRadius: theme.desktop == DesktopPlatform.windows ||
+                  theme.desktop == DesktopPlatform.linux
+              ? 4
+              : theme.cornerRadiusSmall,
+          separatorInset: 8,
           filledHighlight: false,
         );
 

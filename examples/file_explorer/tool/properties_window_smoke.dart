@@ -35,6 +35,24 @@ Future<void> main(List<String> args) async {
   try {
     await Future<void>.delayed(const Duration(milliseconds: 600));
     await model.idle;
+    final native = app.primaryWindow.nativeWindow;
+    if (native is WindowStateControl) {
+      final accepted =
+          (native as WindowStateControl).requestState(WindowState.maximised);
+      if (accepted) {
+        final limit = DateTime.now().add(const Duration(seconds: 10));
+        while (native.state != WindowState.maximised) {
+          if (DateTime.now().isAfter(limit)) {
+            throw StateError('Owner did not finish maximising');
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 10));
+        }
+      }
+    }
+    final beforeSize = native.clientSize;
+    final beforeOrigin =
+        app.hasScreenCoordinates ? native.clientToScreen(Offset.zero) : null;
+    final beforeState = native.state;
     explorer.registry.execute('select.byName', {'prefix': 'license'});
     explorer.registry.execute('file.properties');
     final deadline = DateTime.now().add(const Duration(seconds: 15));
@@ -67,6 +85,16 @@ Future<void> main(List<String> args) async {
       throw StateError('Closing Properties must keep its owner');
     }
     if (app.errors.isNotEmpty) throw StateError('${app.errors}');
+    if (native.clientSize != beforeSize ||
+        (beforeOrigin != null &&
+            native.clientToScreen(Offset.zero) != beforeOrigin) ||
+        native.state != beforeState) {
+      throw StateError('Closing Properties changed owner geometry/state: '
+          'before=$beforeSize/$beforeOrigin/$beforeState '
+          'after=${native.clientSize}/${app.hasScreenCoordinates ? native.clientToScreen(Offset.zero) : null}/${native.state}');
+    }
+    stdout.writeln(
+        'PROPERTIES_GEOMETRY=PASS size=$beforeSize state=$beforeState');
     stdout.writeln('PROPERTIES_LIFETIME=PASS');
   } finally {
     app.requestClose();

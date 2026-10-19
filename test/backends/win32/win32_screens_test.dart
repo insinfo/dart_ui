@@ -190,35 +190,19 @@ void main() {
           ),
         ) as Win32Window;
 
-    test('a popup is created on a second class that carries CS_DROPSHADOW',
+    test(
+        'layered popup and tooltip classes omit the rectangular classic shadow',
         () async {
-      final Win32Window popup = await openPopup(WindowKind.popup);
-
-      expect(backend.popupWindowClassName, isNotNull);
-      expect(popup.className, backend.popupWindowClassName);
-      expect(
-        popup.className,
-        isNot(owner.className),
-        reason: 'CS_DROPSHADOW is a class style, so sharing the class would '
-            'put a drop shadow behind the application window too',
-      );
-
-      // Asked of Windows rather than of our own bookkeeping: the point of the
-      // second registration is what the OS believes about the class.
-      expect(
-        api.getClassLongPtrW(popup.nativeHandle, gclStyle) & csDropshadow,
-        csDropshadow,
-      );
-      expect(
-        api.getClassLongPtrW(owner.nativeHandle, gclStyle) & csDropshadow,
-        0,
-        reason: 'the shared class must not have gained a shadow',
-      );
-    });
-
-    test('a tooltip is created on the shadowed class as well', () async {
-      final Win32Window tooltip = await openPopup(WindowKind.tooltip);
-      expect(tooltip.className, backend.popupWindowClassName);
+      for (final kind in [WindowKind.popup, WindowKind.tooltip]) {
+        final popup = await openPopup(kind);
+        expect(popup.className, owner.className);
+        expect(
+            api.getClassLongPtrW(popup.nativeHandle, gclStyle) & csDropshadow,
+            0);
+        expect(
+            api.getClassLongPtrW(owner.nativeHandle, gclStyle) & csDropshadow,
+            0);
+      }
     });
 
     test('WM_MOUSEACTIVATE is refused by a popup and a tooltip', () async {

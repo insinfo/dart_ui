@@ -74,7 +74,8 @@ abstract interface class Win32ImeMessageHandler {
 }
 
 /// A second window class, identical to the shared one except that it carries
-/// `CS_DROPSHADOW`, used by [WindowKind.popup] and [WindowKind.tooltip].
+/// `CS_DROPSHADOW`, available to opaque popups. Layered ARGB popups use the
+/// base class because the classic shadow does not follow their rounded alpha.
 ///
 /// ## Why a second class and not a flag on the first
 ///
@@ -370,17 +371,14 @@ final class Win32Window
       backgroundColor: options.backgroundColor,
     );
 
-    // A menu and a tooltip go on the shadowed class when there is one; every
-    // other window goes on the shared class, because a drop shadow behind an
-    // ordinary window is the platform's decision and not this framework's.
-    // Both classes name the same module and the same WndProc, so nothing else
-    // about the window changes with the choice.
-    final classNamePointer = !kind.takesActivation && popupClass != null
-        ? popupClass.namePointer
-        : windowClass.namePointer;
-    if (!kind.takesActivation && popupClass != null) {
-      window._popupClassName = popupClass.name;
-    }
+    // Classic CS_DROPSHADOW follows the rectangular HWND, not the per-pixel
+    // alpha silhouette. Layered popups must avoid its hard square edge.
+    final useClassicShadow = !kind.takesActivation &&
+        popupClass != null &&
+        (exStyle & 0x00080000) == 0;
+    final classNamePointer =
+        useClassicShadow ? popupClass.namePointer : windowClass.namePointer;
+    if (useClassicShadow) window._popupClassName = popupClass.name;
 
     final title = api.toUtf16(options.title);
     int handle;
@@ -723,7 +721,7 @@ final class Win32Window
     // field look unfocused for as long as the menu was open.
     _api.showWindow(
       _hwnd,
-      kind.takesActivation ? swShowNormal : swShowNoActivate,
+      kind.takesActivation ? swShow : swShowNoActivate,
     );
     _api.updateWindow(_hwnd);
   }
@@ -753,7 +751,10 @@ final class Win32Window
       // that is the application layer's decision, not this one's.
       return;
     }
-    _api.showWindow(_hwnd, swShowNormal);
+    // Activating an existing window must preserve maximisation and snap
+    // geometry. SW_SHOWNORMAL would restore its old position and size.
+    _api.showWindow(
+        _hwnd, _state == WindowState.minimised ? swRestore : swShow);
     if (_api.setWindowPos(
           _hwnd,
           _hwndTop,

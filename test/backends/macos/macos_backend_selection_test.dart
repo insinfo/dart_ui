@@ -52,7 +52,8 @@ void main() {
       capabilities(MacosBackendKind.appkitNativeHost)
           .toProbeResult()
           .capabilities,
-      contains(Capability.transparentPopups),
+      containsAll(
+          [Capability.transparentPopups, Capability.popupWindowOutline]),
     );
     expect(
       capabilities(MacosBackendKind.skylight).toProbeResult().capabilities,

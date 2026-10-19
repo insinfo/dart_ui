@@ -131,14 +131,18 @@ final class MacosBackendCapabilities {
           kind == MacosBackendKind.appkitEmbedded) ...<Capability>[
         Capability.nativePopups,
         Capability.transparentPopups,
+        Capability.popupWindowOutline,
         Capability.multipleWindows,
       ],
       // The host's panel is non-opaque and clear (`dart_ui_macos_host.m`,
       // applicationDidFinishLaunching), and the IOSurface it shows is
       // premultiplied BGRA, so a pixel the framework leaves at zero alpha
       // is desktop.
-      if (canCreateWindow && kind == MacosBackendKind.appkitNativeHost)
+      if (canCreateWindow &&
+          kind == MacosBackendKind.appkitNativeHost) ...<Capability>[
         Capability.transparentPopups,
+        Capability.popupWindowOutline,
+      ],
       // Through the same host: NSPasteboard is AppKit, and the host is the
       // only process here that runs AppKit.
       if (canCreateWindow && kind == MacosBackendKind.appkitNativeHost)

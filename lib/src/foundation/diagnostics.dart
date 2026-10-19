@@ -91,7 +91,7 @@ enum Capability {
 
   /// A [nativePopups] surface shows the alpha of its pixels: what a popup
   /// leaves transparent shows whatever is behind it, and the platform's
-  /// shadow follows the shape that is left.
+  /// compositor can preserve the shape that is left.
   ///
   /// What lets a menu be its own rounded surface and nothing else. Without
   /// it the framework clears a popup to the application's colour, because
@@ -100,6 +100,10 @@ enum Capability {
   /// rounding of its own is the honest answer. macOS's non-opaque panel
   /// declares it; Win32's `WS_POPUP` does not (that needs a layered window).
   transparentPopups,
+
+  /// The compositor draws an outline around a transparent popup's shape.
+  /// Independent of alpha support: most backends need a widget-painted rim.
+  popupWindowOutline,
 }
 
 /// Why a probe reached the conclusion it did.

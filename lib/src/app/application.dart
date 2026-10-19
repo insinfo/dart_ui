@@ -3430,6 +3430,13 @@ final class Application with DisposableMixin {
           .contains(Capability.transparentPopups) ??
       false;
 
+  /// Whether the platform supplies the popup's outline as well as alpha.
+  bool get popupWindowsHaveOutline =>
+      popupWindowsAreTransparent &&
+      (windowingSelection.chosen?.probe.capabilities
+              .contains(Capability.popupWindowOutline) ??
+          false);
+
   /// What a popup window is cleared to when [popupWindowsAreTransparent].
   static const Color popupClearColor = Color(0x00000000);
 

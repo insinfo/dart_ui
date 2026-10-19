@@ -62,8 +62,7 @@ void main() {
         windows == windows.copyWith(desktop: DesktopPlatform.macos), isFalse);
   });
 
-  test("a macOS theme's menus take AppKit's shape, every other keeps its own",
-      () {
+  test('desktop menus use rounded panels and inset highlights', () {
     final MenuLook mac = MenuLook.of(
         ThemeData.fluentLight.adaptedToPlatform(DesktopPlatform.macos));
     expect(mac.radius, 12);
@@ -76,7 +75,13 @@ void main() {
     final ThemeData fluent =
         ThemeData.fluentLight.adaptedToPlatform(DesktopPlatform.windows);
     final MenuLook windows = MenuLook.of(fluent);
-    expect(windows.radius, fluent.cornerRadiusLarge);
+    expect(windows.radius, 8);
+    expect(windows.highlightRadius, 4);
+    expect(windows.separatorInset, 8);
+    final linux = MenuLook.of(
+        ThemeData.fluentLight.adaptedToPlatform(DesktopPlatform.linux));
+    expect(linux.radius, 8);
+    expect(linux.highlightRadius, 4);
     expect(windows.verticalPadding, 4);
     expect(windows.rowPadding, fluent.effectiveControlPadding);
     expect(windows.highlightInset, 4);
