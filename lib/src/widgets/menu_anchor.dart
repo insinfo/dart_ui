@@ -438,6 +438,7 @@ final class MenuAnchor extends StatefulWidget {
     super.key,
     this.controller,
     required this.menuChildren,
+    this.menuChildrenBuilder,
     this.builder,
     this.child,
     this.alignmentOffset = Offset.zero,
@@ -452,6 +453,10 @@ final class MenuAnchor extends StatefulWidget {
 
   /// The menu itself: usually [MenuItemButton]s and [SubmenuButton]s.
   final List<Widget> menuChildren;
+
+  /// Evaluates menu items when the popup builds, after opening callbacks.
+  /// Overrides [menuChildren] for menus depending on the newly hit selection.
+  final List<Widget> Function()? menuChildrenBuilder;
 
   /// Builds the widget the menu hangs off, handed the controller so it can open
   /// it. [child] is passed through as the third argument, for the part of the
@@ -529,7 +534,10 @@ final class _MenuAnchorState extends State<MenuAnchor>
       oldWidget.controller?._detach(this);
       effectiveController._attach(this);
     }
-    if (!identical(oldWidget.menuChildren, widget.menuChildren)) refreshMenu();
+    if (!identical(oldWidget.menuChildren, widget.menuChildren) ||
+        !identical(oldWidget.menuChildrenBuilder, widget.menuChildrenBuilder)) {
+      refreshMenu();
+    }
   }
 
   @override
@@ -565,7 +573,7 @@ final class _MenuAnchorState extends State<MenuAnchor>
           decorated: true,
           autofocus: true,
           onDismiss: closeMenu,
-          children: widget.menuChildren,
+          children: widget.menuChildrenBuilder?.call() ?? widget.menuChildren,
         )),
       );
 }

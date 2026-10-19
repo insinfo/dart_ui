@@ -17,8 +17,8 @@ import 'widget.dart';
 /// Opens a menu of [MenuItemButton]s and [SubmenuButton]s where [child] is
 /// right-clicked - a canvas's Cut/Copy/Paste/Order ›, a list row's Rename.
 ///
-/// [menuChildren] is called on every build, so the menu shows the state as
-/// it is when it opens. [onOpen] runs first with the press position in this
+/// [menuChildren] is evaluated when the popup builds, after [onOpen], so
+/// its first layout uses the current state. [onOpen] receives the press position in this
 /// widget's coordinates - the place to select what is under the pointer, the
 /// way every editor does before showing that object's menu.
 final class ContextMenuArea extends StatefulWidget {
@@ -53,7 +53,8 @@ final class _ContextMenuAreaState extends State<ContextMenuArea> {
   @override
   Widget build(BuildContext context) => MenuAnchor(
         controller: _controller,
-        menuChildren: widget.menuChildren(),
+        menuChildren: const [],
+        menuChildrenBuilder: widget.menuChildren,
         child: _SecondaryPress(
             enabled: widget.enabled, onPress: _open, child: widget.child),
       );

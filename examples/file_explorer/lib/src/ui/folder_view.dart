@@ -15,7 +15,7 @@ import 'selected_name_rename.dart';
 import 'thumbnails.dart';
 
 /// The items of the active tab.
-class FolderView extends StatelessWidget {
+class FolderView extends StatefulWidget {
   const FolderView({
     super.key,
     required this.model,
@@ -37,6 +37,41 @@ class FolderView extends StatelessWidget {
 
   /// Pictures' thumbnails for the icon views and Tiles.
   final ThumbnailCache? thumbnails;
+
+  @override
+  State<FolderView> createState() => _FolderViewState();
+}
+
+class _FolderViewState extends State<FolderView> {
+  ExplorerModel get model => widget.model;
+  CommandRegistry get registry => widget.registry;
+  Widget Function(FileEntry entry) get renameField => widget.renameField;
+  List<Widget> Function()? get headerMenu => widget.headerMenu;
+  ThumbnailCache? get thumbnails => widget.thumbnails;
+  FileEntry? _pressedItem;
+
+  Widget _itemPress(FileEntry entry, Widget child) =>
+      PointerListener(onPointerDown: (_) => _pressedItem = entry, child: child);
+
+  void _resolvePress(PointerDownEvent event) {
+    if (event.button != PointerButton.primary &&
+        event.button != PointerButton.secondary) {
+      return;
+    }
+    // The grid owns primary selection, including blank rows and header
+    // presses; its secondary callback identifies context-menu targets.
+    if (event.button == PointerButton.primary &&
+        model.viewMode == ViewMode.details) {
+      return;
+    }
+    final entry = _pressedItem;
+    if (entry == null) {
+      model.clearSelection();
+    } else if (event.button == PointerButton.secondary &&
+        !tab.selection.contains(entry.path)) {
+      model.select([entry.path], focused: entry.path);
+    }
+  }
 
   bool _popupBlocksRename(BuildContext context) {
     for (var popup = PopupHost.maybeOf(context)?.topmost;
@@ -147,7 +182,12 @@ class FolderView extends StatelessWidget {
   }
 
   @override
-  Widget build(BuildContext context) {
+  Widget build(BuildContext context) => PointerListener(
+      onPointerDownCapture: (_) => _pressedItem = null,
+      onPointerDown: _resolvePress,
+      child: _contents(context));
+
+  Widget _contents(BuildContext context) {
     final ThemeData theme = Theme.of(context);
     if (tab.error != null) {
       return _Message(icon: PhosphorIcons.warningCircle, text: tab.error!);
@@ -221,6 +261,7 @@ class FolderView extends StatelessWidget {
       onSelectionChanged: (Set<int> rows) => _select(
           <String>[for (final int i in rows.toList()..sort()) items[i].path]),
       onRowActivated: (int row) => _open(items[row]),
+      onSecondaryPress: (row) => _pressedItem = row == null ? null : items[row],
       // Rows drag out as files - to a folder here, or to another
       // application - and folders take drops; anywhere else in the list is
       // the folder on screen.
@@ -349,15 +390,18 @@ class FolderView extends StatelessWidget {
                           ])),
                     ]))),
           );
-          return DragSource(
-              data: () => dragOut(model, _dragPaths(e)),
-              allowedActions: const {DragAction.copy, DragAction.move},
-              preferredAction: DragAction.move,
-              opaque: true,
-              onDragEnd: (action) => dragEnded(model, action),
-              child: e.isDirectory
-                  ? folderDropTarget(model: model, folder: e.path, child: tile)
-                  : tile);
+          return _itemPress(
+              e,
+              DragSource(
+                  data: () => dragOut(model, _dragPaths(e)),
+                  allowedActions: const {DragAction.copy, DragAction.move},
+                  preferredAction: DragAction.move,
+                  opaque: true,
+                  onDragEnd: (action) => dragEnded(model, action),
+                  child: e.isDirectory
+                      ? folderDropTarget(
+                          model: model, folder: e.path, child: tile)
+                      : tile));
         },
       ));
 
@@ -561,21 +605,23 @@ class FolderView extends StatelessWidget {
                 '${entry.name}\n${typeNameOf(entry, model.strings)}${entry.size == null ? '' : '\n${humanSize(entry.size!, model.strings)}'}',
             child: tile)
         : tile;
-    return DragSource(
-      data: () => dragOut(model, _dragPaths(entry)),
-      allowedActions: const <DragAction>{DragAction.copy, DragAction.move},
-      preferredAction: DragAction.move,
-      opaque: true,
-      onDragEnd: (DragAction action) => dragEnded(model, action),
-      child: entry.isDirectory
-          ? folderDropTarget(
-              model: model,
-              folder: entry.path,
-              highlight: theme.accent.withAlpha(0x2E),
-              child: decorated,
-            )
-          : decorated,
-    );
+    return _itemPress(
+        entry,
+        DragSource(
+          data: () => dragOut(model, _dragPaths(entry)),
+          allowedActions: const <DragAction>{DragAction.copy, DragAction.move},
+          preferredAction: DragAction.move,
+          opaque: true,
+          onDragEnd: (DragAction action) => dragEnded(model, action),
+          child: entry.isDirectory
+              ? folderDropTarget(
+                  model: model,
+                  folder: entry.path,
+                  highlight: theme.accent.withAlpha(0x2E),
+                  child: decorated,
+                )
+              : decorated,
+        ));
   }
 
   Widget _tileText(BuildContext context, ThemeData theme, FileEntry entry) =>

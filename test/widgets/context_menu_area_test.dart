@@ -5,6 +5,54 @@ void main() {
   setUpAll(FrameworkFonts.install);
   tearDownAll(FontRegistry.instance.reset);
 
+  test(
+      'opening builds items after the hit selection changes without an owner rebuild',
+      () {
+    var selected = true;
+    final host = InTreePopupHost();
+    final owner = BuildOwner(
+        pipelineOwner: PipelineOwner(
+            rootConstraints: BoxConstraints.tight(const Size(400, 300))));
+    addTearDown(owner.dispose);
+    owner.updateRoot(PopupScope(
+        host: host,
+        child: ContextMenuArea(
+            onOpen: (_) => selected = false,
+            menuChildren: () => [
+                  MenuItemButton(
+                      onPressed: () {},
+                      child: Text(selected ? 'File action' : 'Folder action'))
+                ],
+            child: const SizedBox(width: 400, height: 300))));
+    void frame() {
+      for (var i = 0; i < 8; i++) {
+        owner.buildScope();
+        owner.pipelineOwner.drawFrame(DisplayList());
+        if (!owner.hasScheduledBuilds) return;
+      }
+    }
+
+    frame();
+    owner.dispatchPointerEvent(const PointerDownEvent(
+        windowId: NativeWindowId(1),
+        generation: 1,
+        timestamp: Duration.zero,
+        pointerId: 0,
+        kind: PointerKind.mouse,
+        logicalPosition: Offset(100, 100),
+        button: PointerButton.secondary));
+    frame();
+    final texts = <String>[];
+    void walk(RenderBox box) {
+      if (box is RenderText) texts.add(box.text);
+      box.visitChildren(walk);
+    }
+
+    walk(owner.renderRoot!);
+    expect(texts, contains('Folder action'));
+    expect(texts, isNot(contains('File action')));
+  });
+
   test('opaque native menu corners contain the panel colour', () async {
     final device = await const CpuRendererBackend().createDevice();
     addTearDown(device.dispose);

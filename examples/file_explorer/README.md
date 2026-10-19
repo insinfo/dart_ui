@@ -129,3 +129,8 @@ composta instalada por `PopupScope`/`DartUiApp`.
 As dicas ao passar sobre arquivos e as caixas de seleção dos itens ficam
 desativadas por padrão. Quem desejar pode ativá-las em Opções de Pasta →
 Exibir; a escolha explícita é preservada nas próximas execuções.
+
+O menu contextual usa o alvo do clique: botão direito no espaço vazio limpa a
+seleção e abre opções da pasta; sobre um item não selecionado, seleciona esse
+item; sobre um item de uma seleção múltipla, conserva o grupo. Clique esquerdo
+no espaço vazio limpa a seleção sem abrir menu.

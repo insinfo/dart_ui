@@ -65,7 +65,7 @@ final class _Harness {
       ),
     );
     final root = PopupScope(
-      host: InTreePopupHost(),
+      host: popupHost,
       child: FileExplorerApp(
         model: model,
         onReady: (ExplorerWindowState w) => window = w,
@@ -80,6 +80,7 @@ final class _Harness {
   }
 
   final native = _TestWindow();
+  final popupHost = InTreePopupHost();
   late final ExplorerModel model;
   late final BuildOwner owner;
   late ExplorerWindowState window;
@@ -367,6 +368,90 @@ void main() {
     await h.settle();
     expect(h.texts, contains('Adobe'));
     expect(h.renders<RenderDataGridBody>(), isEmpty);
+  });
+
+  test(
+      'context clicks select the hit file or clear selection for the folder in every layout',
+      () async {
+    for (final mode in ViewMode.values) {
+      final h = _Harness(mode: mode);
+      try {
+        await h.settle();
+        h.model.tab.visible =
+            h.model.tab.visible.where((e) => !e.isDirectory).take(2).toList();
+        h.model.notify();
+        await h.settle();
+        final first = h.model.tab.visible[0];
+        final second = h.model.tab.visible[1];
+        Offset at(String name) => h
+            .renders<RenderText>()
+            .firstWhere((t) => t.text == name)
+            .localToGlobal(const Offset(2, 2));
+        void click(Offset p, {PointerButton button = PointerButton.secondary}) {
+          h.owner.dispatchPointerEvent(PointerDownEvent(
+              windowId: const NativeWindowId(1),
+              generation: 1,
+              timestamp: Duration.zero,
+              pointerId: 0,
+              kind: PointerKind.mouse,
+              logicalPosition: p,
+              button: button));
+          h.owner.dispatchPointerEvent(PointerUpEvent(
+              windowId: const NativeWindowId(1),
+              generation: 1,
+              timestamp: const Duration(milliseconds: 1),
+              pointerId: 0,
+              kind: PointerKind.mouse,
+              logicalPosition: p,
+              button: button));
+        }
+
+        click(at(first.name));
+        await h.settle();
+        expect(h.model.tab.selection, {first.path},
+            reason: '$mode right click selects the hit file');
+        expect(h.texts, contains('Rename'));
+        h.popupHost.closeAll();
+        await h.settle();
+        h.model.select([first.path, second.path]);
+        await h.settle();
+        click(at(first.name));
+        await h.settle();
+        expect(h.model.tab.selection, {first.path, second.path},
+            reason: '$mode preserves a selected group');
+        h.popupHost.closeAll();
+        await h.settle();
+        h.model.select([first.path]);
+        await h.settle();
+        click(at(second.name));
+        await h.settle();
+        expect(h.model.tab.selection, {second.path},
+            reason: '$mode right click replaces the selection on another file');
+        h.popupHost.closeAll();
+        await h.settle();
+        const blank = Offset(850, 700);
+        click(blank);
+        await h.settle();
+        expect(h.model.tab.selection, isEmpty,
+            reason: '$mode right click on blank clears selection');
+        expect(h.texts, contains('Refresh'),
+            reason: '$mode opens folder actions');
+        expect(h.texts, isNot(contains('Rename')),
+            reason: '$mode does not reuse the old file menu');
+        h.popupHost.closeAll();
+        await h.settle();
+        h.model.select([first.path]);
+        await h.settle();
+        click(blank, button: PointerButton.primary);
+        await h.settle();
+        expect(h.model.tab.selection, isEmpty,
+            reason: '$mode left click on blank clears selection');
+        expect(h.popupHost.openCount, 0,
+            reason: '$mode left click does not open a context menu');
+      } finally {
+        h.dispose();
+      }
+    }
   });
 
   test('folder items have no tooltip or checkbox by default in every layout',
