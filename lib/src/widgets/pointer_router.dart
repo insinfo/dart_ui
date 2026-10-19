@@ -23,6 +23,13 @@ abstract interface class PointerDownObserver {
   void observePointerDown(PointerDownEvent event);
 }
 
+/// Changes an overlay before a press is delivered, then requests a fresh hit
+/// test. Used when a secondary press outside a menu closes it and targets the
+/// content underneath. No target receives the press before this step.
+abstract interface class PointerDownRetargeter {
+  bool preparePointerDown(PointerDownEvent event);
+}
+
 /// Stops a hit-tested pointer event from bubbling to ancestor targets.
 ///
 /// Overlay controls such as a scrollbar are interaction surfaces in their own
@@ -177,7 +184,25 @@ final class PointerRouter {
     }
 
     _path.reset();
-    final bool hit = root.hitTest(event.logicalPosition, path: _path) != null;
+    bool hit = root.hitTest(event.logicalPosition, path: _path) != null;
+    if (event is PointerDownEvent) {
+      // Each successful preparation must remove its interception. Bound the
+      // retries so a faulty custom target cannot trap input in a loop.
+      for (var retry = 0; retry < 16; retry++) {
+        var changed = false;
+        for (var i = _path.length - 1; i >= 0; i--) {
+          if (_path[i] case final PointerDownRetargeter target) {
+            if (target.preparePointerDown(event)) {
+              changed = true;
+              break;
+            }
+          }
+        }
+        if (!changed) break;
+        _path.reset();
+        hit = root.hitTest(event.logicalPosition, path: _path) != null;
+      }
+    }
 
     if (event is PointerMoveEvent) {
       _updateHoverPath(event.pointerId);

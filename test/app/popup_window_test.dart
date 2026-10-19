@@ -513,6 +513,51 @@ void main() {
       await _stop(app);
     });
 
+    test('one secondary owner press replaces the entire native menu chain',
+        () async {
+      final app = await _start();
+      final owner = app.primaryWindow;
+      final host = WindowPopupHost(application: app, owner: owner);
+      var presses = 0;
+      owner.updateRoot(PointerListener(
+          onPointerDown: (event) {
+            if (event.button == PointerButton.secondary) {
+              presses++;
+              host.open(_spec(
+                  anchorRect: Rect.fromLTWH(event.logicalPosition.dx,
+                      event.logicalPosition.dy, 1, 1)));
+            }
+          },
+          child: const SizedBox(width: 300, height: 200)));
+      await app.drawFrame();
+      final original = host.open(_spec());
+      await _settle();
+      await app.drawFrame();
+      final submenu =
+          host.open(_spec(kind: PopupKind.submenu, parent: original));
+      await _settle();
+      await app.drawFrame();
+      expect(app.popupsOf(owner), hasLength(2));
+      app.handleEvent(PointerDownEvent(
+          windowId: owner.id,
+          generation: owner.nativeWindow.generation,
+          timestamp: Duration.zero,
+          pointerId: 0,
+          kind: PointerKind.mouse,
+          logicalPosition: const Offset(150, 100),
+          button: PointerButton.secondary));
+      await _settle();
+      await app.drawFrame();
+      expect(presses, 1);
+      expect(original.isOpen, isFalse);
+      expect(submenu.isOpen, isFalse);
+      expect(host.openCount, 1);
+      expect(app.popupsOf(owner), hasLength(1));
+      expect(host.topmost!.isOpen, isTrue);
+      expect(app.errors, isEmpty);
+      await _stop(app);
+    });
+
     test('a press with a dropdown open dismisses it and is delivered',
         () async {
       final ownerLog = _Log();

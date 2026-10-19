@@ -12,7 +12,8 @@
 ///    area is, and why it is the window rather than the screen, is the first
 ///    limit below.
 ///  * **It grabs the pointer.** While it is open, a click anywhere else closes
-///    it *and does not reach what is underneath*. That is the difference
+///    it. Primary presses do not reach what is underneath; secondary presses
+///    retarget the content to open its context menu. That is the difference
 ///    between dismissing a menu and dismissing a menu while also pressing the
 ///    button behind it, and it is implemented by [RenderContextMenuLayer]
 ///    refusing to hit-test its content child.
@@ -467,7 +468,7 @@ final class _ContextMenuLayerWidget extends MultiChildRenderObjectWidget {
 /// content, child 1 is the popup - because the popup exists only while the menu
 /// is open and a named slot would have to be nullable anyway.
 final class RenderContextMenuLayer extends RenderBoxContainer<BoxParentData>
-    implements PointerEventTarget {
+    implements PointerEventTarget, PointerDownRetargeter {
   ContextMenuController? _controller;
   PopupPlacement? _placement;
 
@@ -484,7 +485,7 @@ final class RenderContextMenuLayer extends RenderBoxContainer<BoxParentData>
   PopupPlacement? get placement => _placement;
 
   /// Whether a popup is currently part of this layer.
-  bool get isOpen => childCount > 1;
+  bool get isOpen => childCount > 1 && (_controller?.isOpen ?? false);
 
   RenderBox? get _popup => childCount > 1 ? childAt(1) : null;
 
@@ -536,13 +537,16 @@ final class RenderContextMenuLayer extends RenderBoxContainer<BoxParentData>
   ///
   /// This is the input grab, and it is the whole reason the layer is a render
   /// object rather than a `Stack`. A click outside an open menu must dismiss it
-  /// **and stop there**: delivering it to the content as well is how a user
+  /// **and stop there** for primary presses: delivering those as well is how a user
   /// closes a menu and simultaneously presses the button they were aiming the
   /// dismissal at.
   @override
   RenderBox? hitTestChildren(Offset position, {HitTestPath? path}) {
     final RenderBox? popup = _popup;
-    if (popup == null) return super.hitTestChildren(position, path: path);
+    if (popup == null || !isOpen) {
+      if (childCount == 0) return null;
+      return childAt(0).hitTest(position, path: path);
+    }
     final Offset offset = popup.offsetFromParent;
     return popup.hitTest(
       Offset(position.dx - offset.dx, position.dy - offset.dy),
@@ -555,6 +559,21 @@ final class RenderContextMenuLayer extends RenderBoxContainer<BoxParentData>
   /// before this widget was introduced.
   @override
   bool hitTestSelf(Offset position) => isOpen;
+
+  @override
+  bool preparePointerDown(PointerDownEvent event) {
+    if (event.button != PointerButton.secondary || !isOpen) return false;
+    final placement = _placement;
+    if (placement == null ||
+        placement.rect.contains(globalToLocal(event.logicalPosition))) {
+      return false;
+    }
+    _controller?.close();
+    // The new menu may open during dispatch, before this layer rebuilds.
+    // Do not let the old placement dismiss that replacement while bubbling.
+    _placement = null;
+    return true;
+  }
 
   @override
   void handlePointerEvent(PointerEvent event) {

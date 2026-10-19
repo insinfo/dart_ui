@@ -98,9 +98,10 @@ enum PopupKind {
   /// Whether a click that dismisses this popup is also delivered to whatever
   /// was under the pointer.
   ///
-  /// A menu swallows it: the click that closes a menu must not also press the
+  /// A menu swallows primary presses: closing a menu must not also press the
   /// button behind the menu, because the user was aiming at "not the menu".
-  /// A dropdown does not swallow it, and a tooltip never sees a click at all.
+  /// Secondary presses retarget the content after dismissal to open its menu.
+  /// A dropdown does not swallow presses, and a tooltip never sees a click.
   bool get dismissalPassesThrough =>
       this != PopupKind.menu && this != PopupKind.submenu;
 
@@ -779,7 +780,7 @@ final class _PopupLayerRenderWidget extends MultiChildRenderObjectWidget {
 /// difference between this host and a window one, and the reason a menu here
 /// is flipped inside the window instead of extending past it.
 final class RenderPopupLayer extends RenderBoxContainer<BoxParentData>
-    implements PointerEventTarget {
+    implements PointerEventTarget, PointerDownRetargeter {
   RenderPopupLayer({
     required InTreePopupHost host,
     required List<PopupSpec> specs,
@@ -888,6 +889,7 @@ final class RenderPopupLayer extends RenderBoxContainer<BoxParentData>
     // sits above its parent and must win the pointer where they overlap.
     for (int i = childCount - 1; i >= 1; i--) {
       final int specIndex = i - 1;
+      if (specIndex >= _handles.length || !_handles[specIndex].isOpen) continue;
       if (specIndex < _specs.length && !_specs[specIndex].kind.takesPointer) {
         // A tooltip is transparent to the pointer by definition: the hover
         // that produced it is still happening on the control underneath, and
@@ -931,15 +933,18 @@ final class RenderPopupLayer extends RenderBoxContainer<BoxParentData>
   /// that order, so a button left in the path has already been pressed by the
   /// time the event bubbles up to this layer. No return value can undo that.
   ///
-  /// So a menu removes the content from the path entirely: [hitTestChildren]
+  /// A secondary press outside first closes the menu and is hit-tested again.
+  /// Otherwise a menu removes the content from the path entirely: [hitTestChildren]
   /// stops at the popups and never reaches child 0 — the same thing
   /// `RenderContextMenuLayer` does, arrived at for the same reason. A dropdown
   /// and a tooltip do not, because for them the pass-through *is* the wanted
   /// behaviour: clicking a button while a combo list is open should close the
   /// list and press the button, which is what every desktop does.
   bool get _isModal {
-    for (final PopupSpec spec in _specs) {
-      if (!spec.kind.dismissalPassesThrough) return true;
+    for (var i = 0; i < _specs.length; i++) {
+      if (_handles[i].isOpen && !_specs[i].kind.dismissalPassesThrough) {
+        return true;
+      }
     }
     return false;
   }
@@ -954,7 +959,7 @@ final class RenderPopupLayer extends RenderBoxContainer<BoxParentData>
   /// [handlePointerEvent].
   @override
   bool hitTestSelf(Offset position) {
-    if (_specs.isEmpty) return false;
+    if (!_handles.any((h) => h.isOpen)) return false;
     // A press inside a declared pass-through region is the content's, not
     // this layer's: claiming it here would put the layer ahead of the menu bar
     // in the hit path and dismiss the very menu the press is trying to switch.
@@ -962,9 +967,24 @@ final class RenderPopupLayer extends RenderBoxContainer<BoxParentData>
   }
 
   @override
+  bool preparePointerDown(PointerDownEvent event) {
+    if (event.button != PointerButton.secondary || !_isModal) return false;
+    final local = globalToLocal(event.logicalPosition);
+    if (_passesThrough(local)) return false;
+    for (final handle in _handles) {
+      if (handle.isOpen &&
+          handle.spec.kind.takesPointer &&
+          (handle.placedRect?.contains(local) ?? false)) {
+        return false;
+      }
+    }
+    return _host.handlePressOutside(local);
+  }
+
+  @override
   void handlePointerEvent(PointerEvent event) {
     if (event is! PointerDownEvent) return;
-    if (_specs.isEmpty) return;
+    if (!_handles.any((h) => h.isOpen)) return;
     final Offset local = globalToLocal(event.logicalPosition);
     // A press inside a pass-through region belongs to the content and must not
     // dismiss anything here. `RenderBox.hitTest` puts this layer in the path

@@ -622,8 +622,12 @@ void main() {
         await h.settle();
         expect(h.model.tab.selection, {second.path},
             reason: '$mode right click replaces the selection on another file');
-        h.popupHost.closeAll();
+        click(at(first.name));
         await h.settle();
+        expect(h.model.tab.selection, {first.path},
+            reason: '$mode one right click replaces an already open file menu');
+        expect(h.popupHost.openCount, 1);
+        expect(h.texts, contains('Rename'));
         const blank = Offset(850, 700);
         click(blank);
         await h.settle();
@@ -633,6 +637,13 @@ void main() {
             reason: '$mode opens folder actions');
         expect(h.texts, isNot(contains('Rename')),
             reason: '$mode does not reuse the old file menu');
+        click(at(first.name));
+        await h.settle();
+        expect(h.model.tab.selection, {first.path},
+            reason: '$mode a file replaces the open folder menu in one click');
+        expect(h.popupHost.openCount, 1);
+        expect(h.texts, contains('Rename'));
+
         h.popupHost.closeAll();
         await h.settle();
         h.model.select([first.path]);

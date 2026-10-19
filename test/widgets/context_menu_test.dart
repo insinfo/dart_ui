@@ -48,6 +48,20 @@ void main() {
       harness.dispose();
     });
 
+    test('a secondary press outside replaces the menu in the same click', () {
+      final harness = _Harness()..frame();
+      addTearDown(harness.dispose);
+      harness.rightClick(const Offset(140, 120));
+      harness.frame();
+      expect(harness.controller.anchor, const Offset(140, 120));
+      harness.rightClick(const Offset(20, 10));
+      harness.frame();
+      expect(harness.surface, isNotNull);
+      expect(harness.controller.anchor, const Offset(20, 10));
+      expect(harness.labels, ['Refresh', 'Duplicate', 'Delete']);
+      expect(harness.buttonPresses, 0);
+    });
+
     test('a primary press opens nothing', () {
       final _Harness harness = _Harness()
         ..frame()

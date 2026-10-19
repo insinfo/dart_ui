@@ -1133,7 +1133,7 @@ final class ApplicationWindow with DisposableMixin {
   /// [kind] already says the window is a [WindowKind.popup] or a
   /// [WindowKind.tooltip]; this says which of the four popups the framework
   /// distinguishes it is, and the difference decides routing rather than
-  /// decoration. A [PopupKind.menu] swallows the press that dismisses it and a
+  /// decoration. A [PopupKind.menu] swallows a primary dismissing press and a
   /// [PopupKind.dropdown] lets it through; a [PopupKind.tooltip] never takes
   /// the keyboard while the other three do. None of that is derivable from
   /// [WindowKind], which is why the value is recorded here at
@@ -4285,10 +4285,11 @@ final class Application with DisposableMixin {
           final List<ApplicationWindow> popups = popupsOf(window);
           if (popups.isNotEmpty) {
             // The innermost popup decides, because it is the one on top: a
-            // menu swallows the press that closes it, since the user was
+            // menu swallows a primary press that closes it, since the user was
             // aiming at "not the menu" and must not also press the button
             // behind it; a dropdown lets it through, because closing a combo
-            // list by clicking a button should press that button.
+            // list by clicking a button should press that button. A secondary
+            // press closes the old chain and reaches the new context target.
             final PopupKind topmost = popups.last.popupKind!;
             _dismissPopupsOf(window);
             if (window.isDisposed) {
@@ -4299,7 +4300,9 @@ final class Application with DisposableMixin {
             // `_isModal` shields child 0 and leaves the popups in the hit
             // path, so a press on a parent menu item still activates it while
             // closing the submenu; keying on popupKind is that same rule.
-            if (window.popupKind == null && !topmost.dismissalPassesThrough) {
+            if (window.popupKind == null &&
+                !topmost.dismissalPassesThrough &&
+                event.button != PointerButton.secondary) {
               window.requestFrame();
               return true;
             }
