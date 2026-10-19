@@ -54,8 +54,10 @@ library;
 import 'dart:async';
 
 import '../geometry/offset.dart';
+import '../geometry/popup_request.dart';
 import '../geometry/rect.dart';
 import '../geometry/size.dart';
+import '../platform/native_window.dart' show PositionedPopupWindow;
 import '../widgets/element.dart';
 import '../widgets/errors.dart';
 import '../widgets/layout_builder.dart' show Builder;
@@ -345,6 +347,16 @@ final class WindowPopupHandle implements PopupHandle {
     // Before it has landed there is nothing to move: [_PopupChain._launch]
     // reads the spec when it opens the window, and it will read this one.
     if (window == null || window.isDisposed) return;
+    if (window.nativeWindow case final PositionedPopupWindow positioned) {
+      positioned.configurePopup(PopupRequest(
+          anchorRect: _anchorInOwner(anchorRect),
+          size: window.nativeWindow.clientSize,
+          anchorPoint: _spec.anchorPoint,
+          popupPoint: _spec.popupPoint,
+          offset: _spec.offset,
+          adjustments: _spec.adjustments));
+      return;
+    }
     window.nativeWindow.setBounds(_chain.application.placePopup(
       owner: _chain.owner,
       anchorRect: _anchorInOwner(anchorRect),

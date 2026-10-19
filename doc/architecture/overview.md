@@ -162,9 +162,12 @@ estado, conferido no código, para quem precisa decidir sem abrir aquele:
   (`glyphOutlineTransform`) são uma função só, compartilhada pelos três. CPU e
   OpenGL têm paridade de desvio 0; o Direct2D, que usa o rasterizador do
   `d2d1.dll`, tem tolerância declarada e medida;
-- Wayland **não tem GPU** — nem EGL, nem `linux-dmabuf`, nem Vulkan. Também não
-  tem touch, escala fracionária, seleção primária, ícone de arraste, nem
-  desenho de decoração própria quando o compositor recusa SSD;
+- Wayland tem apresentação **EGL/GBM + `linux-dmabuf` v3** desde 18/10/2026,
+  validada em GNOME/Mesa virgl, com redimensionamento e popups medidos.
+  O teste também cobre decoração própria quando o compositor recusa SSD.
+  GPU múltipla, NVIDIA, sincronização explícita e escala fracionária não
+  foram validadas neste lote. Ver o
+  [relatório GNOME](../logs/GNOME_WAYLAND_GPU_2026-10-18.md);
 - Metal **não apresenta**: sem `CAMetalLayer`, sem atlas de máscara, sem atlas
   de glifos e sem pilha de layers, então path, rrect, texto e layer são
   recusados por nome. `supportsSurface` só aceita `MemorySurfaceDescriptor`;

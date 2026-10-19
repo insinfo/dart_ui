@@ -11,10 +11,13 @@ import '../foundation/diagnostics.dart';
 import '../foundation/lifecycle.dart';
 import '../foundation/value_notifier.dart';
 import '../geometry/offset.dart';
+import '../geometry/popup_request.dart';
 import '../geometry/rect.dart';
 import '../geometry/size.dart';
 import '../rendering/renderer.dart';
 import 'window_events.dart';
+
+export '../geometry/popup_request.dart';
 
 // Re-exported rather than merely imported so that `ScreenInfo` and
 // `ScreenProvider` are nameable from the same import that names
@@ -86,6 +89,12 @@ enum SystemCursor {
   wait,
   crosshair,
   notAllowed,
+}
+
+/// Positions a popup relative to its parent surface. Compositor backends use
+/// the measured content size and anchor before assigning a native popup role.
+abstract interface class PositionedPopupWindow {
+  void configurePopup(PopupRequest request);
 }
 
 /// What happens to a decorated window's title bar.

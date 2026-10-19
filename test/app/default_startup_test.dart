@@ -170,7 +170,13 @@ void main() {
 
       expect(
         paths.map((PresentationPathEntry path) => path.name),
-        <String>['opengl', 'wayland-shm', 'x11-putimage', 'headless-cpu'],
+        <String>[
+          'wayland-opengl',
+          'opengl',
+          'wayland-shm',
+          'x11-putimage',
+          'headless-cpu'
+        ],
       );
       expect(paths.first.kind, PresentationKind.gpu);
     });

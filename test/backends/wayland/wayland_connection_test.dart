@@ -3,6 +3,7 @@ import 'dart:typed_data';
 
 import 'package:dart_ui/src/backends/wayland/wayland_clipboard.dart';
 import 'package:dart_ui/src/backends/wayland/wayland_connection.dart';
+import 'package:dart_ui/src/backends/wayland/wayland_dma_buf.dart';
 import 'package:dart_ui/src/backends/wayland/wayland_events.dart';
 import 'package:dart_ui/src/backends/wayland/wayland_positioner.dart';
 import 'package:dart_ui/src/backends/wayland/wayland_protocol.dart';
@@ -44,6 +45,120 @@ void main() {
     connection.flush();
     return connection;
   }
+
+  group('DMA-BUF GPU storage', () {
+    const plane =
+        WaylandDmaBufPlane(fd: 77, stride: 512, offset: 0, modifier: 0);
+    WaylandConnection openGpu() {
+      compositor.advertiseDmaBuf = true;
+      final connection = openOk();
+      addTearDown(connection.dispose);
+      return connection;
+    }
+
+    int import(WaylandConnection connection, void Function() release) =>
+        connection.importDmaBuf(
+            width: 128,
+            height: 64,
+            format: drmFormatArgb8888,
+            planes: const <WaylandDmaBufPlane>[plane],
+            onRelease: release);
+    void drain(WaylandConnection connection) {
+      final event = WaylandRawEvent();
+      while (connection.pollEventInto(event)) {}
+    }
+
+    bool commit(WaylandConnection connection, int buffer) =>
+        connection.commitDmaBuf(
+            surfaceId: 50,
+            bufferId: buffer,
+            width: 128,
+            height: 64,
+            bufferScale: 1);
+
+    test('binds v3, negotiates modifiers and carries plane FDs in order', () {
+      final connection = openGpu();
+      expect(connection.supportsDmaBuf, isTrue);
+      expect(connection.supportsDmaBufFormat(drmFormatArgb8888, 0), isTrue);
+      expect(connection.supportsDmaBufFormat(drmFormatArgb8888, 42), isFalse);
+      compositor.requests.clear();
+      final buffer = import(connection, () {});
+      expect(buffer, greaterThanOrEqualTo(0xff000000));
+      final add = compositor.requests.singleWhere(
+          (r) => compositor.dmaBufParams.contains(r.objectId) && r.opcode == 1);
+      expect(add.fds, <int>[77]);
+      final reader = WaylandMessageReader(add.payload);
+      expect(<int>[for (var i = 0; i < 5; i++) reader.readUint()],
+          <int>[0, 0, 512, 0, 0]);
+      connection.destroyDmaBuf(buffer);
+    });
+
+    test('a compositor rejection leaves the connection usable', () {
+      final connection = openGpu();
+      compositor.rejectDmaBuf = true;
+      expect(
+          () => import(connection, () => fail('unsubmitted storage released')),
+          throwsStateError);
+      expect(connection.isValid, isTrue);
+      compositor.rejectDmaBuf = false;
+      final buffer = import(connection, () {});
+      expect(commit(connection, buffer), isTrue);
+    });
+
+    test('busy storage is reusable only after release and retires after use',
+        () {
+      final connection = openGpu();
+      var releases = 0;
+      final buffer = import(connection, () => releases++);
+      expect(commit(connection, buffer), isTrue);
+      expect(commit(connection, buffer), isFalse);
+      expect(releases, 0);
+      compositor._event(buffer, wlBufferEventRelease, (_) {});
+      drain(connection);
+      expect(releases, 1);
+      expect(commit(connection, buffer), isTrue);
+      connection.destroyDmaBuf(buffer);
+      expect(releases, 1);
+      compositor._event(buffer, wlBufferEventRelease, (_) {});
+      drain(connection);
+      expect(releases, 2);
+      expect(commit(connection, buffer), isFalse);
+      connection.dispose();
+      expect(releases, 2);
+    });
+
+    test('teardown releases busy storage once and leaves idle storage alone',
+        () {
+      final connection = openGpu();
+      var releases = 0;
+      final busy = import(connection, () => releases++);
+      final idle =
+          import(connection, () => fail('idle storage released twice'));
+      expect(commit(connection, busy), isTrue);
+      connection.destroyDmaBuf(idle);
+      connection.dispose();
+      connection.dispose();
+      expect(releases, 1);
+    });
+
+    test('unsupported modifiers are refused before emitting protocol requests',
+        () {
+      final connection = openGpu();
+      final before = compositor.requests.length;
+      expect(
+          () => connection.importDmaBuf(
+              width: 128,
+              height: 64,
+              format: drmFormatArgb8888,
+              planes: const <WaylandDmaBufPlane>[
+                WaylandDmaBufPlane(
+                    fd: 77, stride: 512, offset: 0, modifier: 42),
+              ],
+              onRelease: () {}),
+          throwsStateError);
+      expect(compositor.requests.length, before);
+    });
+  });
 
   group('handshake', () {
     test('binds the required globals over two roundtrips', () {
@@ -725,6 +840,65 @@ void main() {
   });
 
   group('popups', () {
+    for (final version in <int>[1, 4]) {
+      test('a hidden popup receives only its measured size on xdg v$version',
+          () {
+        compositor.wmBaseVersion = version;
+        final connection = openOk();
+        addTearDown(connection.dispose);
+        final parent = connection.createToplevel(const WaylandToplevelRequest(
+            width: 1024,
+            height: 736,
+            title: 'Parent',
+            appId: 'dart_ui',
+            resizable: true));
+        compositor.requests.clear();
+        final popup = connection.preparePopup(parent);
+        connection.flush();
+        expect(
+            compositor.requests.any((r) =>
+                r.opcode == xdgSurfaceRequestGetPopup &&
+                r.objectId == popup.xdgSurfaceId),
+            isFalse);
+        expect(
+            compositor.requests.any((r) =>
+                r.opcode == wlSurfaceRequestCommit &&
+                r.objectId == popup.surfaceId),
+            isFalse);
+        final measured = WaylandPositionerSpec.fromRequest(const PopupRequest(
+            anchorRect: Rect.fromLTWH(400, 223, 0, 0), size: Size(183, 148)));
+        final completed = connection.completePopup(
+            popup, WaylandPopupRequest(parent: parent, positioner: measured));
+        final sizes = compositor.requests.where((r) =>
+            r.opcode == xdgPositionerRequestSetSize &&
+            r.objectId != popup.surfaceId &&
+            r.objectId != popup.xdgSurfaceId &&
+            r.objectId != popup.toplevelId &&
+            r.objectId != compositor.wmBaseId);
+        expect(sizes, hasLength(1));
+        final reader = WaylandMessageReader(sizes.single.payload);
+        expect(<int>[reader.readInt(), reader.readInt()], <int>[183, 148]);
+        expect(connection.repositionPopup(completed, measured), version >= 3);
+      });
+    }
+
+    test('discarding a pending popup never destroys an uncreated role', () {
+      final connection = openOk();
+      addTearDown(connection.dispose);
+      final parent = connection.createToplevel(const WaylandToplevelRequest(
+          width: 320,
+          height: 240,
+          title: 'Parent',
+          appId: 'dart_ui',
+          resizable: true));
+      final popup = connection.preparePopup(parent);
+      compositor.requests.clear();
+      connection.destroyToplevel(popup);
+      expect(compositor.requests.any((r) => r.objectId == popup.toplevelId),
+          isFalse);
+      expect(connection.isValid, isTrue);
+    });
+
     WaylandPositionerSpec spec({
       int width = 180,
       int height = 240,
@@ -1203,6 +1377,11 @@ final class _Request {
 /// parses the client's requests on flush, answers the handshake, and lets the
 /// test inject events. No socket, no FFI, no Linux.
 final class _FakeCompositor implements WaylandTransport {
+  bool advertiseDmaBuf = false;
+  bool rejectDmaBuf = false;
+  int dmaBufId = 0;
+  final Set<int> dmaBufParams = <int>{};
+  int wmBaseVersion = 4;
   bool advertiseWmBase = true;
   bool advertiseDecoration = true;
   bool advertiseShm = true;
@@ -1284,6 +1463,9 @@ final class _FakeCompositor implements WaylandTransport {
   }
 
   List<int> _takeFdsFor(int objectId, int opcode) {
+    if (dmaBufParams.contains(objectId) && opcode == 1) {
+      return <int>[_pendingOutFds.removeAt(0)];
+    }
     // Both shm pool creation and data-offer receive carry one descriptor.
     if ((objectId == shmId && opcode == wlShmRequestCreatePool) ||
         (opcode == wlDataOfferRequestReceive &&
@@ -1359,6 +1541,13 @@ final class _FakeCompositor implements WaylandTransport {
       final newId = reader.readNewId();
       boundInterfaces.add(interface);
       switch (interface) {
+        case linuxDmaBufInterface:
+          dmaBufId = newId;
+          _event(newId, 1, (w) {
+            w.putUint(drmFormatArgb8888);
+            w.putUint(0);
+            w.putUint(0);
+          });
         case wlCompositorInterfaceName:
           compositorId = newId;
         case wlShmInterfaceName:
@@ -1390,6 +1579,16 @@ final class _FakeCompositor implements WaylandTransport {
         case xdgDecorationManagerInterfaceName:
           decorationManagerId = newId;
       }
+      return;
+    }
+    if (objectId == dmaBufId && opcode == 1) {
+      dmaBufParams.add(WaylandMessageReader(payload).readNewId());
+      return;
+    }
+    if (dmaBufParams.contains(objectId) && opcode == 2) {
+      _event(objectId, rejectDmaBuf ? 1 : 0, (w) {
+        if (!rejectDmaBuf) w.putNewId(_nextServerId++);
+      });
       return;
     }
     if (objectId == seatId) {
@@ -1460,10 +1659,11 @@ final class _FakeCompositor implements WaylandTransport {
     }
 
     global(wlCompositorInterfaceName, 5);
+    if (advertiseDmaBuf) global(linuxDmaBufInterface, 3);
     if (advertiseShm) global(wlShmInterfaceName, 1);
     global(wlSeatInterfaceName, 7);
     global(wlOutputInterfaceName, 3);
-    if (advertiseWmBase) global(xdgWmBaseInterfaceName, 4);
+    if (advertiseWmBase) global(xdgWmBaseInterfaceName, wmBaseVersion);
     if (advertiseDataDevice) global(wlDataDeviceManagerInterfaceName, 3);
     if (advertiseDecoration) global(xdgDecorationManagerInterfaceName, 1);
   }

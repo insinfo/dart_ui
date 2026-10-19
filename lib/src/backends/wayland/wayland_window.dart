@@ -32,18 +32,22 @@ import '../../platform/input_events.dart';
 import '../../platform/native_window.dart';
 import '../../platform/window_events.dart';
 import '../../rendering/renderer.dart';
-import '../../widgets/popup.dart';
 import 'wayland_connection.dart';
+import 'wayland_dma_buf.dart';
 import 'wayland_events.dart';
 import 'wayland_positioner.dart';
 import 'wayland_shm.dart';
 
 final class WaylandWindow
     with DisposableMixin
-    implements NativeWindow, ClientDecoratedWindow, WindowStateControl {
+    implements
+        NativeWindow,
+        PositionedPopupWindow,
+        ClientDecoratedWindow,
+        WindowStateControl {
   WaylandWindow._({
     required WaylandWindowClient client,
-    required this.toplevelIds,
+    required WaylandToplevelIds toplevelIds,
     required NativeWindowId id,
     required int logicalWidth,
     required int logicalHeight,
@@ -53,7 +57,8 @@ final class WaylandWindow
     this.popupDepth = 0,
     this.decorated = false,
     String title = '',
-  })  : _client = client,
+  })  : _toplevelIds = toplevelIds,
+        _client = client,
         _title = title,
         _cpuClient =
             client is WaylandCpuClient ? client as WaylandCpuClient : null,
@@ -148,7 +153,7 @@ final class WaylandWindow
       final grab = wantsGrab
           ? WaylandPopupGrab.withSerial(client.lastInputSerial)
           : WaylandPopupGrab.none;
-      final popupIds = client.createPopup(WaylandPopupRequest(
+      final popupRequest = WaylandPopupRequest(
         // The owner's role object, whichever it is: a menu anchored to the
         // toplevel names the toplevel's xdg_surface, and a submenu anchored to
         // that menu names the *menu's*. That is not a choice - xdg-shell
@@ -161,7 +166,13 @@ final class WaylandWindow
         parent: owner.toplevelIds,
         positioner: WaylandPositionerSpec.fromRequest(request),
         grab: grab,
-      ));
+      );
+      final deferred =
+          !options.visible && client is WaylandPopupLifecycleClient;
+      final popupIds = deferred
+          ? (client as WaylandPopupLifecycleClient)
+              .preparePopup(owner.toplevelIds)
+          : client.createPopup(popupRequest);
       final popup = WaylandWindow._(
         client: client,
         toplevelIds: popupIds,
@@ -172,7 +183,11 @@ final class WaylandWindow
         onClosed: onClosed,
         isPopup: true,
         popupDepth: owner.popupDepth + 1,
-      );
+      )
+        .._deferredPopup = deferred
+        .._popupParent = owner.toplevelIds
+        .._popupGrab = grab
+        .._popupRequest = request;
       if (wantsGrab && !grab.isRequested) {
         // Named, not silent: an application that asked for a modal menu and
         // got a light-dismiss one must be able to find out why, and the answer
@@ -238,12 +253,17 @@ final class WaylandWindow
 
   /// The wl_surface/xdg_surface/xdg_toplevel (or xdg_popup) triple this
   /// window is made of.
-  final WaylandToplevelIds toplevelIds;
+  WaylandToplevelIds _toplevelIds;
+  WaylandToplevelIds get toplevelIds => _toplevelIds;
 
   /// Whether the role object is an `xdg_popup` rather than an
   /// `xdg_toplevel`. A popup has a position, no title and no decorations,
   /// and is dismissed by the compositor rather than closed by the user.
   final bool isPopup;
+  bool _deferredPopup = false;
+  WaylandToplevelIds? _popupParent;
+  WaylandPopupGrab _popupGrab = WaylandPopupGrab.none;
+  PopupRequest? _popupRequest;
 
   /// How deep in the `xdg_popup` chain this window sits: 0 for a toplevel, 1
   /// for a menu anchored to it, 2 for that menu's submenu, and so on.
@@ -357,6 +377,7 @@ final class WaylandWindow
   void show() {
     throwIfDisposed();
     if (_visible) return;
+    if (_deferredPopup) configurePopup(_popupRequest!);
     _visible = true;
     // Mapping again means committing a buffer after a fresh configure; asking
     // for a repaint is what produces that commit.
@@ -535,6 +556,29 @@ final class WaylandWindow
   }
 
   @override
+  void configurePopup(PopupRequest request) {
+    throwIfDisposed();
+    if (!isPopup) throw StateError('Only popup windows have popup positioning');
+    _popupRequest = request;
+    final spec = WaylandPositionerSpec.fromRequest(request);
+    if (_client case final WaylandPopupLifecycleClient client) {
+      if (_deferredPopup) {
+        _toplevelIds = client.completePopup(
+            toplevelIds,
+            WaylandPopupRequest(
+                parent: _popupParent!, positioner: spec, grab: _popupGrab));
+        _protocol.toplevelId = _toplevelIds.toplevelId;
+        _deferredPopup = false;
+      } else if (!client.repositionPopup(toplevelIds, spec)) {
+        _record(const BackendDiagnostic(
+            kind: DiagnosticKind.rejectedByPolicy,
+            message: 'This compositor cannot reposition an existing popup'));
+      }
+    }
+    setBounds(Rect.fromLTWH(0, 0, request.size.width, request.size.height));
+  }
+
+  @override
   void setBounds(Rect bounds) {
     throwIfDisposed();
     // Only the size half is expressible; see the library comment. The client
@@ -617,6 +661,34 @@ final class WaylandWindow
     // The commit inside `present` flushed the frame request with it.
     if (callbackId != 0) _frameCallbackPending = true;
     return null;
+  }
+
+  WaylandDmaBufClient? get dmaBufClient =>
+      _client is WaylandDmaBufClient ? _client as WaylandDmaBufClient : null;
+
+  bool get isConfigured => _protocol.configured;
+
+  /// Invalidates GPU targets when a configure changes the backing surface.
+  GenerationToken get surfaceGenerationToken => _generation;
+
+  /// GPU frames follow the same compositor callback pacing as shm frames.
+  void deferGpuFrame() {
+    _noteThrottledDamage(null);
+    throttledFrameCount++;
+  }
+
+  bool presentDmaBuf(int bufferId, int width, int height) {
+    final client = dmaBufClient;
+    if (isDisposed || client == null || !isConfigured) return false;
+    final callback = _client.requestFrameCallback(surfaceId);
+    final committed = client.commitDmaBuf(
+        surfaceId: surfaceId,
+        bufferId: bufferId,
+        width: width,
+        height: height,
+        bufferScale: _protocol.bufferScale);
+    if (committed && callback != 0) _frameCallbackPending = true;
+    return committed;
   }
 
   /// Whether a commit would be coalesced rather than sent right now.

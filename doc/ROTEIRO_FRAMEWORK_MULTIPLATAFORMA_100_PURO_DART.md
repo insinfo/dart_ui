@@ -500,7 +500,7 @@ realmente oferece, em ordem de tentativa:
 | Plataforma | Backend de janela | Caminhos de apresentação, na ordem |
 |---|---|---|
 | Windows | `win32` | D3D11 → OpenGL/WGL → **Direct2D** → **D3D12** → **Vulkan** (experimental) → DIB de GDI |
-| Linux | `wayland`, depois `x11` | OpenGL/EGL no X11 → `wl_shm` → `PutImage` no X11 |
+| Linux | `wayland`, depois `x11` | EGL/GBM no Wayland → OpenGL/EGL no X11 → `wl_shm` → `PutImage` no X11 |
 | macOS | `macos` | **Metal** sobre o IOSurface do host (padrão desde 12/10/2026) → IOSurface/CoreGraphics na CPU |
 | qualquer | `headless` | renderer de CPU em memória |
 
@@ -514,8 +514,10 @@ vence as duas:
    offscreen com a CPU roda no lavapipe do CI, inclusive sob a camada de
    validação. O que mantém a marca é a janela: nenhum runner tem driver
    Vulkan atrás de um swapchain. Ver §68.2;
-2. **Wayland não tem GPU alguma** — nem EGL, nem `linux-dmabuf`, nem Vulkan. A
-   linha "Vulkan ou EGL/OpenGL" é intenção, não estado;
+2. **Wayland tem EGL/GBM + `linux-dmabuf` v3 desde 18/10/2026**,
+   validado em GNOME/Mesa virgl com resize e popups. A seleção tenta
+   `wayland-opengl` antes de `wayland-shm`; Vulkan Wayland não foi implementado
+   neste lote. Ver [relatório](logs/GNOME_WAYLAND_GPU_2026-10-18.md);
 3. **Metal é o padrão no macOS, sobre o IOSurface e não pela
    `CAMetalLayer`.** Desde 07/09/2026 (`1c12eba`) o Metal desenha no IOSurface
    do pool do host (ADR 0005); não há `CAMetalLayer` porque a `NSWindow` vive
@@ -7557,9 +7559,9 @@ corrigidas abaixo com a execução que as desmente.
   contexto desktop GL 4.5, clear lido de volta do framebuffer 0, três swaps,
   resize. Mas sob **Xvfb com llvmpipe e nenhuma GPU**, e com a malha apenas
   *linkando* — "estável" pede hardware de verdade e um modelo desenhado, e
-  continua sem prova. O Wayland não tem GPU alguma —
-  ainda que o Weston do CI anuncie `zwp_linux_dmabuf_v1`, que é por onde ela
-  entraria;
+  continua sem prova em GPUs físicas. Em 18/10/2026, EGL/GBM e
+  `linux-dmabuf` v3 passaram em GNOME/Mesa virgl na VM Parallels, incluindo
+  resize e popups; isso não demonstra estabilidade em todos os drivers;
 - [~] **X11 estável** — teclado e clipboard entraram em 26/08/2026 e
   **rodaram contra um X server**: `X11_KEYBOARD=PASS` (248 keycodes a partir do
   8, 7 keysyms cada) e `X11_CLIPBOARD=PASS owner=self roundtrip=true` saem do
@@ -10989,8 +10991,9 @@ proporção ele aparece nos outros caminhos, não.
   primeira execução (run `38234818022`) Home e Delete editaram o campo,
   Ctrl+A e Ctrl+C puseram o texto onde o `xclip` o leu, e End e Ctrl+V o
   colaram de volta;
-- **Wayland**: sem GPU de qualquer espécie, touch nunca provado num toque
-  real, sem escala fracionária
+- **Wayland**: GPU EGL/GBM + `linux-dmabuf` v3 validada em GNOME/Mesa virgl
+  em 18/10/2026; outros drivers e GPUs múltiplas continuam sem prova.
+  Touch nunca provado num toque real, sem escala fracionária
   (só inteira, e a **maior** dos outputs, não por superfície), sem seleção
   primária, sem posição de janela; a CSD desenhada
   quando o compositor recusa SSD não tem sombra; xkb reduzido a **primeiro grupo e dois níveis** com bits de

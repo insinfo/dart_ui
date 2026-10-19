@@ -548,6 +548,9 @@ final class GlContextFactory {
   GlWindowContextAttempt createForWindowSurface({
     required int nativeWindow,
     required DynamicLibrary glLibrary,
+    int nativeDisplay = 0,
+    int eglPlatform = 0,
+    int? nativeVisualId,
   }) {
     final diagnostics = <BackendDiagnostic>[];
     if (nativeWindow == 0) {
@@ -588,7 +591,10 @@ final class GlContextFactory {
 
     try {
       return _createEglWindow(
-          egl, eglName!, glLibrary, heap, nativeWindow, diagnostics);
+          egl, eglName!, glLibrary, heap, nativeWindow, diagnostics,
+          nativeDisplay: nativeDisplay,
+          eglPlatform: eglPlatform,
+          nativeVisualId: nativeVisualId);
     } on Object catch (error, stack) {
       // A throw here is a bug in this file, not a missing driver. The contract
       // says never throw, so it becomes a diagnostic that is obviously ours.
@@ -607,8 +613,11 @@ final class GlContextFactory {
     DynamicLibrary glLibrary,
     NativeHeap heap,
     int nativeWindow,
-    List<BackendDiagnostic> diagnostics,
-  ) {
+    List<BackendDiagnostic> diagnostics, {
+    int nativeDisplay = 0,
+    int eglPlatform = 0,
+    int? nativeVisualId,
+  }) {
     final api = _EglApi(egl);
 
     // The three window entry points are resolved before anything is created,
@@ -627,8 +636,10 @@ final class GlContextFactory {
       return GlWindowContextAttempt(null, null, diagnostics);
     }
 
-    final display =
-        api.getDisplay(Pointer<Void>.fromAddress(_eglDefaultDisplay));
+    final native = Pointer<Void>.fromAddress(nativeDisplay);
+    final display = eglPlatform == 0
+        ? api.getDisplay(native)
+        : api.getPlatformDisplay(eglPlatform, native, nullptr);
     if (display.address == 0) {
       diagnostics.add(BackendDiagnostic(
         kind: DiagnosticKind.connectionFailed,
@@ -657,7 +668,7 @@ final class GlContextFactory {
 
       final configs = heap.allocatePointers<Void>(1);
       final configCount = heap.allocateInt32(1);
-      final configAttribs = heap.allocateInt32(16);
+      final configAttribs = heap.allocateInt32(18);
       final scratch = heap.allocateInt32(1);
       try {
         var i = 0;
@@ -674,6 +685,10 @@ final class GlContextFactory {
         configAttribs[i++] = 8;
         configAttribs[i++] = _eglAlphaSize;
         configAttribs[i++] = 8;
+        if (nativeVisualId != null) {
+          configAttribs[i++] = _eglNativeVisualId;
+          configAttribs[i++] = nativeVisualId;
+        }
         configAttribs[i++] = _eglNone;
 
         if (api.chooseConfig(display, configAttribs, configs, 1, configCount) ==
@@ -735,6 +750,7 @@ final class GlContextFactory {
           glLibrary: glLibrary,
           isDesktopGl: desktop,
           presentsToWindow: true,
+          windowConfig: config,
           description: 'EGL $eglVersion via $eglName, '
               '${desktop ? 'desktop GL' : 'GLES'} window surface on 0x'
               '${nativeWindow.toUnsigned(64).toRadixString(16)}',
@@ -1033,6 +1049,12 @@ final class _EglApi {
 
   final DynamicLibrary library;
 
+  late final Pointer<Void> Function(int, Pointer<Void>, Pointer<IntPtr>)
+      getPlatformDisplay = library.lookupFunction<
+          Pointer<Void> Function(Uint32, Pointer<Void>, Pointer<IntPtr>),
+          Pointer<Void> Function(
+              int, Pointer<Void>, Pointer<IntPtr>)>('eglGetPlatformDisplay');
+
   late final Pointer<Void> Function(Pointer<Void>) getDisplay =
       library.lookupFunction<Pointer<Void> Function(Pointer<Void>),
           Pointer<Void> Function(Pointer<Void>)>('eglGetDisplay');
@@ -1158,7 +1180,8 @@ final class _EglApi {
 /// same class - and refuses every call with a diagnostic rather than
 /// pretending. [presentsToWindow] is how a caller tells the two apart before
 /// asking.
-final class _EglContext implements GlContext, GlSwapChain {
+final class _EglContext
+    implements GlContext, GlSwapChain, GlWindowSurfaceReconfigurer {
   _EglContext({
     required _EglApi api,
     required Pointer<Void> display,
@@ -1169,7 +1192,9 @@ final class _EglContext implements GlContext, GlSwapChain {
     required this.isDesktopGl,
     required this.description,
     this.presentsToWindow = false,
-  })  : _api = api,
+    Pointer<Void>? windowConfig,
+  })  : windowConfig = windowConfig ?? nullptr,
+        _api = api,
         _display = display,
         _surface = surface,
         _context = context,
@@ -1180,7 +1205,8 @@ final class _EglContext implements GlContext, GlSwapChain {
 
   final _EglApi _api;
   final Pointer<Void> _display;
-  final Pointer<Void> _surface;
+  Pointer<Void> _surface;
+  final Pointer<Void> windowConfig;
   final Pointer<Void> _context;
   final NativeHeap _heap;
   final GlProcResolver _libraryResolver;
@@ -1198,6 +1224,35 @@ final class _EglContext implements GlContext, GlSwapChain {
 
   @override
   bool get isPresentable => !_disposed && presentsToWindow;
+
+  @override
+  BackendDiagnostic? replaceNativeWindow(int nativeWindow) {
+    if (!isPresentable || windowConfig == nullptr) {
+      return const BackendDiagnostic(
+          kind: DiagnosticKind.surfaceCreationFailed,
+          message: 'EGL window surface is unavailable during replacement');
+    }
+    final attributes = _heap.allocateInt32(1);
+    attributes[0] = _eglNone;
+    try {
+      final replacement = _api.createWindowSurface(
+          _display, windowConfig, nativeWindow, attributes);
+      if (replacement == nullptr) {
+        return GlContextFactory._eglError(
+            _api, 'eglCreateWindowSurface(replace)');
+      }
+      if (_api.makeCurrent(_display, replacement, replacement, _context) == 0) {
+        _api.destroySurface(_display, replacement);
+        return GlContextFactory._eglError(_api, 'eglMakeCurrent(replace)');
+      }
+      final old = _surface;
+      _surface = replacement;
+      _api.destroySurface(_display, old);
+      return null;
+    } finally {
+      _heap.release(attributes);
+    }
+  }
 
   @override
   bool swapBuffers() {

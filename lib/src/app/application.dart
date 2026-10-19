@@ -3610,7 +3610,17 @@ final class Application with DisposableMixin {
 
     // --- 4. show -------------------------------------------------------
     if (!popup.isDisposed) {
-      popup.nativeWindow.setBounds(placed);
+      if (popup.nativeWindow case final PositionedPopupWindow positioned) {
+        positioned.configurePopup(PopupRequest(
+            anchorRect: anchorRect,
+            size: Size(placed.width, placed.height),
+            anchorPoint: anchorPoint,
+            popupPoint: popupPoint,
+            offset: offset,
+            adjustments: adjustments));
+      } else {
+        popup.nativeWindow.setBounds(placed);
+      }
       // Back to the ordinary contract: a window's tree is laid out against its
       // client area. Leaving the loose constraint in place would let the next
       // frame lay the menu out at a size the window is not.

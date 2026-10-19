@@ -44,6 +44,7 @@ import 'macos/macos_cpu_window.dart';
 import 'macos/surface_pool.dart';
 import 'wayland/wayland_backend.dart';
 import 'wayland/wayland_cpu_presenter.dart';
+import 'wayland/wayland_gl_surface.dart';
 import 'wayland/wayland_window.dart';
 import 'win32/d2d/d2d_backend.dart';
 import 'win32/d2d/d2d_targets.dart';
@@ -213,6 +214,7 @@ final class PlatformBackendResolver {
         ),
       ],
       if (platform == 'linux') ...<PresentationPathEntry>[
+        _waylandOpenGl(),
         _x11OpenGl(),
         PresentationPathEntry.retainedCpu(
           name: 'wayland-shm',
@@ -742,6 +744,65 @@ final class PlatformBackendResolver {
         final GlRenderDevice adopted;
         try {
           adopted = _adoptGlContext(context, surface.glLibrary);
+        } on Object {
+          surface.dispose();
+          rethrow;
+        }
+        return (
+          device: adopted,
+          surface: surface.describeSurface(
+            pixelWidth: _pixelWidth(native),
+            pixelHeight: _pixelHeight(native),
+            scale: native.renderScale,
+          ),
+          releaseSurface: surface.dispose,
+          releaseSurfaceBeforeDevice: false,
+        );
+      },
+    );
+  }
+
+  static PresentationPathEntry _waylandOpenGl() {
+    const GlRendererBackend renderer = GlRendererBackend();
+    return PresentationPathEntry.directRenderer(
+      backend: renderer,
+      name: 'wayland-opengl',
+      probe: WaylandGlSurface.probe,
+      compatibleWindowingBackends: const <String>{'wayland'},
+      // See `_win32D3d11` for why the factory lives here and why it throws.
+      createMeshRenderer: (RenderDevice device) {
+        if (device is! GlRenderDevice) {
+          throw StateError('opengl mesh rendering needs a GlRenderDevice; '
+              'got ${device.runtimeType}');
+        }
+        final GlMeshRendererAttempt attempt = GlMeshRenderer.create(device);
+        final GlMeshRenderer? built = attempt.renderer;
+        if (built != null) return built;
+        throw StateError(attempt.diagnostics.isEmpty
+            ? 'the OpenGL mesh program could not be built'
+            : attempt.diagnostics
+                .map((BackendDiagnostic d) => d.message)
+                .join('; '));
+      },
+
+      // As on Win32, and for the GLX equivalent of the same reason: the
+      // context comes from the window's own drawable and visual, built with no
+      // share list. See `_win32OpenGl`.
+      sharesDevice: false,
+      createAttachment: (
+        RendererBackend _,
+        NativeWindow native, {
+        RenderDevice? device,
+      }) async {
+        if (native is! WaylandWindow) {
+          throw StateError('Wayland OpenGL requires WaylandWindow; got '
+              '${native.runtimeType}');
+        }
+        final WaylandGlSurface surface = WaylandGlSurface.forWindow(native);
+        assert(device == null, 'the OpenGL path cannot adopt a shared device');
+        final GlRenderDevice adopted;
+        try {
+          adopted = _adoptGlContext(surface.context, surface.glLibrary);
         } on Object {
           surface.dispose();
           rethrow;

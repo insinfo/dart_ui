@@ -119,6 +119,11 @@ abstract interface class GlSwapChain {
   bool get isPresentable;
 }
 
+/// Replaces an EGL native surface while preserving its context and GL objects.
+abstract interface class GlWindowSurfaceReconfigurer {
+  BackendDiagnostic? replaceNativeWindow(int nativeWindow);
+}
+
 /// A window a GL context can present into.
 ///
 /// Handed to `GlRenderDevice.createTarget`, which builds a `GlWindowTarget`

@@ -20,6 +20,20 @@ dart pub get
 dart run bin/file_explorer.dart "$HOME" --backend=x11 --presentation=opengl
 ```
 
+Para GNOME Wayland com OpenGL nativo:
+
+```sh
+sudo apt install libwayland-client0 libegl1 libgl1 libgbm1 libgl1-mesa-dri
+dart run bin/file_explorer.dart "$HOME" --backend=wayland --presentation=wayland-opengl
+```
+
+Esse caminho usa EGL/GBM e compartilha buffers por `linux-dmabuf` v3,
+sem ler os pixels da GPU para apresentá-los pela CPU. O compositor precisa
+aceitar os formatos/modificadores exportados pelo driver. A seleção automática
+prefere esse caminho e mantém `wayland-shm` como alternativa por CPU.
+A validação em GNOME/Mesa virgl está em
+[GNOME_WAYLAND_GPU_2026-10-18.md](../../doc/logs/GNOME_WAYLAND_GPU_2026-10-18.md).
+
 Execute dentro da sessão gráfica, como o usuário conectado. Sem aceleração,
 `--cpu` permite usar a apresentação por CPU. Vulkan não é necessário para
 este caminho. `glxinfo -B` (`mesa-utils`) permite conferir o driver e a

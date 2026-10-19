@@ -29,6 +29,7 @@ import '../../platform/clipboard.dart';
 import '../../platform/native_window.dart';
 import '../../rendering/framebuffer.dart';
 import 'wayland_cursor.dart';
+import 'wayland_dma_buf.dart';
 import 'wayland_drag_drop.dart';
 import 'wayland_events.dart';
 import 'wayland_keymap.dart';
@@ -301,6 +302,15 @@ final class WaylandPopupGrab {
       : 'WaylandPopupGrab.none';
 }
 
+/// Creates a hidden popup surface first and assigns its role after measuring.
+abstract interface class WaylandPopupLifecycleClient {
+  WaylandToplevelIds preparePopup(WaylandToplevelIds parent);
+  WaylandToplevelIds completePopup(
+      WaylandToplevelIds ids, WaylandPopupRequest request);
+  bool repositionPopup(
+      WaylandToplevelIds ids, WaylandPositionerSpec positioner);
+}
+
 /// Everything needed to create one `xdg_popup`.
 final class WaylandPopupRequest {
   const WaylandPopupRequest({
@@ -366,6 +376,8 @@ enum _ObjectKind {
   compositor,
   shm,
   shmPool,
+  dmaBuf,
+  dmaBufParams,
   buffer,
   surface,
   seat,
@@ -395,6 +407,8 @@ final class WaylandConnection
     implements
         WaylandWindowClient,
         WaylandCpuClient,
+        WaylandDmaBufClient,
+        WaylandPopupLifecycleClient,
         WaylandMimeSelectionClient,
         WaylandCursorClient,
         WaylandDragDropClient,
@@ -471,8 +485,18 @@ final class WaylandConnection
   int _compositorId = 0;
   int _compositorVersion = 0;
   int _shmId = 0;
+  int _dmaBufId = 0;
+  final Set<(int, int)> _dmaBufFormats = <(int, int)>{};
+  final Map<int, void Function()> _dmaBufReleases = <int, void Function()>{};
+  final Map<int, int> _dmaBufImportResults = <int, int>{};
+  final Set<int> _busyDmaBufs = <int>{};
+  final Set<int> _retiredDmaBufs = <int>{};
   int _seatId = 0;
   int _wmBaseId = 0;
+  int _wmBaseVersion = 1;
+  int _repositionToken = 0;
+  final Map<int, WaylandToplevelIds> _deferredPopups =
+      <int, WaylandToplevelIds>{};
   int _dataDeviceManagerId = 0;
 
   /// The version actually bound. Drag actions and `wl_data_offer.finish`
@@ -662,6 +686,10 @@ final class WaylandConnection
               : wlCompositorBindVersion;
           _compositorId = _bind(
               name, interface, _compositorVersion, _ObjectKind.compositor);
+        case linuxDmaBufInterface:
+          if (_dmaBufId != 0 || version < linuxDmaBufBindVersion) break;
+          _dmaBufId = _bind(
+              name, interface, linuxDmaBufBindVersion, _ObjectKind.dmaBuf);
         case wlShmInterfaceName:
           if (_shmId != 0) break;
           _shmId = _bind(name, interface, wlShmBindVersion, _ObjectKind.shm);
@@ -678,8 +706,9 @@ final class WaylandConnection
           _outputScales[outputId] = 1;
         case xdgWmBaseInterfaceName:
           if (_wmBaseId != 0) break;
-          _wmBaseId = _bind(
-              name, interface, xdgWmBaseBindVersion, _ObjectKind.xdgWmBase);
+          _wmBaseVersion = version < 3 ? version : 3;
+          _wmBaseId =
+              _bind(name, interface, _wmBaseVersion, _ObjectKind.xdgWmBase);
         case wlDataDeviceManagerInterfaceName:
           if (_dataDeviceManagerId != 0) break;
           // Version 3 is what makes drag actions - copy versus move - and
@@ -914,6 +943,26 @@ final class WaylandConnection
             ..timeMilliseconds =
                 WaylandMessageReader(message.payload).readUint();
         });
+      case _ObjectKind.dmaBuf:
+        final reader = WaylandMessageReader(message.payload);
+        if (message.opcode == 0) {
+          _dmaBufFormats.add((reader.readUint(), drmFormatModInvalid));
+        } else if (message.opcode == 1) {
+          final format = reader.readUint();
+          final high = reader.readUint();
+          final low = reader.readUint();
+          _dmaBufFormats.add((format, (high << 32) | low));
+        }
+        return false;
+      case _ObjectKind.dmaBufParams:
+        if (message.opcode == 0) {
+          final id = WaylandMessageReader(message.payload).readNewId();
+          _objects[id] = _ObjectKind.buffer;
+          _dmaBufImportResults[objectId] = id;
+        } else if (message.opcode == 1) {
+          _dmaBufImportResults[objectId] = 0;
+        }
+        return false;
       case _ObjectKind.shm:
         if (message.opcode == wlShmEventFormat) {
           _shmFormats.add(WaylandMessageReader(message.payload).readUint());
@@ -921,6 +970,14 @@ final class WaylandConnection
         return false;
       case _ObjectKind.buffer:
         if (message.opcode == wlBufferEventRelease) {
+          final release = _dmaBufReleases[objectId];
+          if (release != null) {
+            if (_busyDmaBufs.remove(objectId)) {
+              if (_retiredDmaBufs.remove(objectId)) _finalizeDmaBuf(objectId);
+              release();
+            }
+            return false;
+          }
           final buffer = _buffersById[objectId];
           if (buffer != null) {
             buffer.busy = false;
@@ -1880,7 +1937,8 @@ final class WaylandConnection
   @override
   void destroyToplevel(WaylandToplevelIds ids) {
     if (isDisposed) return;
-    final isPopup = _surfaceByPopup.containsKey(ids.toplevelId);
+    final isDeferred = _deferredPopups.containsKey(ids.surfaceId);
+    final isPopup = isDeferred || _surfaceByPopup.containsKey(ids.toplevelId);
     // A decoration object outlives neither its toplevel nor the protocol's
     // ordering rule: it must go before the role object it decorates.
     final decorationId = _decorationsByToplevel.remove(ids.toplevelId);
@@ -1891,11 +1949,12 @@ final class WaylandConnection
       _forgetObject(decorationId);
     }
     // Reverse creation order, as xdg-shell requires: role object first.
-    _writer.begin(
-      ids.toplevelId,
-      isPopup ? xdgPopupRequestDestroy : xdgToplevelRequestDestroy,
-    );
-    _queueMessage();
+    if (!isDeferred) {
+      _writer.begin(ids.toplevelId,
+          isPopup ? xdgPopupRequestDestroy : xdgToplevelRequestDestroy);
+      _queueMessage();
+    }
+    _deferredPopups.remove(ids.surfaceId);
     if (isPopup) {
       _surfaceByPopup.remove(ids.toplevelId);
       _popupParents.remove(ids.toplevelId);
@@ -1909,6 +1968,78 @@ final class WaylandConnection
     _surfaceByToplevel.remove(ids.toplevelId);
     if (_pointerFocusSurfaceId == ids.surfaceId) _pointerFocusSurfaceId = 0;
     if (_keyboardFocusSurfaceId == ids.surfaceId) _keyboardFocusSurfaceId = 0;
+  }
+
+  @override
+  WaylandToplevelIds preparePopup(WaylandToplevelIds parent) {
+    throwIfDisposed();
+    if (!isValid) throw StateError('Wayland connection is not valid');
+    final surface = _allocateId(_ObjectKind.surface);
+    _writer.begin(_compositorId, wlCompositorRequestCreateSurface);
+    _writer.putNewId(surface);
+    _queueMessage();
+    final xdg = _allocateId(_ObjectKind.xdgSurface);
+    _writer.begin(_wmBaseId, xdgWmBaseRequestGetXdgSurface);
+    _writer.putNewId(xdg);
+    _writer.putObject(surface);
+    _queueMessage();
+    // Do not reserve a role ID yet. The server's object map cannot accept a
+    // higher new_id while an earlier reserved slot has never been created.
+    final ids = WaylandToplevelIds(
+        surfaceId: surface, xdgSurfaceId: xdg, toplevelId: 0);
+    _surfaceByXdgSurface[xdg] = surface;
+    _deferredPopups[surface] = parent;
+    return ids;
+  }
+
+  @override
+  WaylandToplevelIds completePopup(
+      WaylandToplevelIds ids, WaylandPopupRequest request) {
+    final parent = _deferredPopups.remove(ids.surfaceId);
+    if (parent == null) throw StateError('Popup role was already assigned');
+    final positioner = _allocateId(_ObjectKind.xdgPositioner);
+    _writer.begin(_wmBaseId, xdgWmBaseRequestCreatePositioner);
+    _writer.putNewId(positioner);
+    _queueMessage();
+    _configurePositioner(positioner, request.positioner);
+    final popupId = _allocateId(_ObjectKind.xdgPopup);
+    final completed = WaylandToplevelIds(
+        surfaceId: ids.surfaceId,
+        xdgSurfaceId: ids.xdgSurfaceId,
+        toplevelId: popupId);
+    _surfaceByPopup[popupId] = ids.surfaceId;
+    _popupParents[popupId] = parent.toplevelId;
+    _writer.begin(ids.xdgSurfaceId, xdgSurfaceRequestGetPopup);
+    _writer.putNewId(popupId);
+    _writer.putObject(parent.xdgSurfaceId);
+    _writer.putObject(positioner);
+    _queueMessage();
+    _writer.begin(positioner, xdgPositionerRequestDestroy);
+    _queueMessage();
+    _forgetObject(positioner);
+    if (request.grab.isRequested) _grabPopupWith(completed, request.grab);
+    _writer.begin(ids.surfaceId, wlSurfaceRequestCommit);
+    _queueMessage();
+    if (flush() < 0) throw StateError('Wayland popup configuration failed');
+    return completed;
+  }
+
+  @override
+  bool repositionPopup(WaylandToplevelIds ids, WaylandPositionerSpec spec) {
+    if (!isValid || _wmBaseVersion < 3) return false;
+    final positioner = _allocateId(_ObjectKind.xdgPositioner);
+    _writer.begin(_wmBaseId, xdgWmBaseRequestCreatePositioner);
+    _writer.putNewId(positioner);
+    _queueMessage();
+    _configurePositioner(positioner, spec);
+    _writer.begin(ids.toplevelId, xdgPopupRequestReposition);
+    _writer.putObject(positioner);
+    _writer.putUint(++_repositionToken);
+    _queueMessage();
+    _writer.begin(positioner, xdgPositionerRequestDestroy);
+    _queueMessage();
+    _forgetObject(positioner);
+    return flush() >= 0;
   }
 
   @override
@@ -2642,6 +2773,144 @@ final class WaylandConnection
     return buffer;
   }
 
+  @override
+  bool get supportsDmaBuf => _dmaBufId != 0 && isValid;
+
+  @override
+  bool supportsDmaBufFormat(int format, int modifier) =>
+      _dmaBufFormats.contains((format, modifier));
+
+  @override
+  int importDmaBuf(
+      {required int width,
+      required int height,
+      required int format,
+      required List<WaylandDmaBufPlane> planes,
+      required void Function() onRelease}) {
+    if (!supportsDmaBuf ||
+        width <= 0 ||
+        height <= 0 ||
+        planes.isEmpty ||
+        planes.length > 4 ||
+        planes.any((p) =>
+            p.fd < 0 ||
+            p.stride <= 0 ||
+            p.offset < 0 ||
+            !supportsDmaBufFormat(format, p.modifier))) {
+      throw StateError(
+          'The compositor cannot import this DMA-BUF format/modifier');
+    }
+    final params = _allocateId(_ObjectKind.dmaBufParams);
+    _writer.begin(_dmaBufId, 1); // create_params
+    _writer.putNewId(params);
+    _queueMessage();
+    for (var index = 0; index < planes.length; index++) {
+      final plane = planes[index];
+      _writer.begin(params, 1); // add
+      _writer.putFd(plane.fd);
+      _writer.putUint(index);
+      _writer.putUint(plane.offset);
+      _writer.putUint(plane.stride);
+      _writer.putUint((plane.modifier >> 32) & 0xffffffff);
+      _writer.putUint(plane.modifier & 0xffffffff);
+      _queueMessage();
+    }
+    _writer.begin(
+        params, 2); // Async create: rejection must not kill the connection.
+    _writer.putInt(width);
+    _writer.putInt(height);
+    _writer.putUint(format);
+    _writer.putUint(0); // No Y inversion or interlacing.
+    _queueMessage();
+    final received = _roundtrip();
+    final deadline = DateTime.now().add(const Duration(seconds: 5));
+    while (received &&
+        isValid &&
+        !_dmaBufImportResults.containsKey(params) &&
+        DateTime.now().isBefore(deadline)) {
+      if (_decoder.nextMessage(_message)) {
+        _dispatchMessage(_message, null);
+      } else if (_transport.receive(_decoder, _receivedFds) <= 0) {
+        _transport.waitForActivity(20);
+      }
+    }
+    final bufferId = _dmaBufImportResults.remove(params) ?? 0;
+    _writer.begin(params, 0); // destroy params; the wl_buffer owns the import.
+    _queueMessage();
+    if (!received || bufferId == 0) {
+      throw StateError('The compositor rejected the exported GPU buffer '
+          '(${width}x$height, sync=$received, valid=$isValid): '
+          '${recentErrors.join('; ')}');
+    }
+    _dmaBufReleases[bufferId] = onRelease;
+    return bufferId;
+  }
+
+  @override
+  void destroyDmaBuf(int bufferId) {
+    // Imported storage stays locked until release. A window can retire while
+    // the compositor is still sampling its last buffer.
+    if (!_dmaBufReleases.containsKey(bufferId)) return;
+    if (_busyDmaBufs.contains(bufferId)) {
+      _retiredDmaBufs.add(bufferId);
+    } else {
+      _finalizeDmaBuf(bufferId);
+    }
+  }
+
+  void _finalizeDmaBuf(int bufferId) {
+    _dmaBufReleases.remove(bufferId);
+    _retiredDmaBufs.remove(bufferId);
+    _objects.remove(bufferId);
+    if (!isDisposed && isValid) {
+      _writer.begin(bufferId, wlBufferRequestDestroy);
+      _queueMessage();
+    }
+  }
+
+  @override
+  bool commitDmaBuf(
+      {required int surfaceId,
+      required int bufferId,
+      required int width,
+      required int height,
+      required int bufferScale}) {
+    if (!isValid ||
+        !_dmaBufReleases.containsKey(bufferId) ||
+        _busyDmaBufs.contains(bufferId) ||
+        _retiredDmaBufs.contains(bufferId)) {
+      return false;
+    }
+    if (_compositorVersion >= 3) {
+      _writer.begin(surfaceId, wlSurfaceRequestSetBufferScale);
+      _writer.putInt(bufferScale);
+      _queueMessage();
+    }
+    _writer.begin(surfaceId, wlSurfaceRequestAttach);
+    _writer.putObject(bufferId);
+    _writer.putInt(0);
+    _writer.putInt(0);
+    _queueMessage();
+    _writer.begin(
+        surfaceId,
+        _compositorVersion >= 4
+            ? wlSurfaceRequestDamageBuffer
+            : wlSurfaceRequestDamage);
+    _writer.putInt(0);
+    _writer.putInt(0);
+    _writer.putInt(_compositorVersion >= 4
+        ? width
+        : (width + bufferScale - 1) ~/ bufferScale);
+    _writer.putInt(_compositorVersion >= 4
+        ? height
+        : (height + bufferScale - 1) ~/ bufferScale);
+    _queueMessage();
+    _writer.begin(surfaceId, wlSurfaceRequestCommit);
+    _queueMessage();
+    _busyDmaBufs.add(bufferId);
+    return flush() >= 0;
+  }
+
   void _queueMessage() {
     final fds = List<int>.of(_writer.fds);
     _transport.queueMessage(_writer.take(), fds);
@@ -2663,6 +2932,16 @@ final class WaylandConnection
       buffer.memory.dispose();
     }
     _buffersById.clear();
+    final pendingGpuReleases = <void Function()>[
+      for (final id in _busyDmaBufs)
+        if (_dmaBufReleases[id] case final release?) release,
+    ];
+    _dmaBufReleases.clear();
+    _busyDmaBufs.clear();
+    _retiredDmaBufs.clear();
+    for (final release in pendingGpuReleases) {
+      release();
+    }
     for (final fd in _receivedFds) {
       _transport.closeFd(fd);
     }

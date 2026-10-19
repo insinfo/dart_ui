@@ -153,7 +153,7 @@ final class WaylandWindowProtocolState {
 
   final int surfaceId;
   final int xdgSurfaceId;
-  final int toplevelId;
+  int toplevelId;
 
   /// Current size in surface (logical) coordinates.
   int width = 0;
