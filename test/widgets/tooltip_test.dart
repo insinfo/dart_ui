@@ -28,6 +28,9 @@ import 'package:dart_ui/src/layout/render_box.dart';
 import 'package:dart_ui/src/layout/render_constrained_box.dart';
 import 'package:dart_ui/src/platform/input_events.dart';
 import 'package:dart_ui/src/platform/window_events.dart';
+import 'package:dart_ui/src/rendering/cpu_renderer.dart';
+import 'package:dart_ui/src/rendering/framebuffer.dart';
+import 'package:dart_ui/src/rendering/renderer.dart';
 import 'package:dart_ui/src/rendering/text/font_registry.dart';
 import 'package:dart_ui/src/scheduler/manual_dispatcher.dart';
 import 'package:dart_ui/src/widgets/basic.dart';
@@ -48,6 +51,48 @@ void main() {
     );
   });
   tearDownAll(FontRegistry.instance.reset);
+
+  test('native opaque tooltip corners are filled and alpha popups stay clear',
+      () async {
+    final device = await const CpuRendererBackend().createDevice();
+    addTearDown(device.dispose);
+    final owner = BuildOwner(
+        pipelineOwner: PipelineOwner(
+      rootConstraints: BoxConstraints.tight(const Size(80, 40)),
+    ));
+    addTearDown(owner.dispose);
+    // Updating the same tree also checks that surface capability changes
+    // reach the retained tooltip render object.
+    for (final opaque in <bool>[true, false, true]) {
+      owner.updateRoot(PopupWindowFrame(
+        outlined: !opaque,
+        opaque: opaque,
+        child: Theme(
+          data: ThemeData.studioDark,
+          child: const TooltipSurface(message: 'New'),
+        ),
+      ));
+      owner.buildScope();
+      final list = DisplayList();
+      owner.pipelineOwner.drawFrame(list);
+      final target = device.createTarget(const MemorySurfaceDescriptor(
+        pixelWidth: 80,
+        pixelHeight: 40,
+        format: PixelFormat.rgba8888Premultiplied,
+      )) as MemoryRenderTarget;
+      addTearDown(target.dispose);
+      await target.renderDisplayList(list, clearColor: 0);
+      final pixels = target.framebuffer.pixels;
+      final colour = ThemeData.studioDark.surfaceRaised;
+      for (final pixel in <int>[0, 79, 39 * 80, 40 * 80 - 1]) {
+        expect(
+            pixels.sublist(pixel * 4, pixel * 4 + 4),
+            opaque
+                ? <int>[colour.red, colour.green, colour.blue, 255]
+                : <int>[0, 0, 0, 0]);
+      }
+    }
+  });
 
   group('showing and hiding', () {
     test('appears only once the wait has elapsed', () {

@@ -100,3 +100,18 @@ dart test
 dart run dart_ui build bin/file_explorer.dart --name "File Explorer" -o build/FileExplorer
 ./build/FileExplorer "$HOME" --lang=pt --backend=x11 --presentation=opengl
 ```
+
+## Complemento: cantos dos tooltips
+
+A correção dos menus não cobria `TooltipSurface`. O mesmo sinal de superfície
+opaca agora chega a `RenderTooltip`, que preenche os cantos com a cor do
+painel antes de desenhar o contorno arredondado. Superfícies transparentes
+continuam preservando o alpha.
+
+Um teste rasteriza os quatro cantos e alterna a capacidade de transparência
+na mesma árvore, verificando também a atualização do render object. O lote
+de tooltips, menus de contexto e popups passou em 41 testes no macOS e em
+41 no Ubuntu. A análise dos arquivos alterados passou sem problemas. O AOT
+foi recompilado, aberto com X11/OpenGL e o tooltip “Novo” foi conferido na VM.
+
+![Tooltip no AOT Linux com cantos preenchidos](FILE_EXPLORER_LINUX_TOOLTIP_2026-10-18.png)

@@ -515,6 +515,7 @@ final class TooltipSurface extends StatelessWidget {
         message: message,
         theme: Theme.of(context),
         platformOutline: PopupWindowFrame.outlinedOf(context),
+        opaqueWindow: PopupWindowFrame.opaqueOf(context),
       );
 }
 
@@ -523,11 +524,13 @@ final class _TooltipRenderWidget extends RenderObjectWidget {
     required this.message,
     required this.theme,
     required this.platformOutline,
+    required this.opaqueWindow,
   });
 
   final String message;
   final ThemeData theme;
   final bool platformOutline;
+  final bool opaqueWindow;
 
   @override
   RenderObjectElement createElement() => RenderObjectElement(this);
@@ -536,7 +539,8 @@ final class _TooltipRenderWidget extends RenderObjectWidget {
   RenderTooltip createRenderObject(BuildContext context) =>
       RenderTooltip(message: message)
         ..theme = theme
-        ..platformOutline = platformOutline;
+        ..platformOutline = platformOutline
+        ..opaqueWindow = opaqueWindow;
 
   @override
   void updateRenderObject(
@@ -544,7 +548,8 @@ final class _TooltipRenderWidget extends RenderObjectWidget {
     object
       ..message = message
       ..theme = theme
-      ..platformOutline = platformOutline;
+      ..platformOutline = platformOutline
+      ..opaqueWindow = opaqueWindow;
   }
 }
 
@@ -560,6 +565,16 @@ final class RenderTooltip extends RenderBox with ControlBehavior {
   set platformOutline(bool value) {
     if (value == _platformOutline) return;
     _platformOutline = value;
+    markNeedsPaint();
+  }
+
+  bool _opaqueWindow = false;
+
+  /// Fills corners when the native popup surface cannot composite alpha.
+  bool get opaqueWindow => _opaqueWindow;
+  set opaqueWindow(bool value) {
+    if (value == _opaqueWindow) return;
+    _opaqueWindow = value;
     markNeedsPaint();
   }
 
@@ -593,6 +608,10 @@ final class RenderTooltip extends RenderBox with ControlBehavior {
     // The control radius, not the small one: at two pixels a tooltip read
     // as a square box beside rounded menus. It is an overlay, and on a
     // platform that shows its alpha it is a window of exactly this shape.
+    if (_opaqueWindow) {
+      list.drawRect(rect.left, rect.top, rect.right, rect.bottom,
+          list.addPaint(colorArgb: theme.surfaceRaised.value));
+    }
     paintRoundedFill(list, rect, theme.surfaceRaised, theme.cornerRadius);
     if (!_platformOutline) {
       paintRoundedBorder(list, rect, theme.border, theme.cornerRadius);
