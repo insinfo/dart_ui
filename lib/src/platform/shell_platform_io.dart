@@ -206,3 +206,26 @@ void _windowsShellExecute({
     );
   }
 }
+
+Future<void> openTerminal(String directory) async {
+  if (!Directory(directory).existsSync()) {
+    throw ShellException(
+        operation: 'openTerminal',
+        reason: 'not an existing directory: $directory');
+  }
+  final path = Directory(directory).absolute.path;
+  final commands = terminalCommands(Platform.operatingSystem, path);
+  for (final command in commands) {
+    try {
+      await Process.start(command.executable, command.arguments,
+          workingDirectory: path, mode: ProcessStartMode.detached);
+      return;
+    } on ProcessException {
+      continue;
+    }
+  }
+  throw ShellException(
+      operation: 'openTerminal',
+      platform: Platform.operatingSystem,
+      reason: 'no supported terminal could be started');
+}

@@ -45,8 +45,34 @@ class HomePage extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 20),
-            _Section(model.strings.recent),
-            if (model.recent.isEmpty)
+            _Section(model.strings.locale.startsWith('pt')
+                ? 'Favoritos'
+                : 'Favorites'),
+            if (model.favorites.isEmpty)
+              Text(model.strings.locale.startsWith('pt')
+                  ? 'Adicione arquivos aos Favoritos pelo menu de contexto.'
+                  : 'Add files to Favorites from their context menu.'),
+            for (final file in model.favorites)
+              ContextMenuArea(
+                  menuChildren: () => [
+                        MenuItemButton(
+                            onPressed: () => model.removeFavorite(file),
+                            child: Text(model.strings.locale.startsWith('pt')
+                                ? 'Remover dos Favoritos'
+                                : 'Remove from Favorites')),
+                        MenuItemButton(
+                            onPressed: () => model.fs.reveal(file.path),
+                            child: Text(model.strings.locale.startsWith('pt')
+                                ? 'Abrir local do arquivo'
+                                : 'Open file location')),
+                      ],
+                  child: _RecentRow(
+                      entry: file,
+                      location: model.fs.parentOf(file.path) ?? '',
+                      onOpen: () => model.open(file))),
+            const SizedBox(height: 20),
+            if (model.preferences['showRecent']) _Section(model.strings.recent),
+            if (model.preferences['showRecent'] && model.recent.isEmpty)
               Padding(
                 padding: const EdgeInsets.symmetric(vertical: 8),
                 child: Text(
@@ -59,7 +85,9 @@ class HomePage extends StatelessWidget {
                 ),
               )
             else
-              for (final FileEntry file in model.recent)
+              for (final FileEntry file in model.preferences['showRecent']
+                  ? model.recent
+                  : <FileEntry>[])
                 _RecentRow(
                   entry: file,
                   location: model.fs.parentOf(file.path) ?? '',

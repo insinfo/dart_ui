@@ -48,6 +48,22 @@ xkb_symbols "(unnamed)" {
 ''';
 
 void main() {
+  test(
+      'indexed group declarations resolve symbols rather than the Group1 index',
+      () {
+    final text = _sampleKeymap.replaceFirst('type= "ALPHABETIC", [ q, Q ]',
+        'type[Group1]= "ALPHABETIC", symbols[Group1]= [ q, Q ], symbols[Group2]= [ x, X ]');
+    final map = WaylandXkbKeymap.parse(text)!;
+    expect(map.textFor(24), 'q');
+    expect(map.textFor(24, shift: true), 'Q');
+  });
+
+  test('type indexing does not hide an implicit symbol list', () {
+    final text = _sampleKeymap.replaceFirst(
+        'type= "ALPHABETIC", [ q, Q ]', 'type[Group1]= "ALPHABETIC", [ q, Q ]');
+    expect(WaylandXkbKeymap.parse(text)!.textFor(24), 'q');
+  });
+
   group('xkbKeysymFromName', () {
     test('resolves single ASCII characters to themselves', () {
       expect(xkbKeysymFromName('a'), 0x61);

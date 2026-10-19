@@ -37,3 +37,9 @@ Future<void> revealInFileManager(String path) async {
     reason: 'a browser has no file manager to reveal a path in',
   );
 }
+
+Future<void> openTerminal(String directory) async {
+  throw const ShellException(
+      operation: 'openTerminal',
+      reason: 'this target has no terminal launcher');
+}

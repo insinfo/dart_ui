@@ -223,7 +223,10 @@ final class WaylandXkbKeymap {
       final keycode = codesByName[match.group(1)!];
       if (keycode == null) continue;
       final body = match.group(2)!;
-      final bracket = _firstSymbolList.firstMatch(body);
+      // Indexed type/symbol declarations contain [Group1] before the actual
+      // symbols. That index names a group; it is not a list of keysyms.
+      final bracket = _groupOneSymbols.firstMatch(body) ??
+          _implicitSymbols.firstMatch(body);
       if (bracket == null) continue;
       final names = bracket
           .group(1)!
@@ -352,7 +355,10 @@ final class WaylandXkbKeymap {
     r'key\s*<([A-Za-z0-9_+\-]+)>\s*\{([^}]*)\}',
     dotAll: true,
   );
-  static final RegExp _firstSymbolList = RegExp(r'\[([^\]]*)\]');
+  static final RegExp _groupOneSymbols = RegExp(
+      r'symbols\s*(?:\[\s*Group1\s*\])?\s*=\s*\[([^\]]*)\]',
+      caseSensitive: false);
+  static final RegExp _implicitSymbols = RegExp(r'(?:^|,)\s*\[([^\]]*)\]');
 
   /// Extracts the balanced-brace body of `keyword "optional name" { ... }`.
   static String? _extractSection(String text, String keyword) {

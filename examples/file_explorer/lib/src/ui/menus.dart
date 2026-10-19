@@ -29,9 +29,14 @@ List<MenuSpecEntry> viewMenu(ExplorerStrings strings) => <MenuSpecEntry>[
       for (final (String id, String _, Object _, int _) in kViewModeCommands)
         CommandItem(id),
       _,
+      const CommandItem('view.compact'),
       SubmenuSpec(strings.menu('Show'), const <MenuSpecEntry>[
         CommandItem('view.navigationPane'),
         CommandItem('view.detailsPane'),
+        CommandItem('view.previewPane'),
+        CommandItem('view.itemCheckboxes'),
+        CommandItem('view.showThumbnails'),
+        CommandItem('view.showStatusBar'),
         CommandItem('view.extensions'),
         CommandItem('view.hiddenItems'),
         CommandItem('view.protectedFiles'),
@@ -41,6 +46,8 @@ List<MenuSpecEntry> viewMenu(ExplorerStrings strings) => <MenuSpecEntry>[
 /// Settings, at the foot of the sidebar: what Windows keeps in Folder
 /// Options - what is shown, and how.
 List<MenuSpecEntry> settingsMenu(ExplorerStrings strings) => <MenuSpecEntry>[
+      const CommandItem('view.options'),
+      _,
       const CommandItem('view.hiddenItems'),
       const CommandItem('view.extensions'),
       const CommandItem('view.protectedFiles'),
@@ -60,14 +67,22 @@ const List<MenuSpecEntry> kColumnsMenu = <MenuSpecEntry>[
 
 /// ··· - what does not fit on the bar.
 const List<MenuSpecEntry> kMoreMenu = <MenuSpecEntry>[
+  CommandItem('file.undo'),
+  CommandItem('file.redo'),
+  _,
   CommandItem('select.all'),
   CommandItem('select.none'),
   CommandItem('select.invert'),
   _,
   CommandItem('file.copyPath'),
+  CommandItem('file.copyFolderPath'),
   CommandItem('file.pin'),
   _,
   CommandItem('file.properties'),
+  _,
+  CommandItem('view.options'),
+  CommandItem('view.commands'),
+  CommandItem('file.terminal'),
 ];
 
 /// The menu of the selected items.
@@ -82,6 +97,9 @@ const List<MenuSpecEntry> kItemMenu = <MenuSpecEntry>[
   _,
   CommandItem('file.copyPath'),
   CommandItem('file.pin'),
+  CommandItem('file.favorite'),
+  CommandItem('file.compress'),
+  CommandItem('file.extract'),
   CommandItem('file.reveal'),
   _,
   CommandItem('file.properties'),
@@ -93,8 +111,13 @@ List<MenuSpecEntry> backgroundMenu(ExplorerStrings strings) => <MenuSpecEntry>[
       SubmenuSpec(strings.menu('Sort by'), kSortMenu),
       const CommandItem('nav.refresh'),
       _,
+      const CommandItem('file.undo'),
+      const CommandItem('file.redo'),
       const CommandItem('file.paste'),
       SubmenuSpec(strings.menu('New'), kNewMenu),
       _,
       const CommandItem('select.all'),
+      _,
+      const CommandItem('file.terminal'),
+      const CommandItem('view.options'),
     ];

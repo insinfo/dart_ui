@@ -3,15 +3,41 @@
 library;
 
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:dart_ui/dart_ui.dart' show FileWatcher, Shell, Trash;
 
 import '../engine/file_system.dart';
+import 'zip_operations.dart' as zip;
 
 /// [FileSystem] on the machine's own disks.
-final class IoFileSystem implements FileSystem {
+final class IoFileSystem
+    implements FileSystem, TextPreviewFileSystem, ArchiveFileSystem {
   IoFileSystem();
+
+  @override
+  Future<void> createArchive(List<String> paths, String target) =>
+      zip.createZip(paths, target);
+  @override
+  Future<void> extractArchive(String path, String target) =>
+      zip.extractZip(path, target);
+
+  @override
+  Future<String?> readTextPreview(String path) async {
+    final handle = await File(path).open();
+    try {
+      final bytes = await handle.read(65536);
+      if (bytes.any((b) => b == 0) ||
+          bytes.where((b) => b < 9 || b > 13 && b < 32).length >
+              bytes.length ~/ 20) {
+        return null;
+      }
+      return utf8.decode(bytes, allowMalformed: true);
+    } finally {
+      await handle.close();
+    }
+  }
 
   static final bool _windows = Platform.isWindows;
 

@@ -22,6 +22,20 @@ void main() {
   });
 
   group('command planning (pure)', () {
+    test(
+        'terminal plans preserve paths as data, including shell metacharacters',
+        () {
+      const path = '/home/a b/\$HOME; `echo hello`';
+      expect(terminalCommands('macos', path).single.arguments,
+          ['-a', 'Terminal', path]);
+      expect(terminalCommands('windows', path).first.arguments, ['-d', path]);
+      expect(terminalCommands('linux', path).first.arguments, ['--dir', path]);
+      expect(
+          terminalCommands('linux', path)
+              .every((c) => !['sh', 'bash'].contains(c.executable)),
+          isTrue);
+    });
+
     test('linux open prefers xdg-open and passes the target verbatim', () {
       final List<ShellCommand> commands = linuxOpenCommands('https://dart.dev');
       expect(commands.first.executable, 'xdg-open');

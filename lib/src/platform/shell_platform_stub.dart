@@ -22,3 +22,9 @@ Future<void> revealInFileManager(String path) async {
     reason: 'this target has no shell implementation',
   );
 }
+
+Future<void> openTerminal(String directory) async {
+  throw const ShellException(
+      operation: 'openTerminal',
+      reason: 'this target has no terminal launcher');
+}

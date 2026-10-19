@@ -133,6 +133,7 @@ final class DataGrid extends StatefulWidget {
     this.onSelectionChanged,
     this.onColumnResized,
     this.onRowActivated,
+    this.activateOnSingleClick = false,
     this.onSecondaryPress,
     this.controller,
     this.horizontalController,
@@ -182,6 +183,10 @@ final class DataGrid extends StatefulWidget {
   /// A row was opened: double-clicked, or Enter pressed on the keyboard's
   /// row - what opens a file in a file manager.
   final void Function(int row)? onRowActivated;
+
+  /// Open rows with one primary click instead of two. Modifier clicks keep
+  /// their selection behavior and never activate a row.
+  final bool activateOnSingleClick;
 
   /// A secondary (right) press, with the row under it or null for the empty
   /// space below the rows. The selection has already been settled the way
@@ -683,6 +688,8 @@ final class _DataGridState extends State<DataGrid> {
               cursor: _cursor,
               onKeyEvent: _handleKey,
               onRowPressed: _handlePress,
+              onRowClicked:
+                  widget.activateOnSingleClick ? widget.onRowActivated : null,
               onViewportExtent: (double extent) {
                 if (extent == _viewportExtent) return;
                 _viewportExtent = extent;
@@ -1552,6 +1559,7 @@ final class _DataGridBodyWidget extends MultiChildRenderObjectWidget {
     required this.cursor,
     required this.onKeyEvent,
     required this.onRowPressed,
+    this.onRowClicked,
     required this.onViewportExtent,
     required super.children,
   });
@@ -1572,6 +1580,7 @@ final class _DataGridBodyWidget extends MultiChildRenderObjectWidget {
   final void Function(int index, Set<KeyModifier> modifiers,
       {PointerButton button, int clickCount, int column}) onRowPressed;
   final void Function(double extent) onViewportExtent;
+  final void Function(int index)? onRowClicked;
 
   @override
   RenderDataGridBody createRenderObject(BuildContext context) =>
@@ -1583,6 +1592,7 @@ final class _DataGridBodyWidget extends MultiChildRenderObjectWidget {
         cursor: cursor,
         onKeyEvent: onKeyEvent,
         onRowPressed: onRowPressed,
+        onRowClicked: onRowClicked,
         onViewportExtent: onViewportExtent,
       )
         .._liveWidths = live
@@ -1606,6 +1616,7 @@ final class _DataGridBodyWidget extends MultiChildRenderObjectWidget {
       ..cursor = cursor
       ..onKeyEvent = onKeyEvent
       ..onRowPressed = onRowPressed
+      ..onRowClicked = onRowClicked
       ..onViewportExtent = onViewportExtent
       .._liveWidths = live
       ..decorated = decorated
@@ -1628,6 +1639,7 @@ final class RenderDataGridBody extends RenderBoxContainer<BoxParentData>
     required this.cursor,
     required this.onKeyEvent,
     required this.onRowPressed,
+    this.onRowClicked,
     required this.onViewportExtent,
   })  : _position = position,
         _virtualization = virtualization,
@@ -1644,6 +1656,9 @@ final class RenderDataGridBody extends RenderBoxContainer<BoxParentData>
   void Function(int index, Set<KeyModifier> modifiers,
       {PointerButton button, int clickCount, int column}) onRowPressed;
   void Function(double extent) onViewportExtent;
+  void Function(int index)? onRowClicked;
+  Offset? _clickOrigin;
+  int _clickRow = -1;
 
   ScrollPosition get position => _position;
 
@@ -1793,6 +1808,32 @@ final class RenderDataGridBody extends RenderBoxContainer<BoxParentData>
   @override
   void handlePointerEvent(PointerEvent event) {
     super.handlePointerEvent(event);
+    if (event is PointerCancelEvent ||
+        event is PointerMoveEvent &&
+            _clickOrigin != null &&
+            ((event.logicalPosition.dx - _clickOrigin!.dx).abs() > 5 ||
+                (event.logicalPosition.dy - _clickOrigin!.dy).abs() > 5)) {
+      _clickRow = -1;
+      _clickOrigin = null;
+    }
+    if (event is PointerUpEvent && event.button == PointerButton.primary) {
+      final row = _clickRow;
+      _clickRow = -1;
+      final origin = _clickOrigin;
+      _clickOrigin = null;
+      final y = globalToLocal(event.logicalPosition).dy + _position.pixels;
+      if (row >= 0 &&
+          origin != null &&
+          _modifiers.isEmpty &&
+          containsGlobalPoint(event.logicalPosition) &&
+          (event.logicalPosition.dx - origin.dx).abs() <= 5 &&
+          (event.logicalPosition.dy - origin.dy).abs() <= 5 &&
+          y < _virtualization.totalExtent &&
+          _virtualization.indexAt(y) == row) {
+        onRowClicked?.call(row);
+      }
+      return;
+    }
     if (event is PointerScrollEvent) {
       final bool lines = event.scrollDeltaUnit == ScrollDeltaUnit.lines;
       final ScrollPosition? horizontal = _horizontal;
@@ -1822,6 +1863,13 @@ final class RenderDataGridBody extends RenderBoxContainer<BoxParentData>
           ? -1
           : _virtualization.indexAt(contentY);
       final bool onRow = index >= 0 && index < _virtualization.itemCount;
+      _clickRow = onRow &&
+              event.button == PointerButton.primary &&
+              event.clickCount == 1 &&
+              _modifiers.isEmpty
+          ? index
+          : -1;
+      _clickOrigin = _clickRow >= 0 ? event.logicalPosition : null;
       onRowPressed(
         onRow ? index : -1,
         _modifiers,

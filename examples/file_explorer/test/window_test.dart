@@ -87,6 +87,103 @@ void main() {
   setUpAll(FrameworkFonts.install);
   tearDownAll(FontRegistry.instance.reset);
 
+  test('Folder Options keeps drafts isolated, applies and can clear history',
+      () async {
+    final h = _Harness();
+    addTearDown(h.dispose);
+    await h.settle();
+    h.key(logicalKeyComma, modifiers: _command);
+    await h.settle();
+    expect(h.renders<RenderDialog>().single.title, 'Folder Options');
+    h
+        .renders<RenderToggle>()
+        .firstWhere((c) => c.label == 'Single click to open items')
+        .activate();
+    expect(h.model.preferences['singleClick'], isFalse);
+    h.renders<RenderButton>().firstWhere((b) => b.label == 'Cancel').activate();
+    await h.settle();
+    expect(h.model.preferences['singleClick'], isFalse);
+    h.registry.execute('view.options');
+    await h.settle();
+    h
+        .renders<RenderToggle>()
+        .firstWhere((c) => c.label == 'Single click to open items')
+        .activate();
+    await h.settle();
+    h.renders<RenderButton>().firstWhere((b) => b.label == 'Apply').activate();
+    await h.settle();
+    expect(h.model.preferences['singleClick'], isTrue);
+    h.key(logicalKeyEscape);
+    await h.settle();
+    expect(h.renders<RenderDialog>(), isEmpty);
+  });
+
+  test('palette exposes commands and Content view renders metadata', () async {
+    final h = _Harness();
+    addTearDown(h.dispose);
+    await h.settle();
+    h.key(logicalKeyP, modifiers: {..._command, KeyModifier.shift});
+    await h.settle();
+    expect(h.renders<RenderDialog>().single.title, 'Commands');
+    expect(
+        h
+            .renders<RenderButton>()
+            .any((b) => b.label.contains('Folder Options')),
+        isTrue);
+    expect(
+        h.renders<RenderTextField>().single.focusNode!.hasPrimaryFocus, isTrue);
+    h.owner.dispatchTextInputEvent(TextInputEvent(
+        windowId: const NativeWindowId(1),
+        generation: 1,
+        timestamp: Duration.zero,
+        text: 'Content'));
+    await h.settle();
+    h.key(logicalKeyEnter);
+    await h.settle();
+    expect(h.texts, contains('Adobe'));
+    expect(h.renders<RenderDataGridBody>(), isEmpty);
+  });
+
+  test('clicking a checkbox toggles independently of row selection and opening',
+      () async {
+    final h = _Harness();
+    addTearDown(h.dispose);
+    await h.settle();
+    h.model.preferences['itemCheckboxes'] = true;
+    h.model.preferences['singleClick'] = true;
+    h.model.notify();
+    await h.settle();
+    final check = h.renders<RenderToggle>().first;
+    final at = check
+        .localToGlobal(Offset(check.size.width / 2, check.size.height / 2));
+    void click() {
+      h.owner.dispatchPointerEvent(PointerDownEvent(
+          windowId: const NativeWindowId(1),
+          generation: 1,
+          timestamp: Duration.zero,
+          pointerId: 0,
+          kind: PointerKind.mouse,
+          logicalPosition: at,
+          button: PointerButton.primary));
+      h.owner.dispatchPointerEvent(PointerUpEvent(
+          windowId: const NativeWindowId(1),
+          generation: 1,
+          timestamp: Duration.zero,
+          pointerId: 0,
+          kind: PointerKind.mouse,
+          logicalPosition: at,
+          button: PointerButton.primary));
+    }
+
+    click();
+    await h.settle();
+    expect(h.model.tab.selection, hasLength(1));
+    expect(h.model.currentFolder, '/Users/ana/Documents');
+    click();
+    await h.settle();
+    expect(h.model.tab.selection, isEmpty);
+  });
+
   test('Details lists the folder, folders first, with Explorer columns',
       () async {
     final _Harness h = _Harness();

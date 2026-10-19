@@ -48,6 +48,7 @@ import 'widget.dart';
 final class PointerListener extends SingleChildRenderObjectWidget {
   const PointerListener({
     super.key,
+    this.stopPropagation,
     this.onPointerDown,
     this.onPointerMove,
     this.onPointerUp,
@@ -57,6 +58,11 @@ final class PointerListener extends SingleChildRenderObjectWidget {
     this.behavior = GestureHitTestBehavior.opaque,
     super.child,
   });
+
+  /// Stops the event at this listener after children received it. Useful for
+  /// controls inside selectable rows: their press must not also select/open
+  /// the row. Captured releases follow the path chosen on the press.
+  final bool Function(PointerEvent event)? stopPropagation;
 
   final void Function(PointerDownEvent event)? onPointerDown;
   final void Function(PointerMoveEvent event)? onPointerMove;
@@ -85,6 +91,7 @@ final class PointerListener extends SingleChildRenderObjectWidget {
   @override
   RenderPointerListener createRenderObject(BuildContext context) =>
       RenderPointerListener(behavior: behavior)
+        ..stopPropagation = stopPropagation
         ..onPointerDown = onPointerDown
         ..onPointerMove = onPointerMove
         ..onPointerUp = onPointerUp
@@ -99,6 +106,7 @@ final class PointerListener extends SingleChildRenderObjectWidget {
   ) {
     renderObject
       ..behavior = behavior
+      ..stopPropagation = stopPropagation
       ..onPointerDown = onPointerDown
       ..onPointerMove = onPointerMove
       ..onPointerUp = onPointerUp
@@ -110,11 +118,16 @@ final class PointerListener extends SingleChildRenderObjectWidget {
 
 /// The render-tree endpoint for [PointerListener].
 final class RenderPointerListener extends RenderSingleChildBox
-    implements PointerEventTarget {
+    implements ConditionalPointerEventBarrier {
   RenderPointerListener({
     this.behavior = GestureHitTestBehavior.opaque,
     super.child,
   });
+
+  bool Function(PointerEvent event)? stopPropagation;
+  @override
+  bool stopsPointerEvent(PointerEvent event) =>
+      stopPropagation?.call(event) ?? false;
 
   GestureHitTestBehavior behavior;
 

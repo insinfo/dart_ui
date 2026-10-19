@@ -57,6 +57,9 @@ List<FileEntry> sortEntries(List<FileEntry> entries, SortField field,
         (a.modified ?? DateTime(0)).compareTo(b.modified ?? DateTime(0)),
       SortField.type =>
         naturalCompare(typeNameOf(a, strings), typeNameOf(b, strings)),
+      SortField.dateCreated =>
+        (a.created ?? DateTime(0)).compareTo(b.created ?? DateTime(0)),
+      SortField.extension => naturalCompare(a.extension, b.extension),
       SortField.size => (a.size ?? -1).compareTo(b.size ?? -1),
     };
     final int ordered = primary != 0 ? primary : byName(a, b);

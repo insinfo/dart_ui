@@ -72,10 +72,11 @@ enum ViewMode {
   list,
   details,
   tiles,
+  content,
 }
 
 /// The columns Details can show; Name always is.
 enum DetailsColumn { name, dateModified, type, size, dateCreated }
 
 /// The columns a folder can be sorted by.
-enum SortField { name, dateModified, type, size }
+enum SortField { name, dateModified, type, size, dateCreated, extension }

@@ -16,9 +16,11 @@ import '../engine/location.dart';
 import 'bar_button.dart';
 import 'command_icons.dart';
 import 'details_pane.dart';
+import 'folder_options.dart' as options;
 import 'folder_view.dart';
 import 'home_page.dart';
 import 'menus.dart';
+import 'preview_pane.dart';
 import 'properties_dialog.dart';
 import 'sidebar.dart';
 import 'thumbnails.dart';
@@ -119,8 +121,86 @@ class ExplorerWindowState extends State<ExplorerWindow>
   }
 
   void _changed() {
-    if (mounted) setState(() {});
+    if (!mounted) return;
+    final title = model.preferences['showFullPath']
+        ? model.currentFolder ?? model.titleOf(model.tab.location)
+        : model.strings.locale.startsWith('pt')
+            ? 'Explorador de Arquivos'
+            : 'File Explorer';
+    WindowScope.of(context)?.setTitle(title);
+    setState(() {});
   }
+
+  @override
+  void showFolderOptions() => unawaited(showFolderOptionsDialog());
+
+  @override
+  void renameSelection() {
+    final controller = TextEditingController();
+    final currentModel = model;
+    unawaited(showDialog<void>(
+        context: context,
+        builder: (dialogContext) => SizedBox(
+            width: 420,
+            child: Dialog(
+                title: currentModel.strings.locale.startsWith('pt')
+                    ? 'Renomear itens'
+                    : 'Rename items',
+                onDismiss: () => closeDialog<void>(dialogContext),
+                child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Text(
+                          currentModel.strings.locale.startsWith('pt')
+                              ? 'Os itens receberão Nome (1), Nome (2)… As extensões serão preservadas.'
+                              : 'Items will use Name (1), Name (2)… File extensions are preserved.',
+                          softWrap: true),
+                      const SizedBox(height: 12),
+                      TextField(
+                          controller: controller,
+                          autofocus: true,
+                          label: currentModel.strings.locale.startsWith('pt')
+                              ? 'Nome base'
+                              : 'Base name'),
+                    ]),
+                actions: [
+                  Button(
+                      label: 'OK',
+                      isDefault: true,
+                      onPressed: () {
+                        final name = controller.value;
+                        closeDialog<void>(dialogContext);
+                        unawaited(currentModel.renameSelection(name));
+                      }),
+                  Button(
+                      label: currentModel.strings.locale.startsWith('pt')
+                          ? 'Cancelar'
+                          : 'Cancel',
+                      accent: false,
+                      isCancel: true,
+                      onPressed: () => closeDialog<void>(dialogContext)),
+                ]))));
+  }
+
+  @override
+  void showCommands() => unawaited(showCommandPalette(
+      context: context,
+      registry: registry,
+      title: model.strings.locale.startsWith('pt') ? 'Comandos' : 'Commands',
+      searchLabel: model.strings.locale.startsWith('pt')
+          ? 'Pesquisar comandos'
+          : 'Search commands'));
+
+  @override
+  void openTerminal(String directory) =>
+      unawaited(Shell.openTerminal(directory).catchError((Object error) {
+        model.message = '$error';
+        model.notify();
+      }));
+
+  Future<void> showFolderOptionsDialog() =>
+      options.showFolderOptions(context, model);
 
   // --- ExplorerHost -------------------------------------------------------------
 
@@ -394,6 +474,18 @@ class ExplorerWindowState extends State<ExplorerWindow>
                   registry.execute('tab.select', <String, Object?>{'index': i}),
               onClosed: (int i) =>
                   registry.execute('tab.close', <String, Object?>{'index': i}),
+              contextMenu: (_) => menus.widgets(const [
+                CommandItem('tab.duplicate'),
+                CommandItem('tab.reopen'),
+                MenuSeparator(),
+                CommandItem('tab.moveLeft'),
+                CommandItem('tab.moveRight'),
+                MenuSeparator(),
+                CommandItem('tab.close'),
+                CommandItem('tab.closeOthers'),
+                CommandItem('tab.closeLeft'),
+                CommandItem('tab.closeRight'),
+              ]),
               onAdd: () => registry.execute('tab.new'),
               addTooltip: model.strings.newTab,
             ),
@@ -550,12 +642,40 @@ class ExplorerWindowState extends State<ExplorerWindow>
                 children: <Widget>[
                   _card(theme, _commandBar(theme)),
                   const SizedBox(height: 4),
+                  if (model.tab.location is SearchLocation &&
+                      (model.tab.loading || model.tab.searchTruncated))
+                    Row(children: [
+                      Expanded(
+                          child: Text(model.tab.searchTruncated
+                              ? (model.strings.locale.startsWith('pt')
+                                  ? 'Limite de 5.000 resultados atingido.'
+                                  : '5,000 result limit reached.')
+                              : (model.strings.locale.startsWith('pt')
+                                  ? 'Pesquisando…'
+                                  : 'Searching…'))),
+                      if (model.tab.loading)
+                        Button(
+                            label: model.strings.locale.startsWith('pt')
+                                ? 'Parar'
+                                : 'Stop',
+                            accent: false,
+                            onPressed: model.cancelSearch),
+                    ]),
                   Expanded(
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: <Widget>[
                         Expanded(child: _card(theme, _content(theme))),
-                        if (model.detailsPane) ...<Widget>[
+                        if (model.preferences['previewPane']) ...<Widget>[
+                          const SizedBox(width: 6),
+                          SizedBox(
+                              width: 280,
+                              child: _card(
+                                  theme,
+                                  PreviewPane(
+                                      model: model,
+                                      loader: widget.thumbnailLoader))),
+                        ] else if (model.detailsPane) ...<Widget>[
                           const SizedBox(width: 6),
                           SizedBox(
                             width: 280,
@@ -565,7 +685,7 @@ class ExplorerWindowState extends State<ExplorerWindow>
                       ],
                     ),
                   ),
-                  _statusBar(theme),
+                  if (model.preferences['showStatusBar']) _statusBar(theme),
                 ],
               ),
             ),
@@ -680,7 +800,11 @@ class ExplorerWindowState extends State<ExplorerWindow>
   /// "17 items | 1 item selected", under the file area.
   Widget _statusBar(ThemeData theme) {
     final (String count, String? selected) = model.statusText;
-    final String? message = model.message;
+    final String? message = model.archiveBusy
+        ? (model.strings.locale.startsWith('pt')
+            ? 'Processando ZIP…'
+            : 'Processing ZIP…')
+        : model.message;
     Widget text(String s, {Color? color}) => Text(s,
         style: theme.textTheme.bodyMedium,
         color: color ?? theme.foregroundSecondary,

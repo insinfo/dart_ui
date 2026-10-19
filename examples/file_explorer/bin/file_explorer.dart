@@ -12,6 +12,7 @@ import 'package:file_explorer/src/engine/explorer_model.dart';
 import 'package:file_explorer/src/engine/location.dart';
 import 'package:file_explorer/src/engine/strings.dart';
 import 'package:file_explorer/src/io/io_file_system.dart';
+import 'package:file_explorer/src/io/preferences_store.dart';
 import 'package:file_explorer/src/io/thumbnail_loader.dart';
 import 'package:file_explorer/src/ui/app.dart';
 
@@ -61,6 +62,10 @@ Future<void> main(List<String> arguments) async {
         folder == null ? null : FolderLocation(Directory(folder).absolute.path),
   );
 
+  final settings = PreferencesStore(File(
+      '${StandardPaths.appData}${Platform.pathSeparator}dart_ui_file_explorer${Platform.pathSeparator}preferences.json'));
+  await settings.load(model, restoreSession: folder == null);
+  settings.attach(model);
   final ThumbnailWorkers thumbnails = ThumbnailWorkers();
   // Closing the last tab closes the window, and the window's close - its
   // button, Cmd+W, Alt+F4 - ends the application: runApp returns once it is
@@ -87,6 +92,7 @@ Future<void> main(List<String> arguments) async {
     );
   } finally {
     thumbnails.close();
+    await settings.close();
     model.dispose();
   }
 }

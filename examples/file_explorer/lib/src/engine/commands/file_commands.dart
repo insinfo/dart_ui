@@ -16,6 +16,58 @@ List<CommandSpec> fileCommands(ExplorerContext context) {
   final bool mac = platformEditingConvention == EditingConvention.mac;
   return <CommandSpec>[
     CommandSpec(
+        id: 'file.undo',
+        label: 'Undo rename or move',
+        shortcut: const KeyGesture(logicalKeyZ, command: true),
+        when: (_) => model.history.canUndo ? null : 'no rename or move to undo',
+        run: (_) => unawaited(model.undo())),
+    CommandSpec(
+        id: 'file.redo',
+        label: 'Redo rename or move',
+        shortcut: const KeyGesture(logicalKeyZ, command: true, shift: true),
+        when: (_) => model.history.canRedo ? null : 'no rename or move to redo',
+        run: (_) => unawaited(model.undo(redo: true))),
+    CommandSpec(
+        id: 'file.compress',
+        label: 'Compress to ZIP',
+        when: (args) =>
+            context.needsSelection(args) ??
+            (model.fs is! ArchiveFileSystem
+                ? 'ZIP is unavailable here'
+                : model.archiveBusy
+                    ? 'an archive operation is running'
+                    : model.currentFolder == null
+                        ? 'not in a folder'
+                        : null),
+        run: (_) => unawaited(model.archiveSelection())),
+    CommandSpec(
+        id: 'file.extract',
+        label: 'Extract ZIP to new folder',
+        when: (_) => model.archiveBusy
+            ? 'an archive operation is running'
+            : model.fs is! ArchiveFileSystem
+                ? 'ZIP is unavailable here'
+                : model.selectedEntries.length == 1 &&
+                        model.selectedEntries.single.extension == 'zip'
+                    ? null
+                    : 'select one ZIP archive',
+        run: (_) => unawaited(model.archiveSelection(extract: true))),
+    CommandSpec(
+        id: 'file.favorite',
+        label: 'Add to / remove from Favorites',
+        checked: (_) =>
+            model.selectedEntries.isNotEmpty &&
+            model.selectedEntries.every((e) => model.favorites.contains(e)),
+        when: (_) => model.selectedEntries.any((e) => !e.isDirectory)
+            ? null
+            : 'select a file',
+        run: (_) => model.toggleFavorites()),
+    CommandSpec(
+        id: 'file.copyFolderPath',
+        label: 'Copy folder path',
+        when: context.needsFolder,
+        run: (_) => context.host.copyText(model.currentFolder!)),
+    CommandSpec(
       id: 'file.open',
       label: 'Open',
       description: 'Opens the selected folders here and the files in their '
@@ -83,7 +135,11 @@ List<CommandSpec> fileCommands(ExplorerContext context) {
           (model.canCreateHere ? null : 'not in a folder'),
       run: (CommandArgs args) {
         if (!args.has('name')) {
-          model.beginRename();
+          if (model.selectedEntries.length > 1) {
+            context.host.renameSelection();
+          } else {
+            model.beginRename();
+          }
           return null;
         }
         final List<FileEntry> picked = model.selectedEntries;

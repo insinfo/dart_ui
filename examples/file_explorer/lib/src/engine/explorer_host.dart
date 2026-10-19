@@ -9,6 +9,11 @@ abstract interface class ExplorerHost {
   /// Puts the keyboard in the address bar, path selected - Ctrl+L.
   void focusAddress();
 
+  void showFolderOptions();
+  void showCommands();
+  void renameSelection();
+  void openTerminal(String directory);
+
   /// Puts the keyboard in the search box - Ctrl+F.
   void focusSearch();
 
@@ -29,6 +34,16 @@ final class HeadlessExplorerHost implements ExplorerHost {
 
   @override
   void focusAddress() => calls.add('address');
+
+  @override
+  void showFolderOptions() => calls.add('options');
+
+  @override
+  void showCommands() => calls.add('commands');
+  @override
+  void renameSelection() => calls.add('renameSelection');
+  @override
+  void openTerminal(String directory) => calls.add('terminal $directory');
 
   @override
   void focusSearch() => calls.add('search');

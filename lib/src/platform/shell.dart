@@ -22,6 +22,11 @@ export 'shell_types.dart';
 
 /// Opening URLs, files and folders with the user's own default applications.
 abstract final class Shell {
+  /// Opens a terminal in an existing directory without evaluating its path
+  /// as shell source. Throws when no supported terminal can be started.
+  static Future<void> openTerminal(String directory) =>
+      platform.openTerminal(directory);
+
   /// Opens [url] in the default browser (or the handler registered for its
   /// scheme - `mailto:` opens the mail client).
   ///

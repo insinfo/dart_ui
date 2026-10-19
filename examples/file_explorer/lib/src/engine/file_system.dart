@@ -144,6 +144,16 @@ abstract interface class FileSystem {
   Future<List<Volume>> volumes();
 }
 
+/// Optional bounded text preview; null means binary or unsupported content.
+abstract interface class ArchiveFileSystem {
+  Future<void> createArchive(List<String> paths, String target);
+  Future<void> extractArchive(String path, String target);
+}
+
+abstract interface class TextPreviewFileSystem {
+  Future<String?> readTextPreview(String path);
+}
+
 /// Names Windows and macOS keep for themselves, hidden even from a view
 /// that shows hidden items unless protected files are shown too.
 const Set<String> kSystemNames = <String>{

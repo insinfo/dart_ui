@@ -36,6 +36,7 @@ final class ExplorerTab {
 
   /// Whether a listing or a search is still running.
   bool loading = false;
+  bool searchTruncated = false;
 
   /// Why the location could not be listed, or null.
   String? error;

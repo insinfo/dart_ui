@@ -87,6 +87,35 @@ void main() {
   });
 
   group('DataGrid as a file list', () {
+    test(
+        'single-click opening waits for release and preserves drag and modifier selection',
+        () {
+      final h = _GridHarness(rowCount: 10, singleClick: true);
+      addTearDown(h.dispose);
+      h.frame();
+      final at = h.bodyPoint(10, 25);
+      h.body.handlePointerEvent(_press(at));
+      expect(h.activated, isEmpty);
+      h.body.handlePointerEvent(_release(at));
+      expect(h.activated, [1]);
+      h.body.handleKeyEvent(_key(0x11, control: true));
+      h.body.handlePointerEvent(_press(at));
+      h.body.handlePointerEvent(_release(at));
+      expect(h.activated, [1]);
+      h.body.handleKeyEvent(_key(0x11));
+      h.body.handlePointerEvent(_press(at));
+      h.body.handlePointerEvent(PointerMoveEvent(
+          windowId: const NativeWindowId(1),
+          generation: 1,
+          timestamp: Duration.zero,
+          pointerId: 0,
+          kind: PointerKind.mouse,
+          logicalPosition: Offset(at.dx + 10, at.dy)));
+      h.body.handlePointerEvent(_release(at));
+      expect(h.activated, [1],
+          reason: 'a drag must not open a row when released');
+    });
+
     test('a double click or Enter opens the row', () {
       final harness = _GridHarness(rowCount: 10);
       harness.frame();
@@ -424,6 +453,7 @@ final class _GridHarness {
     required this.rowCount,
     this.selectionMode = DataGridSelectionMode.single,
     this.sortable = true,
+    this.singleClick = false,
     this.widths = const <double>[100, 80],
     this.direction = TextDirection.leftToRight,
   }) {
@@ -439,6 +469,7 @@ final class _GridHarness {
   final int rowCount;
   final DataGridSelectionMode selectionMode;
   final bool sortable;
+  final bool singleClick;
   final List<double> widths;
   final TextDirection direction;
   final ScrollPosition scroll = ScrollPosition();
@@ -470,6 +501,7 @@ final class _GridHarness {
           onColumnResized: (int column, double width) =>
               resized.add('$column:$width'),
           onRowActivated: activated.add,
+          activateOnSingleClick: singleClick,
           columnFitWidth: (int column) => 150,
           onSecondaryPress: secondary.add,
           cellBuilder: (BuildContext context, int row, int column) =>

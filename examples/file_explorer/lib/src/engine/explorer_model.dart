@@ -10,6 +10,9 @@ import 'explorer_tab.dart';
 import 'file_system.dart';
 import 'file_types.dart';
 import 'location.dart';
+import 'move_history.dart';
+import 'preferences.dart';
+import 'search_query.dart';
 import 'sorting.dart';
 import 'strings.dart';
 
@@ -47,6 +50,7 @@ final class ExplorerModel {
         if (places[place] != null) places[place]!,
     ];
     tabs.add(ExplorerTab(start ?? const HomeLocation()));
+    _defaultView = viewSettings;
   }
 
   final FileSystem fs;
@@ -67,15 +71,13 @@ final class ExplorerModel {
   ViewMode viewMode = ViewMode.details;
   SortField sortField = SortField.name;
   bool ascending = true;
-  bool showHidden = false;
-
-  /// File Explorer's "File name extensions": off hides the extension of a
-  /// known type only - `report.pdf` reads "report", `data.xyz` stays whole.
-  bool showExtensions = true;
-
-  /// "Hide protected operating system files", inverted: system files appear
-  /// only with this on, hidden items shown or not.
-  bool showProtected = false;
+  ExplorerPreferences preferences = ExplorerPreferences();
+  bool get showHidden => preferences['showHidden'];
+  set showHidden(bool value) => preferences['showHidden'] = value;
+  bool get showExtensions => preferences['showExtensions'];
+  set showExtensions(bool value) => preferences['showExtensions'] = value;
+  bool get showProtected => preferences['showProtected'];
+  set showProtected(bool value) => preferences['showProtected'] = value;
 
   /// The columns Details shows, in order.
   final List<DetailsColumn> columns = <DetailsColumn>[
@@ -103,8 +105,266 @@ final class ExplorerModel {
 
   bool _shows(FileEntry e) =>
       (!e.isHidden || showHidden) && (!e.isSystem || showProtected);
-  bool navigationPane = true;
-  bool detailsPane = false;
+  bool get navigationPane => preferences['navigationPane'];
+  set navigationPane(bool value) => preferences['navigationPane'] = value;
+  bool get detailsPane => preferences['detailsPane'];
+  set detailsPane(bool value) => preferences['detailsPane'] = value;
+  final List<FileEntry> favorites = [];
+  final Map<String, Map<String, Object?>> folderViews = {};
+  Map<String, Object?>? _defaultView;
+
+  final Map<String, double> columnWidths = {};
+  Map<String, Object?> get viewSettings => {
+        'widths': Map<String, double>.of(columnWidths),
+        'mode': viewMode.name,
+        'sort': sortField.name,
+        'ascending': ascending,
+        'columns': columns.map((c) => c.name).toList(),
+      };
+
+  void _readView(Map<String, Object?> view) {
+    columnWidths.clear();
+    final widths = view['widths'];
+    if (widths is Map) {
+      for (final entry in widths.entries) {
+        if (entry.key is String &&
+            entry.value is num &&
+            (entry.value as num).isFinite) {
+          columnWidths[entry.key as String] =
+              (entry.value as num).toDouble().clamp(60, 2000);
+        }
+      }
+    }
+
+    viewMode =
+        ViewMode.values.where((e) => e.name == view['mode']).firstOrNull ??
+            ViewMode.details;
+    sortField =
+        SortField.values.where((e) => e.name == view['sort']).firstOrNull ??
+            SortField.name;
+    ascending = view['ascending'] is bool ? view['ascending'] as bool : true;
+    final names = view['columns'];
+    if (names is List) {
+      columns
+        ..clear()
+        ..add(DetailsColumn.name);
+      for (final name in names) {
+        final c = DetailsColumn.values.where((c) => c.name == name).firstOrNull;
+        if (c != null && !columns.contains(c)) columns.add(c);
+      }
+    }
+  }
+
+  void _rememberView() {
+    final folder = currentFolder;
+    if (preferences['rememberFolderViews'] && folder != null) {
+      folderViews[folder] = viewSettings;
+      if (folderViews.length > 500) folderViews.remove(folderViews.keys.first);
+    }
+  }
+
+  void _restoreView(Location at) {
+    _defaultView ??= viewSettings;
+    final folder = folderOf(at);
+    _readView(preferences['rememberFolderViews'] && folderViews[folder] != null
+        ? folderViews[folder]!
+        : _defaultView!);
+  }
+
+  void applyViewToAllFolders() {
+    _defaultView = viewSettings;
+    folderViews.clear();
+    notify();
+  }
+
+  void resetFolderViews() {
+    folderViews.clear();
+    _defaultView = {
+      'mode': 'details',
+      'sort': 'name',
+      'ascending': true,
+      'columns': ['name', 'dateModified', 'type', 'size']
+    };
+    _readView(_defaultView!);
+    for (final t in tabs) {
+      _resort(t);
+    }
+    notify();
+  }
+
+  void applyPreferences(ExplorerPreferences value) {
+    preferences = value.copy();
+    if (!preferences['showRecent']) recent.clear();
+    if (!preferences['rememberFolderViews']) folderViews.clear();
+    for (final t in tabs) {
+      _resort(t);
+    }
+    notify();
+  }
+
+  void clearHistory() {
+    recent.clear();
+    closedTabs.clear();
+    for (final t in tabs) {
+      t.back.clear();
+      t.forward.clear();
+    }
+    notify();
+  }
+
+  void toggleFavorites() {
+    final files = selectedEntries.where((e) => !e.isDirectory).toList();
+    final remove = files.every((e) => favorites.contains(e));
+    for (final e in files) {
+      favorites.remove(e);
+      if (!remove) favorites.add(e);
+    }
+    notify();
+  }
+
+  void removeFavorite(FileEntry entry) {
+    favorites.remove(entry);
+    notify();
+  }
+
+  /// Cancel only the active search; preserve results already found.
+  void cancelSearch() {
+    if (tab.location is! SearchLocation || !tab.loading) return;
+    tab.generation++;
+    tab.loading = false;
+    notify();
+  }
+
+  void closeOtherTabs({int? except, bool left = false, bool right = false}) {
+    final keep = except ?? activeIndex;
+    for (var i = tabs.length - 1; i >= 0; i--) {
+      if (i != keep &&
+          (!left && !right || left && i < keep || right && i > keep)) {
+        closeTab(i);
+      }
+    }
+  }
+
+  void moveTab(int from, int to) {
+    if (from < 0 ||
+        to < 0 ||
+        from >= tabs.length ||
+        to >= tabs.length ||
+        from == to) {
+      return;
+    }
+    final active = tab;
+    final moving = tabs.removeAt(from);
+    tabs.insert(to, moving);
+    activeIndex = tabs.indexOf(active);
+    notify();
+  }
+
+  Map<String, Object?> exportState() {
+    _rememberView();
+    return {
+      'version': 1,
+      'options': preferences.toJson(),
+      'view': viewSettings,
+      'defaultView': _defaultView ?? viewSettings,
+      'folderViews': folderViews,
+      'pinned': pinned,
+      'favorites': favorites.map(_entryJson).toList(),
+      'recent':
+          preferences['showRecent'] ? recent.map(_entryJson).toList() : [],
+      'tabs': tabs.map((t) => _locationJson(t.location)).toList(),
+      'activeTab': activeIndex
+    };
+  }
+
+  void restoreState(Map<String, Object?> data, {bool restoreSession = true}) {
+    final options = data['options'];
+    if (options is Map) {
+      preferences = ExplorerPreferences(Map<String, Object?>.from(options));
+    }
+    final view = data['view'];
+    if (view is Map) _readView(Map<String, Object?>.from(view));
+    final defaults = data['defaultView'];
+    _defaultView =
+        defaults is Map ? Map<String, Object?>.from(defaults) : viewSettings;
+    final folders = data['folderViews'];
+    if (folders is Map && preferences['rememberFolderViews']) {
+      for (final key in folders.keys.take(500)) {
+        if (key is String && folders[key] is Map) {
+          folderViews[key] = Map<String, Object?>.from(folders[key] as Map);
+        }
+      }
+    }
+    if (data['pinned'] is List) {
+      pinned = (data['pinned'] as List).whereType<String>().take(100).toList();
+    }
+    void entries(Object? source, List<FileEntry> into) {
+      if (source is! List) return;
+      for (final item in source.take(100)) {
+        if (item is Map && item['path'] is String) {
+          final path = item['path'] as String;
+          into.add(FileEntry(
+              path: path,
+              name: fs.nameOf(path),
+              isDirectory: false,
+              size: item['size'] is int ? item['size'] as int : null));
+        }
+      }
+    }
+
+    favorites.clear();
+    recent.clear();
+    entries(data['favorites'], favorites);
+    if (preferences['showRecent']) entries(data['recent'], recent);
+    if (!restoreSession) {
+      _restoreView(tab.location);
+      return;
+    }
+    final session = data['tabs'];
+    if (preferences['restoreTabs'] && session is List && session.isNotEmpty) {
+      for (final t in tabs) {
+        t.dispose();
+      }
+      tabs
+        ..clear()
+        ..addAll(session.take(30).map((v) => ExplorerTab(_readLocation(v))));
+      activeIndex = data['activeTab'] is int
+          ? (data['activeTab'] as int).clamp(0, tabs.length - 1)
+          : 0;
+    } else {
+      tab.location = preferences['startThisPc']
+          ? const ThisPcLocation()
+          : const HomeLocation();
+    }
+    _restoreView(tab.location);
+  }
+
+  Map<String, Object?> _entryJson(FileEntry e) =>
+      {'path': e.path, 'size': e.size};
+  Map<String, Object?> _locationJson(Location at) => switch (at) {
+        FolderLocation(:final path) => {'kind': 'folder', 'path': path},
+        SearchLocation(:final root, :final query) => {
+            'kind': 'search',
+            'path': root,
+            'query': query
+          },
+        ThisPcLocation() => {'kind': 'pc'},
+        _ => {'kind': 'home'},
+      };
+  Location _readLocation(Object? value) {
+    if (value is! Map) return const HomeLocation();
+    if (value['kind'] == 'pc') return const ThisPcLocation();
+    if (value['path'] is String) {
+      if (value['kind'] == 'search' && value['query'] is String) {
+        return SearchLocation(
+            value['path'] as String, value['query'] as String);
+      }
+      if (value['kind'] == 'folder') {
+        return FolderLocation(value['path'] as String);
+      }
+    }
+    return const HomeLocation();
+  }
 
   /// The folders pinned to Quick access.
   late List<String> pinned;
@@ -130,6 +390,7 @@ final class ExplorerModel {
   void removeListener(void Function() listener) => _listeners.remove(listener);
 
   void notify() {
+    _rememberView();
     for (final void Function() listener
         in List<void Function()>.of(_listeners)) {
       listener();
@@ -201,6 +462,8 @@ final class ExplorerModel {
   Future<void> navigate(Location to) {
     final ExplorerTab t = tab;
     if (t.location == to) return refresh();
+    _rememberView();
+    _restoreView(to);
     t.back.add(t.location);
     t.forward.clear();
     t.location = to;
@@ -211,7 +474,9 @@ final class ExplorerModel {
     final ExplorerTab t = tab;
     if (t.back.isEmpty) return idle;
     t.forward.add(t.location);
+    _rememberView();
     t.location = t.back.removeLast();
+    _restoreView(t.location);
     return _load(t);
   }
 
@@ -219,7 +484,9 @@ final class ExplorerModel {
     final ExplorerTab t = tab;
     if (t.forward.isEmpty) return idle;
     t.back.add(t.location);
+    _rememberView();
     t.location = t.forward.removeLast();
+    _restoreView(t.location);
     return _load(t);
   }
 
@@ -252,12 +519,18 @@ final class ExplorerModel {
 
   /// Opens [entry]: a folder in this tab, a file in its application.
   Future<void> open(FileEntry entry) async {
-    if (entry.isDirectory) return navigate(FolderLocation(entry.path));
+    if (entry.isDirectory) {
+      return preferences['openFoldersInNewTab']
+          ? newTab(FolderLocation(entry.path))
+          : navigate(FolderLocation(entry.path));
+    }
     try {
       await fs.open(entry.path);
-      recent
-        ..removeWhere((FileEntry e) => e.path == entry.path)
-        ..insert(0, entry);
+      if (preferences['showRecent']) {
+        recent
+          ..removeWhere((FileEntry e) => e.path == entry.path)
+          ..insert(0, entry);
+      }
       if (recent.length > 20) recent.removeLast();
       notify();
     } on Object catch (error) {
@@ -324,7 +597,13 @@ final class ExplorerModel {
         }
       case SearchLocation(:final String root, :final String query):
         t.entries = <FileEntry>[];
-        await _search(t, generation, root, query.toLowerCase());
+        try {
+          t.searchTruncated = false;
+          await _search(t, generation, root, SearchQuery(query));
+        } on FormatException catch (error) {
+          t.error = error.message;
+          _resort(t);
+        }
     }
   }
 
@@ -345,12 +624,15 @@ final class ExplorerModel {
 
   /// Breadth first, so near matches come first; shown as they are found.
   Future<void> _search(
-      ExplorerTab t, int generation, String root, String query) async {
+      ExplorerTab t, int generation, String root, SearchQuery query) async {
     final List<String> queue = <String>[root];
+    var index = 0;
     var found = 0;
+    final visited = <String>{};
     var sinceShown = 0;
-    while (queue.isNotEmpty && found < 5000) {
-      final String folder = queue.removeAt(0);
+    while (index < queue.length && found < 5000) {
+      final String folder = queue[index++];
+      if (!visited.add(folder)) continue;
       final List<FileEntry> listed;
       try {
         listed = await fs.list(folder);
@@ -360,11 +642,17 @@ final class ExplorerModel {
       if (generation != t.generation) return;
       for (final FileEntry entry in listed) {
         if (!_shows(entry)) continue;
-        if (entry.isDirectory) queue.add(entry.path);
-        if (entry.name.toLowerCase().contains(query)) {
-          t.entries = <FileEntry>[...t.entries, entry];
+        if (entry.isDirectory && preferences['searchSubfolders']) {
+          queue.add(entry.path);
+        }
+        if (query.matches(entry)) {
+          t.entries.add(entry);
           found++;
           sinceShown++;
+          if (found >= 5000) {
+            t.searchTruncated = true;
+            break;
+          }
         }
       }
       if (sinceShown > 0) {
@@ -422,8 +710,14 @@ final class ExplorerModel {
   // --- tabs ---------------------------------------------------------------------
 
   /// Opens a tab at [at] (Home by default) and switches to it.
-  Future<void> newTab([Location at = const HomeLocation()]) {
-    tabs.insert(activeIndex + 1, ExplorerTab(at));
+  Future<void> newTab([Location? at]) {
+    _rememberView();
+    final next = at ??
+        (preferences['startThisPc']
+            ? const ThisPcLocation()
+            : const HomeLocation());
+    _restoreView(next);
+    tabs.insert(activeIndex + 1, ExplorerTab(next));
     activeIndex++;
     return _load(tab);
   }
@@ -432,20 +726,29 @@ final class ExplorerModel {
   /// closes instead.
   bool closeTab(int index) {
     if (tabs.length == 1) return false;
+    _rememberView();
     final ExplorerTab closing = tabs.removeAt(index);
     closedTabs.add(closing.location);
     closing.dispose();
     if (activeIndex > index || activeIndex >= tabs.length) {
       activeIndex = (activeIndex - 1).clamp(0, tabs.length - 1);
     }
+    _restoreView(tab.location);
+    _resort(tab);
     notify();
     return true;
   }
 
   void selectTab(int index) {
     if (index < 0 || index >= tabs.length || index == activeIndex) return;
+    _rememberView();
     activeIndex = index;
+    _restoreView(tab.location);
+    _resort(tab);
     _pending = null;
+    if (tab.entries.isEmpty && !tab.loading) {
+      unawaited(_load(tab));
+    }
     notify();
   }
 
@@ -495,6 +798,55 @@ final class ExplorerModel {
   }
 
   List<FileEntry> get selectedEntries => tab.selectedEntries;
+
+  late final MoveHistory history = MoveHistory(fs);
+  Future<void> undo({bool redo = false}) async {
+    final work = history.run(redo: redo);
+    notify();
+    try {
+      await work;
+      await refresh();
+    } on Object catch (error) {
+      _fail(error);
+    }
+    notify();
+  }
+
+  Future<void> renameSelection(String base) async {
+    final picked = selectedEntries;
+    if (picked.isEmpty || base.trim().isEmpty) return;
+    if (RegExp(r'[\\/:*?"<>|]').hasMatch(base) || base == '.' || base == '..') {
+      _fail(const FileSystemError('Invalid base name'));
+      return;
+    }
+    final moves = <MovedPath>[];
+    try {
+      final plans = <(FileEntry, String)>[];
+      for (var i = 0; i < picked.length; i++) {
+        final e = picked[i];
+        final suffix = e.extension.isEmpty ? '' : '.${e.extension}';
+        final name = '${base.trim()} (${i + 1})$suffix';
+        final target = fs.join(fs.parentOf(e.path)!, name);
+        if (target != e.path && await fs.stat(target) != null) {
+          throw FileSystemError('Already exists', target);
+        }
+        plans.add((e, name));
+      }
+      for (final (e, name) in plans) {
+        if (e.name == name) continue;
+        final target = await fs.rename(e.path, name);
+        moves.add((e.path, target));
+      }
+      history.record(moves);
+      await refresh();
+      select([for (final p in moves) p.$2]);
+    } on Object catch (error) {
+      for (final (from, to) in moves.reversed) {
+        await fs.move(to, from);
+      }
+      _fail(error);
+    }
+  }
 
   // --- file operations ------------------------------------------------------
 
@@ -564,6 +916,7 @@ final class ExplorerModel {
     }
     try {
       final String renamed = await fs.rename(path, name);
+      history.record([(path, renamed)]);
       await _load(tab, keepSelection: true);
       select(<String>[renamed]);
       return renamed;
@@ -709,6 +1062,7 @@ final class ExplorerModel {
     required bool move,
   }) async {
     final List<String> made = <String>[];
+    final moves = <MovedPath>[];
     final Set<String> names;
     try {
       names = <String>{
@@ -729,6 +1083,7 @@ final class ExplorerModel {
       try {
         if (move) {
           await fs.move(path, target);
+          moves.add((path, target));
         } else {
           await fs.copy(path, target);
         }
@@ -739,6 +1094,7 @@ final class ExplorerModel {
         break;
       }
     }
+    history.record(moves);
     return made;
   }
 
@@ -759,6 +1115,45 @@ final class ExplorerModel {
   void _fail(Object error) {
     message = error is FileSystemError ? error.toString() : '$error';
     notify();
+  }
+
+  bool archiveBusy = false;
+  Future<void> archiveSelection({bool extract = false}) async {
+    final source = fs;
+    final picked = selectedEntries;
+    final folder = currentFolder;
+    final origin = tab;
+    if (archiveBusy ||
+        source is! ArchiveFileSystem ||
+        folder == null ||
+        picked.isEmpty) {
+      return;
+    }
+    final archive = source as ArchiveFileSystem;
+    archiveBusy = true;
+    message = null;
+    notify();
+    try {
+      final names = {for (final e in await fs.list(folder)) e.name};
+      final base = picked.length == 1 ? picked.first.stem : 'Archive';
+      final name =
+          freshName(base, names.contains, extension: extract ? '' : '.zip');
+      final target = fs.join(folder, name);
+      if (extract) {
+        await archive.extractArchive(picked.single.path, target);
+      } else {
+        await archive.createArchive(picked.map((e) => e.path).toList(), target);
+      }
+      if (tabs.contains(origin) && folderOf(origin.location) == folder) {
+        await _load(origin, keepSelection: true);
+        if (identical(tab, origin)) select([target]);
+      }
+    } on Object catch (error) {
+      _fail(error);
+    } finally {
+      archiveBusy = false;
+      notify();
+    }
   }
 
   // --- the status bar -------------------------------------------------------

@@ -11,6 +11,28 @@ import 'command_context.dart';
 List<CommandSpec> tabCommands(ExplorerContext context) {
   final ExplorerModel model = context.model;
   return <CommandSpec>[
+    for (final (id, label, left, right) in <(String, String, bool, bool)>[
+      ('tab.closeOthers', 'Close other tabs', false, false),
+      ('tab.closeLeft', 'Close tabs to the left', true, false),
+      ('tab.closeRight', 'Close tabs to the right', false, true),
+    ])
+      CommandSpec(
+          id: id,
+          label: label,
+          when: (_) => model.tabs.length > 1 ? null : 'there is one tab',
+          run: (_) => model.closeOtherTabs(left: left, right: right)),
+    CommandSpec(
+        id: 'tab.moveLeft',
+        label: 'Move tab left',
+        when: (_) => model.activeIndex > 0 ? null : 'this is the first tab',
+        run: (_) => model.moveTab(model.activeIndex, model.activeIndex - 1)),
+    CommandSpec(
+        id: 'tab.moveRight',
+        label: 'Move tab right',
+        when: (_) => model.activeIndex + 1 < model.tabs.length
+            ? null
+            : 'this is the last tab',
+        run: (_) => model.moveTab(model.activeIndex, model.activeIndex + 1)),
     CommandSpec(
       id: 'tab.new',
       label: 'New tab',

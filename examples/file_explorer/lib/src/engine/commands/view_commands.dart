@@ -17,6 +17,7 @@ const List<(String, String, ViewMode, int)> kViewModeCommands =
   ('view.list', 'List', ViewMode.list, 5),
   ('view.details', 'Details', ViewMode.details, 6),
   ('view.tiles', 'Tiles', ViewMode.tiles, 7),
+  ('view.content', 'Content', ViewMode.content, 8),
 ];
 
 const List<(String, String, SortField)> kSortCommands =
@@ -25,6 +26,8 @@ const List<(String, String, SortField)> kSortCommands =
   ('sort.dateModified', 'Date modified', SortField.dateModified),
   ('sort.type', 'Type', SortField.type),
   ('sort.size', 'Size', SortField.size),
+  ('sort.dateCreated', 'Date created', SortField.dateCreated),
+  ('sort.extension', 'Extension', SortField.extension),
 ];
 
 List<CommandSpec> viewCommands(ExplorerContext context) {
@@ -46,6 +49,40 @@ List<CommandSpec> viewCommands(ExplorerContext context) {
       );
 
   return <CommandSpec>[
+    CommandSpec(
+        id: 'view.commands',
+        label: 'Command palette',
+        shortcut: const KeyGesture(logicalKeyP, command: true, shift: true),
+        run: (_) => context.host.showCommands()),
+    CommandSpec(
+        id: 'file.terminal',
+        label: 'Open in Terminal',
+        when: context.needsFolder,
+        run: (_) => context.host.openTerminal(model.currentFolder!)),
+    CommandSpec(
+        id: 'view.options',
+        label: 'Folder Options',
+        shortcut: const KeyGesture(logicalKeyComma, command: true),
+        run: (_) => context.host.showFolderOptions()),
+    for (final (key, label) in <(String, String)>[
+      ('compact', 'Compact view'),
+      ('itemCheckboxes', 'Item checkboxes'),
+      ('showThumbnails', 'Thumbnails'),
+      ('showStatusBar', 'Status bar'),
+    ])
+      toggle('view.$key', label, () => model.preferences[key],
+          (v) => model.preferences[key] = v),
+    CommandSpec(
+        id: 'view.previewPane',
+        label: 'Preview pane',
+        shortcut: const KeyGesture(logicalKeyP, alt: true),
+        checked: (_) => model.preferences['previewPane'],
+        run: (_) {
+          model.preferences['previewPane'] = !model.preferences['previewPane'];
+          if (model.preferences['previewPane']) model.detailsPane = false;
+          model.notify();
+          return null;
+        }),
     for (final (String id, String label, ViewMode mode, int digit)
         in kViewModeCommands)
       CommandSpec(
@@ -126,7 +163,9 @@ List<CommandSpec> viewCommands(ExplorerContext context) {
         (bool v) => model.navigationPane = v,
         shortcut: const KeyGesture(logicalKeyB, command: true)),
     toggle('view.detailsPane', 'Details pane', () => model.detailsPane,
-        (bool v) => model.detailsPane = v,
-        shortcut: const KeyGesture(logicalKeyP, alt: true, shift: true)),
+        (bool v) {
+      model.detailsPane = v;
+      if (v) model.preferences['previewPane'] = false;
+    }, shortcut: const KeyGesture(logicalKeyP, alt: true, shift: true)),
   ];
 }

@@ -116,3 +116,32 @@ ShellCommand macRevealCommand(String absolutePath) => ShellCommand(
 /// some Windows builds fall back to opening Documents.
 String windowsRevealParameters(String absolutePath) =>
     '/select,"$absolutePath"';
+
+/// Terminal launch plans. Paths remain individual argv entries; no command
+/// string, shell interpolation or administrator elevation is involved.
+List<ShellCommand> terminalCommands(String platform, String directory) =>
+    switch (platform) {
+      'macos' => [
+          ShellCommand(
+              executable: '/usr/bin/open',
+              arguments: ['-a', 'Terminal', directory])
+        ],
+      'windows' => [
+          ShellCommand(executable: 'wt.exe', arguments: ['-d', directory]),
+          const ShellCommand(executable: 'cmd.exe', arguments: ['/k'])
+        ],
+      'linux' => [
+          ShellCommand(
+              executable: 'xdg-terminal-exec', arguments: ['--dir', directory]),
+          ShellCommand(
+              executable: 'gnome-terminal',
+              arguments: ['--working-directory=$directory']),
+          ShellCommand(
+              executable: 'konsole', arguments: ['--workdir', directory]),
+          ShellCommand(
+              executable: 'xfce4-terminal',
+              arguments: ['--working-directory=$directory']),
+          const ShellCommand(executable: 'x-terminal-emulator', arguments: []),
+        ],
+      _ => const [],
+    };

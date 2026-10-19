@@ -47,6 +47,27 @@ abaixo. Depois, execute `./build/FileExplorer "$HOME"`.
 A validação em Ubuntu ARM64, Xfce/Xorg e Mesa virgl está registrada em
 [FILE_EXPLORER_LINUX_2026-10-18.md](../../doc/logs/FILE_EXPLORER_LINUX_2026-10-18.md).
 
+## Opções e produtividade
+
+Abra **Opções de Pasta** pelo menu `···` ou por Ctrl/Cmd+`,`.
+As abas Geral, Modo de Exibição e Pesquisar controlam abertura, recentes,
+restauração da sessão, vistas por pasta, miniaturas, caixas de seleção,
+densidade e escopo da pesquisa. Cancelar descarta a cópia de edição;
+Aplicar grava as preferências do usuário.
+
+- Ctrl/Cmd+Shift+P: paleta de comandos.
+- Alt+P: painel de prévia de texto/imagem; o menu Exibir oferece também Detalhes.
+- F2 com vários itens: renomeação numerada, preservando extensões.
+- Ctrl/Cmd+Z e Ctrl/Cmd+Shift+Z: desfazer/refazer renomeações e movimentações.
+- Botão direito nas abas: duplicar, mover, restaurar e fechar grupos de abas.
+- Botão direito nos arquivos: Favoritos, compactar ZIP e extrair ZIP para nova pasta.
+- Pesquisa: `*.pdf`, `ext:dart`, `kind:image size:>10MB`, `modified:>=2026-01-01`;
+  suporta frases entre aspas e AND / OR / NOT.
+
+As preferências ficam em `StandardPaths.appData/dart_ui_file_explorer`,
+fora das pastas navegadas. Para detalhes de suporte e limites, consulte
+[EXPLORER_PORTABLE_FEATURES_2026-10-18.md](../../doc/logs/EXPLORER_PORTABLE_FEATURES_2026-10-18.md).
+
 ## Arquitetura
 
 - `lib/src/engine/` - o motor, sem widgets: `FileSystem` (interface),

@@ -40,7 +40,10 @@ class FolderView extends StatelessWidget {
   /// [entry]'s picture in a [size] box - its thumbnail cropped to fill the
   /// box, as Files shows photographs - or its icon.
   Widget _picture(FileEntry entry, double size) {
-    final DecodedImage? thumb = size >= 40 ? thumbnails?.of(entry) : null;
+    final DecodedImage? thumb =
+        size >= 40 && model.preferences['showThumbnails']
+            ? thumbnails?.of(entry)
+            : null;
     if (thumb == null) return FileIcon(kindOf(entry), size: size);
     return SizedBox(
       width: size,
@@ -133,6 +136,7 @@ class FolderView extends StatelessWidget {
       ViewMode.details => _details(theme),
       ViewMode.list => _grid(context, theme, iconSize: 16, list: true),
       ViewMode.tiles => _grid(context, theme, iconSize: 48, tiles: true),
+      ViewMode.content => _contentView(context, theme),
       ViewMode.smallIcons => _grid(context, theme, iconSize: 16, list: true),
       ViewMode.mediumIcons => _grid(context, theme, iconSize: 48),
       ViewMode.largeIcons => _grid(context, theme, iconSize: 96),
@@ -160,18 +164,25 @@ class FolderView extends StatelessWidget {
           'date' => SortField.dateModified,
           'type' => SortField.type,
           'size' => SortField.size,
+          'created' => SortField.dateCreated,
           _ => null,
         },
     ];
     final int sortColumn = fieldOf.indexOf(model.sortField);
     return DataGrid(
+      key: ValueKey(model.currentFolder ?? model.titleOf(tab.location)),
       decorated: false,
+      onColumnResized: (i, width) {
+        model.columnWidths[columns[i].identity as String] = width;
+        model.notify();
+      },
       headerMenu: headerMenu,
       columnFitWidth: (int column) =>
           _fitWidth(theme, columns[column].identity as String, items),
       columns: columns,
       rowCount: items.length,
-      rowExtent: 30,
+      rowExtent: model.preferences['compact'] ? 24 : 30,
+      activateOnSingleClick: model.preferences['singleClick'],
       selectionMode: DataGridSelectionMode.multiple,
       selectedRows: <int>{
         for (var i = 0; i < items.length; i++)
@@ -220,6 +231,10 @@ class FolderView extends StatelessWidget {
           'name' => Row(
               crossAxisAlignment: CrossAxisAlignment.center,
               children: <Widget>[
+                if (model.preferences['itemCheckboxes']) ...[
+                  _checkbox(entry),
+                  const SizedBox(width: 6),
+                ],
                 FileIcon(kindOf(entry), size: 16),
                 const SizedBox(width: 10),
                 Expanded(
@@ -252,22 +267,101 @@ class FolderView extends StatelessWidget {
     );
   }
 
+  Widget _checkbox(FileEntry entry) => PointerListener(
+        stopPropagation: (e) =>
+            e is PointerDownEvent && e.button == PointerButton.primary,
+        child: CheckBox(
+            value: tab.selection.contains(entry.path),
+            onChanged: (_) => _toggle(entry)),
+      );
+
+  void _toggle(FileEntry entry) {
+    final next = {...tab.selection};
+    if (!next.remove(entry.path)) next.add(entry.path);
+    model.select(next, focused: entry.path);
+  }
+
+  Widget _contentView(BuildContext context, ThemeData theme) =>
+      _background(ListView.builder(
+        itemCount: tab.visible.length,
+        itemExtent: model.preferences['compact'] ? 64 : 80,
+        itemBuilder: (context, index) {
+          final e = tab.visible[index];
+          final tile = GestureDetector(
+            behavior: GestureHitTestBehavior.opaque,
+            onTap: () {
+              _click(context, e);
+              final owner = context is Element ? context.owner : null;
+              if (model.preferences['singleClick'] &&
+                  (owner?.keyModifiers.isEmpty ?? true)) {
+                _open(e);
+              }
+            },
+            onDoubleTap:
+                model.preferences['singleClick'] ? null : (_) => _open(e),
+            child: ColoredBox(
+                color: tab.selection.contains(e.path)
+                    ? theme.selection
+                    : theme.surface,
+                child: Padding(
+                    padding: const EdgeInsets.all(8),
+                    child: Row(children: [
+                      if (model.preferences['itemCheckboxes']) _checkbox(e),
+                      _picture(e, 48),
+                      const SizedBox(width: 12),
+                      Expanded(
+                          child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.start,
+                              children: [
+                            if (tab.renaming == e.path)
+                              renameField(e)
+                            else
+                              Text(model.shownName(e),
+                                  maxLines: 1, ellipsis: '…'),
+                            Text(
+                                '${typeNameOf(e, model.strings)}  ${e.isDirectory ? '' : humanSize(e.size ?? 0, model.strings)}',
+                                color: theme.foregroundSecondary),
+                            Text(dateColumn(e.modified, model.strings),
+                                color: theme.foregroundSecondary),
+                          ])),
+                    ]))),
+          );
+          return DragSource(
+              data: () => dragOut(model, _dragPaths(e)),
+              allowedActions: const {DragAction.copy, DragAction.move},
+              preferredAction: DragAction.move,
+              opaque: true,
+              onDragEnd: (action) => dragEnded(model, action),
+              child: e.isDirectory
+                  ? folderDropTarget(model: model, folder: e.path, child: tile)
+                  : tile);
+        },
+      ));
+
   DataGridColumn _column(DetailsColumn c) => switch (c) {
-        DetailsColumn.name =>
-          DataGridColumn(title: model.strings.name, id: 'name', width: 320),
+        DetailsColumn.name => DataGridColumn(
+            title: model.strings.name,
+            id: 'name',
+            width: model.columnWidths['name'] ?? 320),
         DetailsColumn.dateModified => DataGridColumn(
-            title: model.strings.dateModified, id: 'date', width: 170),
-        DetailsColumn.type =>
-          DataGridColumn(title: model.strings.type, id: 'type', width: 170),
-        DetailsColumn.size =>
-          DataGridColumn(title: model.strings.size, id: 'size', width: 100),
+            title: model.strings.dateModified,
+            id: 'date',
+            width: model.columnWidths['date'] ?? 170),
+        DetailsColumn.type => DataGridColumn(
+            title: model.strings.type,
+            id: 'type',
+            width: model.columnWidths['type'] ?? 170),
+        DetailsColumn.size => DataGridColumn(
+            title: model.strings.size,
+            id: 'size',
+            width: model.columnWidths['size'] ?? 100),
         DetailsColumn.dateCreated => DataGridColumn(
             title: model.strings.locale.startsWith('pt')
                 ? 'Data de criação'
                 : 'Date created',
             id: 'created',
-            width: 170,
-            sortable: false),
+            width: model.columnWidths['created'] ?? 170,
+            sortable: true),
       };
 
   /// What column [id] needs to show every value whole - a double click on
@@ -320,7 +414,9 @@ class FolderView extends StatelessWidget {
         ? 28
         : tiles
             ? 72
-            : iconSize + 36;
+            : iconSize +
+                (model.preferences['compact'] ? 28 : 36) +
+                (model.preferences['itemCheckboxes'] ? 30 : 0);
     return _background(GestureDetector(
       behavior: GestureHitTestBehavior.opaque,
       // A click between the items drops the selection, as in Explorer.
@@ -364,8 +460,16 @@ class FolderView extends StatelessWidget {
     final Widget tile = HoverBuilder(
       builder: (BuildContext context, bool hovered) => GestureDetector(
         behavior: GestureHitTestBehavior.opaque,
-        onTap: () => _click(context, entry),
-        onDoubleTap: (_) => _open(entry),
+        onTap: () {
+          _click(context, entry);
+          final owner = context is Element ? context.owner : null;
+          if (model.preferences['singleClick'] &&
+              (owner?.keyModifiers.isEmpty ?? true)) {
+            _open(entry);
+          }
+        },
+        onDoubleTap:
+            model.preferences['singleClick'] ? null : (_) => _open(entry),
         child: Padding(
           padding: const EdgeInsets.all(2),
           child: DecoratedBox(
@@ -392,6 +496,8 @@ class FolderView extends StatelessWidget {
                     child: Row(
                       crossAxisAlignment: CrossAxisAlignment.center,
                       children: <Widget>[
+                        if (model.preferences['itemCheckboxes'])
+                          _checkbox(entry),
                         _picture(entry, iconSize),
                         SizedBox(width: tiles ? 12 : 8),
                         Expanded(
@@ -414,6 +520,8 @@ class FolderView extends StatelessWidget {
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.center,
                       children: <Widget>[
+                        if (model.preferences['itemCheckboxes'])
+                          _checkbox(entry),
                         _picture(entry, iconSize),
                         if (renaming)
                           SizedBox(height: 28, child: renameField(entry))
@@ -434,6 +542,12 @@ class FolderView extends StatelessWidget {
       ),
     );
     // Every item drags; a folder also takes drops, lit while they hover.
+    final decorated = model.preferences['showFolderTips']
+        ? Tooltip(
+            message:
+                '${entry.name}\n${typeNameOf(entry, model.strings)}${entry.size == null ? '' : '\n${humanSize(entry.size!, model.strings)}'}',
+            child: tile)
+        : tile;
     return DragSource(
       data: () => dragOut(model, _dragPaths(entry)),
       allowedActions: const <DragAction>{DragAction.copy, DragAction.move},
@@ -445,9 +559,9 @@ class FolderView extends StatelessWidget {
               model: model,
               folder: entry.path,
               highlight: theme.accent.withAlpha(0x2E),
-              child: tile,
+              child: decorated,
             )
-          : tile,
+          : decorated,
     );
   }
 

@@ -25,6 +25,9 @@ const int logicalKeyPageUp = 0x21;
 const int logicalKeyPageDown = 0x22;
 const int logicalKeyInsert = 0x2D;
 
+/// OEM comma key, normalized to the same value on every backend.
+const int logicalKeyComma = 0xBC;
+
 /// Letters and digits are their uppercase ASCII codes, as virtual keys are.
 const int logicalKeyA = 0x41;
 const int logicalKeyB = 0x42;
