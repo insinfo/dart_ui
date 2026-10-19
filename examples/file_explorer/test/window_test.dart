@@ -87,6 +87,32 @@ void main() {
   setUpAll(FrameworkFonts.install);
   tearDownAll(FontRegistry.instance.reset);
 
+  test(
+      'screenshot chords preserve the view and layout changes release grid focus',
+      () async {
+    final h = _Harness();
+    addTearDown(h.dispose);
+    await h.settle();
+    final body = h.renders<RenderDataGridBody>().single;
+    expect(body.focusNode!.requestFocus(), isTrue);
+    for (final modifiers in <Set<KeyModifier>>[
+      {KeyModifier.meta, KeyModifier.shift},
+      {KeyModifier.meta, KeyModifier.control, KeyModifier.shift},
+    ]) {
+      h.key(logicalKeyDigit4, modifiers: modifiers);
+      await h.settle();
+      expect(h.model.viewMode, ViewMode.details);
+    }
+    h.key(logicalKeyDigit4,
+        modifiers: {KeyModifier.control, KeyModifier.shift});
+    await h.settle();
+    expect(h.model.viewMode, ViewMode.smallIcons);
+    // Previously the router retained the discarded DataGrid's target; even
+    // the next modifier press read State.widget after dispose and threw.
+    h.key(0x11, modifiers: {KeyModifier.control});
+    await h.settle();
+  });
+
   test('Folder Options keeps drafts isolated, applies and can clear history',
       () async {
     final h = _Harness();

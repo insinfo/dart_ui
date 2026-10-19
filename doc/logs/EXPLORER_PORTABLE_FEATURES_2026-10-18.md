@@ -101,7 +101,9 @@ A interação com checkboxes passa pelo roteador real de eventos.
 
 - macOS: análise estática limpa, 58 testes do exemplo e build AOT `.app`.
 - Windows 11 ARM64: Dart 3.6.2 nativo, análise limpa, 796 testes de framework
-  selecionados e 58 testes do exemplo; executável AOT GUI compilado e aberto.
+  selecionados e 58 testes do exemplo; executável AOT GUI compilado e aberto
+  com `--cpu`. A sondagem OpenGL da VM tem uma limitação registrada no
+  [relatório de foco/tooltip](EXPLORER_INPUT_TOOLTIP_2026-10-18.md).
 - Linux ARM64: análise, suíte completa do framework e exemplo executados na VM;
   os totais finais são registrados com a correção das bordas no relatório abaixo.
 

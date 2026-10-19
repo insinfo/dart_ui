@@ -124,11 +124,15 @@ class FocusNode {
 
   set target(KeyboardEventTarget? value) {
     if (identical(value, _target)) return;
+    final KeyboardEventTarget? previous = _target;
     _target = value;
     // If this node holds focus right now, the router is still pointing at the
     // previous target - which is about to stop receiving keys for a control
     // the user can see is focused.
-    if (_hasPrimaryFocus) _manager?._retarget(this);
+    if (_hasPrimaryFocus) {
+      if (previous != null) _manager?._router?.clearFocus(previous);
+      _manager?._retarget(this);
+    }
   }
 
   final List<FocusNode> _children = <FocusNode>[];

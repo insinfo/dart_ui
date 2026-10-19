@@ -199,6 +199,22 @@ void main() {
   });
 
   group('router integration and window activation', () {
+    test('removing a focused target stops keys reaching its old render object',
+        () {
+      final router = KeyboardRouter();
+      final manager = FocusManager(router: router);
+      addTearDown(manager.dispose);
+      final target = _Target();
+      final node = FocusNode(target: target);
+      manager.rootScope.add(node);
+      node.requestFocus();
+      node.target = null;
+      expect(router.focusedTarget, isNull);
+      node.dispose();
+      expect(router.route(_key(65)), isFalse);
+      expect(target.events, isEmpty);
+    });
+
     test('focus points the keyboard router at the node target', () {
       final router = KeyboardRouter();
       final manager = FocusManager(router: router);

@@ -589,11 +589,20 @@ final class RenderTooltip extends RenderBox with ControlBehavior {
   @override
   bool get focusOnPointerDown => false;
 
+  List<String> get _lines =>
+      _message.replaceAll('\r\n', '\n').replaceAll('\r', '\n').split('\n');
+
   @override
   void performLayout() {
-    final Size text = measureLabel(_message);
+    var width = 0.0;
+    var height = 0.0;
+    for (final line in _lines) {
+      final text = measureLabel(line);
+      if (text.width > width) width = text.width;
+      height += text.height;
+    }
     size = constraints.constrain(
-      Size(text.width + theme.effectiveControlPadding * 2, text.height + 8),
+      Size(width + theme.effectiveControlPadding * 2, height + 8),
     );
   }
 
@@ -616,7 +625,22 @@ final class RenderTooltip extends RenderBox with ControlBehavior {
     if (!_platformOutline) {
       paintRoundedBorder(list, rect, theme.border, theme.cornerRadius);
     }
-    paintCenteredLabel(list, _message, rect, theme.foreground);
+    final lines = _lines;
+    if (lines.length == 1) {
+      paintCenteredLabel(list, lines.single, rect, theme.foreground);
+    } else {
+      final heights = [for (final line in lines) measureLabel(line).height];
+      final height = heights.fold<double>(0, (sum, h) => sum + h);
+      final padding = theme.effectiveControlPadding;
+      var top = rect.top + (rect.height - height) / 2;
+      for (var i = 0; i < lines.length; i++) {
+        final row = Rect.fromLTWH(rect.left, top, rect.width, heights[i]);
+        paintLabel(list, lines[i], Offset(rect.left + padding, labelTopIn(row)),
+            theme.foreground,
+            maxWidth: rect.width - padding * 2);
+        top += heights[i];
+      }
+    }
   }
 
   @override

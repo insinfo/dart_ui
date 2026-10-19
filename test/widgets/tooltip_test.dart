@@ -22,6 +22,8 @@ import 'package:dart_ui/src/geometry/offset.dart';
 import 'package:dart_ui/src/geometry/rect.dart';
 import 'package:dart_ui/src/geometry/size.dart';
 import 'package:dart_ui/src/graphics/display_list.dart';
+import 'package:dart_ui/src/graphics/display_list_opcodes.dart';
+import 'package:dart_ui/src/graphics/display_list_reader.dart';
 import 'package:dart_ui/src/layout/box_constraints.dart';
 import 'package:dart_ui/src/layout/pipeline.dart';
 import 'package:dart_ui/src/layout/render_box.dart';
@@ -51,6 +53,32 @@ void main() {
     );
   });
   tearDownAll(FontRegistry.instance.reset);
+
+  test('multiline tooltips lay out separate rows without newline glyphs', () {
+    for (final separator in ['\n', '\r\n', '\r']) {
+      final tip = RenderTooltip(message: 'doc${separator}Folder')
+        ..theme = ThemeData.neutralLight;
+      tip.layout(BoxConstraints(maxWidth: 400, maxHeight: 300));
+      expect(
+          tip.size.height,
+          tip.measureLabel('doc').height +
+              tip.measureLabel('Folder').height +
+              8);
+      final list = DisplayList();
+      tip.paint(list, Offset.zero);
+      final reader = DisplayListReader(list);
+      final origins = <double>[];
+      while (reader.moveNext()) {
+        if (reader.opcode != opDrawGlyphRun) continue;
+        origins.add(reader.floatAt(1));
+        for (var i = 0; i < reader.glyphCount; i++) {
+          expect(reader.glyphIdAt(i), isNot(0));
+        }
+      }
+      expect(origins, hasLength(2));
+      expect(origins.last, greaterThan(origins.first));
+    }
+  });
 
   test('native opaque tooltip corners are filled and alpha popups stay clear',
       () async {

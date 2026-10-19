@@ -7,7 +7,7 @@ import '../explorer_model.dart';
 import '../location.dart';
 import 'command_context.dart';
 
-/// Windows 11's layouts and their keys, Ctrl+Shift+1 to 7.
+/// Windows 11's layouts and their keys, Ctrl+Shift+1 to 8.
 const List<(String, String, ViewMode, int)> kViewModeCommands =
     <(String, String, ViewMode, int)>[
   ('view.extraLargeIcons', 'Extra large icons', ViewMode.extraLargeIcons, 1),
@@ -88,8 +88,10 @@ List<CommandSpec> viewCommands(ExplorerContext context) {
       CommandSpec(
         id: id,
         label: label,
+        // Command+Shift+3/4/5 belong to macOS screenshots. Keep the Windows
+        // layout shortcuts on Control on every platform.
         shortcut: KeyGesture(logicalKeyDigit1 + digit - 1,
-            command: true, shift: true),
+            control: true, shift: true),
         checked: (_) => model.viewMode == mode,
         run: (_) {
           model.viewMode = mode;
