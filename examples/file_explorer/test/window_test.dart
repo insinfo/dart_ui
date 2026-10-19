@@ -144,6 +144,129 @@ void main() {
   setUpAll(FrameworkFonts.install);
   tearDownAll(FontRegistry.instance.reset);
 
+  test('column chooser remains usable at the minimum window size', () async {
+    final h = _Harness();
+    addTearDown(h.dispose);
+    await h.settle();
+    h.owner.pipelineOwner.rootConstraints =
+        BoxConstraints.tight(const Size(640, 420));
+    h.registry.execute('column.choose');
+    await h.settle();
+    expect(
+        h.renders<RenderDialog>().single.size.height, lessThanOrEqualTo(420));
+    expect(h.renders<RenderNumberBox>().single.size.height, greaterThan(0));
+    h.key(logicalKeyEscape);
+    await h.settle();
+    expect(h.renders<RenderDialog>(), isEmpty);
+  });
+
+  test(
+      'column chooser isolates drafts, reorders columns and applies typed widths',
+      () async {
+    final h = _Harness();
+    addTearDown(h.dispose);
+    await h.settle();
+    RenderToggle check(String label) {
+      final annotation = h.renders<RenderSemanticsAnnotations>().firstWhere(
+          (s) =>
+              s.describeSemantics().role == SemanticsRole.checkbox &&
+              s.describeSemantics().label == label);
+      final found = <RenderToggle>[];
+      void walk(RenderBox node) {
+        if (node is RenderToggle) found.add(node);
+        node.visitChildren(walk);
+      }
+
+      walk(annotation);
+      return found.single;
+    }
+
+    void button(String name) =>
+        h.renders<RenderButton>().firstWhere((b) => b.label == name).activate();
+    Future<void> open() async {
+      h.registry.execute('column.choose');
+      await h.settle();
+      expect(h.renders<RenderDialog>().single.title, 'Choose columns');
+    }
+
+    await open();
+    expect(check('Name').enabled, isFalse);
+    check('File extension').activate();
+    await h.settle();
+    expect(h.model.columns, isNot(contains(DetailsColumn.extension)));
+    button('Cancel');
+    await h.settle();
+    expect(h.model.columns, isNot(contains(DetailsColumn.extension)));
+    await open();
+    check('File extension').activate();
+    await h.settle();
+    for (var i = 0; i < DetailsColumn.values.length; i++) {
+      final up =
+          h.renders<RenderButton>().firstWhere((b) => b.label == 'Move Up');
+      if (!up.enabled) break;
+      up.activate();
+      await h.settle();
+    }
+    final number = h.renders<RenderNumberBox>().single;
+    expect(number.focusNode!.requestFocus(), isTrue);
+    h.owner.dispatchTextInputEvent(TextInputEvent(
+        windowId: const NativeWindowId(1),
+        generation: 1,
+        timestamp: Duration.zero,
+        text: '245'));
+    h.key(logicalKeyEnter);
+    await h.settle();
+    expect(h.model.columnWidths['extension'], isNull);
+    button('Apply');
+    await h.settle();
+    expect(h.model.columns[1], DetailsColumn.extension);
+    expect(h.model.columnWidths['extension'], 245);
+    button('Cancel');
+    await h.settle();
+    final header = h.renders<RenderDataGridHeader>().single;
+    expect(header.columns[1].identity, 'extension');
+    expect(header.columns[1].width, 245);
+    await open();
+    final search = h.renders<RenderTextField>().last;
+    expect(search.focusNode!.requestFocus(), isTrue);
+    h.owner.dispatchTextInputEvent(TextInputEvent(
+        windowId: const NativeWindowId(1),
+        generation: 1,
+        timestamp: Duration.zero,
+        text: 'Link target'));
+    await h.settle();
+    expect(
+        h
+            .renders<RenderSemanticsAnnotations>()
+            .where((s) => s.describeSemantics().role == SemanticsRole.checkbox)
+            .map((s) => s.describeSemantics().label),
+        ['Link target']);
+    check('Link target').activate();
+    await h.settle();
+    button('OK');
+    await h.settle();
+    expect(h.model.columns, contains(DetailsColumn.linkTarget));
+    await open();
+    button('Restore defaults');
+    await h.settle();
+    expect(h.model.columns, contains(DetailsColumn.linkTarget),
+        reason: 'reset is also a draft');
+    button('OK');
+    await h.settle();
+    expect(h.model.columns, [
+      DetailsColumn.name,
+      DetailsColumn.dateModified,
+      DetailsColumn.type,
+      DetailsColumn.size
+    ]);
+    expect(h.model.columnWidths, isEmpty);
+    h.registry.execute('column.fitAll');
+    await h.settle();
+    expect(h.model.columnWidths.keys.toSet(), {'name', 'date', 'type', 'size'});
+    expect(
+        h.model.columnWidths.values.every((v) => v >= 60 && v <= 2000), isTrue);
+  });
+
   test(
       'navigation divider resizes, clamps, hides and retains the preferred width',
       () async {

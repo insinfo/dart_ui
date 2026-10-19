@@ -8,12 +8,14 @@ import 'dart:async';
 
 import 'package:dart_ui/dart_ui.dart';
 
+import '../engine/columns.dart';
 import '../engine/explorer_commands.dart';
 import '../engine/explorer_host.dart';
 import '../engine/explorer_model.dart';
 import '../engine/file_system.dart';
 import '../engine/location.dart';
 import 'bar_button.dart';
+import 'column_options.dart' as column_options;
 import 'command_icons.dart';
 import 'details_pane.dart';
 import 'folder_options.dart' as options;
@@ -131,6 +133,20 @@ class ExplorerWindowState extends State<ExplorerWindow>
 
   @override
   void showFolderOptions() => unawaited(showFolderOptionsDialog());
+
+  @override
+  void showColumnOptions() =>
+      unawaited(column_options.showColumnOptions(context, model));
+
+  @override
+  void fitAllColumns() {
+    final widths = Map<String, double>.of(model.columnWidths);
+    for (final column in model.visibleColumns) {
+      widths[column.id] = column_options.measureColumnWidth(
+          model, Theme.of(context), column, model.tab.visible);
+    }
+    model.configureColumns(model.visibleColumns, widths);
+  }
 
   @override
   void renameSelection() {

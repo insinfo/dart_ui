@@ -2,6 +2,7 @@
 /// count - `file2` before `file10` - and without regard to case.
 library;
 
+import 'columns.dart';
 import 'file_system.dart';
 import 'file_types.dart';
 import 'location.dart';
@@ -59,8 +60,33 @@ List<FileEntry> sortEntries(List<FileEntry> entries, SortField field,
         naturalCompare(typeNameOf(a, strings), typeNameOf(b, strings)),
       SortField.dateCreated =>
         (a.created ?? DateTime(0)).compareTo(b.created ?? DateTime(0)),
+      SortField.dateChanged =>
+        (a.changed ?? DateTime(0)).compareTo(b.changed ?? DateTime(0)),
       SortField.extension => naturalCompare(a.extension, b.extension),
-      SortField.size => (a.size ?? -1).compareTo(b.size ?? -1),
+      SortField.dateAccessed =>
+        (a.accessed ?? DateTime(0)).compareTo(b.accessed ?? DateTime(0)),
+      SortField.folderPath => naturalCompare(a.folderPath, b.folderPath),
+      SortField.fullPath => naturalCompare(a.path, b.path),
+      SortField.attributes =>
+        naturalCompare(entryAttributes(a), entryAttributes(b)),
+      SortField.permissions =>
+        naturalCompare(a.permissions ?? '', b.permissions ?? ''),
+      SortField.hidden => (a.isHidden ? 1 : 0).compareTo(b.isHidden ? 1 : 0),
+      SortField.readOnly => (a.isReadOnly == null
+              ? -1
+              : a.isReadOnly!
+                  ? 1
+                  : 0)
+          .compareTo(b.isReadOnly == null
+              ? -1
+              : b.isReadOnly!
+                  ? 1
+                  : 0),
+      SortField.linkTarget =>
+        naturalCompare(a.linkTarget ?? '', b.linkTarget ?? ''),
+      SortField.size ||
+      SortField.sizeBytes =>
+        (a.size ?? -1).compareTo(b.size ?? -1),
     };
     final int ordered = primary != 0 ? primary : byName(a, b);
     return ascending ? ordered : -ordered;

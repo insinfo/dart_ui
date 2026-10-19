@@ -335,7 +335,8 @@ void main() {
       DetailsColumn.dateCreated,
     ]);
     m.toggleColumn(DetailsColumn.type);
-    expect(m.columns.indexOf(DetailsColumn.type), 2);
+    expect(m.columns.last, DetailsColumn.type,
+        reason: 'enabling a column preserves the chosen order');
   });
 
   test('Properties: a folder counted to the bottom, as it is walked', () async {

@@ -6,6 +6,7 @@ library;
 
 import 'dart:async';
 
+import 'columns.dart';
 import 'explorer_tab.dart';
 import 'file_system.dart';
 import 'file_types.dart';
@@ -79,6 +80,17 @@ final class ExplorerModel {
   bool get showProtected => preferences['showProtected'];
   set showProtected(bool value) => preferences['showProtected'] = value;
 
+  bool _columnsConfigured = false;
+
+  /// Search adds its location column until the user explicitly chooses columns.
+  List<DetailsColumn> get visibleColumns => [
+        ...columns,
+        if (!_columnsConfigured &&
+            tab.location is SearchLocation &&
+            !columns.contains(DetailsColumn.folderPath))
+          DetailsColumn.folderPath,
+      ];
+
   /// The columns Details shows, in order.
   final List<DetailsColumn> columns = <DetailsColumn>[
     DetailsColumn.name,
@@ -90,11 +102,37 @@ final class ExplorerModel {
   /// Shows or hides [column]; Name stays.
   void toggleColumn(DetailsColumn column) {
     if (column == DetailsColumn.name) return;
+    _defaultView ??= viewSettings;
+    final current = visibleColumns;
+    columns
+      ..clear()
+      ..addAll(current);
+    _columnsConfigured = true;
     if (!columns.remove(column)) {
-      columns
-        ..add(column)
-        ..sort(
-            (DetailsColumn a, DetailsColumn b) => a.index.compareTo(b.index));
+      columns.add(column);
+    }
+    notify();
+  }
+
+  /// Applies a complete draft in one notification; Name remains first.
+  void configureColumns(
+      Iterable<DetailsColumn> visible, Map<String, double> widths) {
+    _defaultView ??= viewSettings;
+    final nextColumns = visible.toList();
+    final nextWidths = Map<String, double>.of(widths);
+    _columnsConfigured = true;
+    columns
+      ..clear()
+      ..add(DetailsColumn.name);
+    for (final column in nextColumns) {
+      if (!columns.contains(column)) columns.add(column);
+    }
+    columnWidths.clear();
+    final ids = DetailsColumn.values.map((c) => c.id).toSet();
+    for (final entry in nextWidths.entries) {
+      if (ids.contains(entry.key) && entry.value.isFinite) {
+        columnWidths[entry.key] = entry.value.clamp(60, 2000).toDouble();
+      }
     }
     notify();
   }
@@ -133,9 +171,11 @@ final class ExplorerModel {
         'sort': sortField.name,
         'ascending': ascending,
         'columns': columns.map((c) => c.name).toList(),
+        'columnsConfigured': _columnsConfigured,
       };
 
   void _readView(Map<String, Object?> view) {
+    _columnsConfigured = view['columnsConfigured'] == true;
     columnWidths.clear();
     final widths = view['widths'];
     if (widths is Map) {

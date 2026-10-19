@@ -9,6 +9,7 @@ import 'dart:io';
 import 'package:dart_ui/dart_ui.dart' show FileWatcher, Shell, Trash;
 
 import '../engine/file_system.dart';
+import 'windows_file_attributes.dart';
 import 'zip_operations.dart' as zip;
 
 /// [FileSystem] on the machine's own disks.
@@ -98,16 +99,35 @@ final class IoFileSystem
       if (stat.type == FileSystemEntityType.notFound) return null;
       final String name = nameOf(entity.path);
       final bool folder = stat.type == FileSystemEntityType.directory;
+      final attributes = readWindowsFileAttributes(entity.path);
+      String? linkTarget;
+      if (entity is Link) {
+        try {
+          linkTarget = await entity.target();
+        } on FileSystemException {/* Unavailable target. */}
+      }
       return FileEntry(
         path: entity.path,
         name: name,
         isDirectory: folder,
         size: folder ? null : stat.size,
         modified: stat.modified,
-        created: stat.changed,
-        isHidden:
-            name.startsWith('.') || kSystemNames.contains(name.toLowerCase()),
-        isSystem: kSystemNames.contains(name.toLowerCase()),
+        // FileStat.changed is creation time only on Windows; elsewhere it is ctime.
+        created: Platform.isWindows ? stat.changed : null,
+        changed: Platform.isWindows ? null : stat.changed,
+        accessed: stat.accessed,
+        permissions: stat.modeString(),
+        nativeAttributes: attributes,
+        isReadOnly: attributes == null
+            ? (stat.mode & 0x92) == 0
+            : (attributes & 1) != 0,
+        isSymbolicLink: entity is Link,
+        linkTarget: linkTarget,
+        isHidden: name.startsWith('.') ||
+            kSystemNames.contains(name.toLowerCase()) ||
+            (attributes != null && (attributes & 2) != 0),
+        isSystem: kSystemNames.contains(name.toLowerCase()) ||
+            (attributes != null && (attributes & 4) != 0),
       );
     } on FileSystemException {
       return null;

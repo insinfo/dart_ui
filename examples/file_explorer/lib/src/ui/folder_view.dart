@@ -4,11 +4,13 @@ library;
 
 import 'package:dart_ui/dart_ui.dart';
 
+import '../engine/columns.dart';
 import '../engine/explorer_model.dart';
 import '../engine/explorer_tab.dart';
 import '../engine/file_system.dart';
 import '../engine/file_types.dart';
 import '../engine/location.dart';
+import 'column_options.dart' show measureColumnWidth;
 import 'drag_support.dart';
 import 'file_icon.dart';
 import 'selected_name_rename.dart';
@@ -218,26 +220,9 @@ class _FolderViewState extends State<FolderView> {
 
   Widget _details(ThemeData theme) {
     final List<FileEntry> items = tab.visible;
-    final bool search = tab.location is SearchLocation;
-    final List<DataGridColumn> columns = <DataGridColumn>[
-      for (final DetailsColumn c in model.columns) ...<DataGridColumn>[
-        _column(c),
-        if (search && c == DetailsColumn.name)
-          DataGridColumn(
-              title: model.strings.location, id: 'location', width: 260),
-      ],
-    ];
-    final List<SortField?> fieldOf = <SortField?>[
-      for (final DataGridColumn c in columns)
-        switch (c.identity) {
-          'name' => SortField.name,
-          'date' => SortField.dateModified,
-          'type' => SortField.type,
-          'size' => SortField.size,
-          'created' => SortField.dateCreated,
-          _ => null,
-        },
-    ];
+    final chosen = model.visibleColumns;
+    final List<DataGridColumn> columns = [for (final c in chosen) _column(c)];
+    final List<SortField> fieldOf = [for (final c in chosen) c.sortField];
     final int sortColumn = fieldOf.indexOf(model.sortField);
     return DataGrid(
       key: ValueKey(model.currentFolder ?? model.titleOf(tab.location)),
@@ -289,8 +274,7 @@ class _FolderViewState extends State<FolderView> {
                   ? DataGridSortDirection.ascending
                   : DataGridSortDirection.descending),
       onSortChanged: (DataGridSort sort) {
-        final SortField? field = fieldOf[sort.columnIndex];
-        if (field == null) return;
+        final field = fieldOf[sort.columnIndex];
         model.sortBy(field,
             ascending: sort.direction == DataGridSortDirection.ascending);
       },
@@ -315,18 +299,16 @@ class _FolderViewState extends State<FolderView> {
                 ),
               ],
             ),
-          'location' =>
-            _cell(theme, model.fs.parentOf(entry.path) ?? '', secondary),
-          'date' =>
-            _cell(theme, dateColumn(entry.modified, model.strings), secondary),
-          'created' =>
-            _cell(theme, dateColumn(entry.created, model.strings), secondary),
-          'type' => _cell(theme, typeNameOf(entry, model.strings), secondary),
-          _ => Align(
-              alignment: Alignment.centerRight,
-              child: _cell(
-                  theme, sizeColumn(entry.size, model.strings), secondary),
-            ),
+          _ => (chosen[column] == DetailsColumn.size ||
+                  chosen[column] == DetailsColumn.sizeBytes)
+              ? Align(
+                  alignment: Alignment.centerRight,
+                  child: _cell(
+                      theme,
+                      columnText(chosen[column], entry, model.strings),
+                      secondary))
+              : _cell(theme, columnText(chosen[column], entry, model.strings),
+                  secondary),
         };
       },
     );
@@ -405,54 +387,15 @@ class _FolderViewState extends State<FolderView> {
         },
       ));
 
-  DataGridColumn _column(DetailsColumn c) => switch (c) {
-        DetailsColumn.name => DataGridColumn(
-            title: model.strings.name,
-            id: 'name',
-            width: model.columnWidths['name'] ?? 320),
-        DetailsColumn.dateModified => DataGridColumn(
-            title: model.strings.dateModified,
-            id: 'date',
-            width: model.columnWidths['date'] ?? 170),
-        DetailsColumn.type => DataGridColumn(
-            title: model.strings.type,
-            id: 'type',
-            width: model.columnWidths['type'] ?? 170),
-        DetailsColumn.size => DataGridColumn(
-            title: model.strings.size,
-            id: 'size',
-            width: model.columnWidths['size'] ?? 100),
-        DetailsColumn.dateCreated => DataGridColumn(
-            title: model.strings.locale.startsWith('pt')
-                ? 'Data de criação'
-                : 'Date created',
-            id: 'created',
-            width: model.columnWidths['created'] ?? 170,
-            sortable: true),
-      };
+  DataGridColumn _column(DetailsColumn c) => DataGridColumn(
+      title: c.label(model.strings),
+      id: c.id,
+      width: model.columnWidths[c.id] ?? c.defaultWidth);
 
-  /// What column [id] needs to show every value whole - a double click on
-  /// its edge, as in File Explorer.
+  /// A double click on a column edge fits the same values the cells display.
   double? _fitWidth(ThemeData theme, String id, List<FileEntry> items) {
-    final ScaledTypeface? font = FontRegistry.instance.uiFont(theme.fontSize);
-    double measure(String text) => font == null
-        ? FontRegistry.estimatedSize(text, theme.fontSize).width
-        : uiTextPainter.measure(text, font).width;
-    var widest = 0.0;
-    for (final FileEntry e in items) {
-      final String text = switch (id) {
-        'name' => model.shownName(e),
-        'location' => model.fs.parentOf(e.path) ?? '',
-        'date' => dateColumn(e.modified, model.strings),
-        'created' => dateColumn(e.created, model.strings),
-        'type' => typeNameOf(e, model.strings),
-        _ => sizeColumn(e.size, model.strings),
-      };
-      final double w = measure(text);
-      if (w > widest) widest = w;
-    }
-    final double padding = theme.effectiveControlPadding * 2 + 8;
-    return (widest + padding + (id == 'name' ? 26 : 0)).clamp(60.0, 900.0);
+    final c = DetailsColumn.values.firstWhere((c) => c.id == id);
+    return measureColumnWidth(model, theme, c, items);
   }
 
   Widget _cell(ThemeData theme, String text, Color color) => Text(

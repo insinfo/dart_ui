@@ -10,6 +10,8 @@ abstract interface class ExplorerHost {
   void focusAddress();
 
   void showFolderOptions();
+  void showColumnOptions();
+  void fitAllColumns();
   void showCommands();
   void renameSelection();
   void openTerminal(String directory);
@@ -40,6 +42,10 @@ final class HeadlessExplorerHost implements ExplorerHost {
 
   @override
   void showCommands() => calls.add('commands');
+  @override
+  void showColumnOptions() => calls.add('columns');
+  @override
+  void fitAllColumns() => calls.add('fitColumns');
   @override
   void renameSelection() => calls.add('renameSelection');
   @override

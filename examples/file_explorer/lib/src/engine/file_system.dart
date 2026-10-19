@@ -14,6 +14,13 @@ final class FileEntry {
     this.size,
     this.modified,
     this.created,
+    this.accessed,
+    this.changed,
+    this.permissions,
+    this.nativeAttributes,
+    this.isReadOnly,
+    this.isSymbolicLink = false,
+    this.linkTarget,
     this.isHidden = false,
     this.isSystem = false,
   });
@@ -26,6 +33,25 @@ final class FileEntry {
   final int? size;
   final DateTime? modified;
   final DateTime? created;
+  final DateTime? accessed;
+  final DateTime? changed;
+  final String? permissions;
+  final int? nativeAttributes;
+  final bool? isReadOnly;
+  final bool isSymbolicLink;
+  final String? linkTarget;
+
+  /// Parent path without requiring file-system I/O, including drive roots.
+  String get folderPath {
+    final slash = path.lastIndexOf('/');
+    final backslash = path.lastIndexOf(r'\');
+    final index = slash > backslash ? slash : backslash;
+    if (index < 0) return '';
+    if (index == 0 || (index == 2 && path[1] == ':')) {
+      return path.substring(0, index + 1);
+    }
+    return path.substring(0, index);
+  }
 
   /// A dot file, or one the system marks hidden.
   final bool isHidden;

@@ -30,6 +30,7 @@ List<MenuSpecEntry> viewMenu(ExplorerStrings strings) => <MenuSpecEntry>[
         CommandItem(id),
       _,
       const CommandItem('view.compact'),
+      const CommandItem('column.choose'),
       SubmenuSpec(strings.menu('Show'), const <MenuSpecEntry>[
         CommandItem('view.navigationPane'),
         CommandItem('view.detailsPane'),
@@ -58,11 +59,17 @@ List<MenuSpecEntry> settingsMenu(ExplorerStrings strings) => <MenuSpecEntry>[
 
 /// The Details header's menu: the columns to show.
 const List<MenuSpecEntry> kColumnsMenu = <MenuSpecEntry>[
+  CommandItem('column.fitAll'),
+  _,
   CommandItem('column.name'),
   CommandItem('column.dateModified'),
   CommandItem('column.type'),
   CommandItem('column.size'),
   CommandItem('column.dateCreated'),
+  CommandItem('column.extension'),
+  CommandItem('column.folderPath'),
+  _,
+  CommandItem('column.choose'),
 ];
 
 /// ··· - what does not fit on the bar.

@@ -3,6 +3,7 @@ library;
 
 import 'package:dart_ui/commands.dart';
 
+import '../columns.dart';
 import '../explorer_model.dart';
 import '../location.dart';
 import 'command_context.dart';
@@ -141,24 +142,26 @@ List<CommandSpec> viewCommands(ExplorerContext context) {
         return model.showProtected;
       },
     ),
-    for (final (DetailsColumn column, String label)
-        in <(DetailsColumn, String)>[
-      (DetailsColumn.name, 'Name'),
-      (DetailsColumn.dateModified, 'Date modified'),
-      (DetailsColumn.type, 'Type'),
-      (DetailsColumn.size, 'Size'),
-      (DetailsColumn.dateCreated, 'Date created'),
-    ])
+    CommandSpec(
+        id: 'column.fitAll',
+        label: 'Size all columns to fit',
+        when: context.needsFolder,
+        run: (_) => context.host.fitAllColumns()),
+    CommandSpec(
+        id: 'column.choose',
+        label: 'Choose columns…',
+        run: (_) => context.host.showColumnOptions()),
+    for (final column in DetailsColumn.values)
       CommandSpec(
         id: 'column.${column.name}',
-        label: label,
+        label: column.englishLabel,
         description: 'Shows or hides the column in Details.',
-        checked: (_) => model.columns.contains(column),
+        checked: (_) => model.visibleColumns.contains(column),
         when: (_) =>
             column == DetailsColumn.name ? 'the name is always shown' : null,
         run: (_) {
           model.toggleColumn(column);
-          return model.columns.contains(column);
+          return model.visibleColumns.contains(column);
         },
       ),
     toggle('view.navigationPane', 'Navigation pane', () => model.navigationPane,
