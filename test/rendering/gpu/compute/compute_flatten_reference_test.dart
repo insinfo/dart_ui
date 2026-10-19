@@ -155,12 +155,15 @@ void main() {
         ..close();
       final Path path = builder.build();
       final ComputeCurveScene scene = ComputeCurveScene();
-      scene.appendPath(path);
+      // Retain the historical subdivision count for this numerical stability
+      // fixture. The tolerance scenes above exercise the current default.
+      const comparisonTolerance = 0.25;
+      scene.appendPath(path, flattenTolerance: comparisonTolerance);
       final ComputeFlattenReference reference =
           ComputeFlattenReference(scene.upload());
       final double direct = _deviationOfCurve(reference, 0);
 
-      final FlattenedPath flattened = path.flatten(kDefaultFlattenTolerance);
+      final FlattenedPath flattened = path.flatten(comparisonTolerance);
       var forward = 0.0;
       // Contour 0 spans the cubic's polyline; the closing edge is contour-level
       // and is not part of the curve being measured.

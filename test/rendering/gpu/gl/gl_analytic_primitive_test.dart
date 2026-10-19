@@ -22,7 +22,15 @@
 /// the same reason: a difference held on both sides of a boundary is asserted
 /// identically on both sides of it and nobody notices.
 ///
-/// ## The tolerances, and which side of them is wrong
+/// ## Historical tolerances
+///
+/// The figures below used the original quarter-pixel raster budget. The
+/// raster filler now uses 0.025 device pixels for smoother thin borders.
+/// The independent circle test retains that historical baseline explicitly
+/// and also requires the current polygon coverage error to stay below 0.025.
+/// The existing GPU difference limits remain conservative upper bounds.
+///
+/// ## Original measurements
 ///
 /// They are not zero, and the reason turned out to be the opposite of the one
 /// expected. The guess going in was that `0.5 - d` is only an approximation on
@@ -234,7 +242,8 @@ void main() {
   });
 
   group('which of the two is closer to the shape that was asked for', () {
-    test('the closed form is, by an order of magnitude', () {
+    test('both routes stay close to the circle after finer raster flattening',
+        () {
       _theClosedFormIsTheAccurateOne();
     });
   });
@@ -502,8 +511,13 @@ void _theClosedFormIsTheAccurateOne() {
     builder.build(),
     const Rect.fromLTRB(0, 0, 64, 64),
     coverage,
+    tolerance: 0.25, // Historical baseline for the analytic optimisation.
   );
+  final current = _SpanCoverage(64, 64);
+  ScanlineFiller()
+      .fill(builder.build(), const Rect.fromLTRB(0, 0, 64, 64), current);
 
+  var worstCurrent = 0.0;
   var worstAnalytic = 0.0;
   var worstDense = 0.0;
   // The top-left corner's quadrant only: that is where the arc is, and a
@@ -512,6 +526,8 @@ void _theClosedFormIsTheAccurateOne() {
   for (var y = 19; y < 33; y++) {
     for (var x = 5; x < 19; x++) {
       final double truth = _sampledCoverage(x, y, box, radius);
+      final error = (current.at(x, y) - truth).abs();
+      if (error > worstCurrent) worstCurrent = error;
       final double a = (analytic.coverageAt(x + 0.5, y + 0.5) - truth).abs();
       final double d = (coverage.at(x, y) - truth).abs();
       if (a > worstAnalytic) worstAnalytic = a;
@@ -519,6 +535,8 @@ void _theClosedFormIsTheAccurateOne() {
     }
   }
 
+  expect(worstCurrent, lessThan(0.025),
+      reason: 'the finer raster budget must improve the historical polygon');
   printOnFailure('worst error: closed form $worstAnalytic, '
       'flattened polygon $worstDense');
   expect(worstAnalytic, lessThan(0.04),

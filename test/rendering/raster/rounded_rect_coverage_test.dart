@@ -313,10 +313,12 @@ _CoverageImage _closedForm(Rect box, double radius, int width, int height) {
 
 _CoverageImage _flattened(Rect box, double radius, int width, int height) {
   final image = _CoverageImage(width, height);
+  // Preserve the historical quarter-pixel baseline measured in this test.
   ScanlineFiller().fill(
     (PathBuilder()..addRoundedRect(box, radius, radius)).build(),
     Rect.fromLTRB(0, 0, width.toDouble(), height.toDouble()),
     image,
+    tolerance: 0.25,
   );
   return image;
 }

@@ -36,7 +36,7 @@
 /// would have held, computed per cell instead of per pixel. The margin of one
 /// pixel around every non-rectilinear segment is what makes that safe - the
 /// filler's antialiasing reaches at most into the pixels an edge touches, and
-/// the flattening tolerance is a quarter of a pixel.
+/// the flattening tolerance is less than a quarter of a pixel.
 library;
 
 import 'dart:typed_data';

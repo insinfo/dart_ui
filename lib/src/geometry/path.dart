@@ -89,14 +89,13 @@ int pointsPerVerb(int verb) => switch (verb) {
 /// Maximum deviation, in the units the path is flattened into, between a
 /// curve and the polyline that replaces it.
 ///
-/// A quarter of a pixel. The unit matters: [Path.flattenTo] applies the
+/// One fortieth of a pixel. The unit matters: [Path.flattenTo] applies the
 /// caller's transform to the control points *before* choosing a segment
-/// count, so this is a quarter of a **device** pixel no matter how the path is
+/// count, so this is measured in **device** pixels no matter how the path is
 /// scaled - a path magnified ten times gets more segments rather than a
-/// visibly faceted outline. A quarter pixel is below what the coverage
-/// computation can express as a difference in alpha on all but the flattest
-/// curves, and halving it doubles the segment count for no visible gain.
-const double kDefaultFlattenTolerance = 0.25;
+/// visibly faceted outline. Thin antialiased borders need this tighter budget:
+/// a quarter-pixel approximation produces visible coverage errors at corners.
+const double kDefaultFlattenTolerance = 0.025;
 
 /// Upper bound on the segments one curve is flattened into.
 ///

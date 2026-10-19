@@ -43,7 +43,7 @@
 /// All of it in **device space**: the transform is applied to the control
 /// points before the count is chosen, so a magnified path gets more segments
 /// instead of a faceted outline. That is `Path.flattenTo`'s rule and the reason
-/// [kDefaultFlattenTolerance] is a quarter of a *device* pixel.
+/// [kDefaultFlattenTolerance] is measured in *device* pixels.
 ///
 /// **Segment positions - and the one deliberate difference.** `Path.flattenTo`
 /// walks a curve by forward differences: it holds an accumulator and adds a

@@ -144,10 +144,9 @@ final class StrokeStyle {
 /// Maximum deviation between the emitted outline and the true offset of the
 /// centreline.
 ///
-/// Well under `kDefaultFlattenTolerance`, and for a reason: this outline is
-/// flattened again by whoever fills it, and the two errors add. Spending a
-/// tenth of a pixel here leaves the quarter-pixel flattening budget intact
-/// instead of turning it into a third of a pixel that nobody accounted for.
+/// The offset approximation budget. The resulting outline is flattened again
+/// by the filler; that separate error is bounded by
+/// the rasteriser's own device-pixel tolerance.
 const double kDefaultStrokeTolerance = 0.1;
 
 /// Converts centrelines into outlines, reusing its buffers across calls.
