@@ -178,14 +178,8 @@ const int wmNcdestroy = 0x0082;
 
 /// `WM_NCHITTEST` - which part of the window a screen point is over.
 ///
-/// Deliberately **not** handled: the frame is the platform's here (the class
-/// uses `WS_OVERLAPPEDWINDOW`), so `DefWindowProcW`'s answer is the correct
-/// one, and it is what makes dragging the caption and resizing the border
-/// work. A custom title bar would have to claim it - and would then also owe
-/// `WM_NCCALCSIZE`. The audit pins the current behaviour instead: the default
-/// arm of `handleMessage` must keep returning DefWindowProc's hit-test code,
-/// because an arm that returned 0 (`HTNOWHERE`) would make the whole frame
-/// dead to the mouse.
+/// Standard frames delegate to DefWindowProcW. Hidden title bars retain
+/// caption command hit targets and restore the top sizing edge.
 const int wmNchittest = 0x0084;
 const int wmKeydown = 0x0100;
 const int wmKeyup = 0x0101;

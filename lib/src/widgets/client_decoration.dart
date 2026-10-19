@@ -20,10 +20,13 @@ import '../platform/input_events.dart';
 import '../platform/native_window.dart';
 import 'basic.dart';
 import 'gesture_detector.dart';
+import 'hover.dart';
 import 'icon.dart';
 import 'pointer_listener.dart';
 import 'proxy.dart' show Center, DecoratedBox;
+import 'semantics_widgets.dart';
 import 'theme.dart';
+import 'value_listenable_builder.dart';
 import 'widget.dart';
 
 /// Wraps [child] in a title bar and resize borders while
@@ -278,5 +281,67 @@ final class _WindowGlyph extends StatelessWidget {
         ],
       ),
     );
+  }
+}
+
+/// Caption controls for a client title bar. Native hit testing owns their clicks.
+final class WindowCaptionControls extends StatelessWidget {
+  const WindowCaptionControls({super.key, required this.window});
+
+  final ClientCaptionWindow window;
+
+  @override
+  Widget build(BuildContext context) => ValueListenableBuilder<WindowState>(
+      valueListenable: window.captionState,
+      builder: (context, state, _) => _controls(context, state));
+
+  Widget _controls(BuildContext context, WindowState state) {
+    final theme = Theme.of(context);
+    Widget button(
+            String label, Widget Function(Color) glyph, void Function() action,
+            {bool close = false, bool enabled = true}) =>
+        HoverBuilder(
+          builder: (context, hovered) => Semantics(
+              label: label,
+              button: true,
+              enabled: enabled,
+              onTap: enabled ? action : null,
+              child: GestureDetector(
+                behavior: GestureHitTestBehavior.opaque,
+                onTap: enabled ? action : null,
+                child: SizedBox(
+                    width: 46,
+                    height: 32,
+                    child: ColoredBox(
+                        color: hovered && enabled
+                            ? (close
+                                ? const Color(0xffc42b1c)
+                                : theme.hoverSurface)
+                            : const Color(0x00000000),
+                        child: Center(
+                            child: glyph(close && hovered
+                                ? const Color(0xffffffff)
+                                : theme.foreground)))),
+              )),
+        );
+    return Row(children: <Widget>[
+      button(
+          'Minimize',
+          (color) =>
+              SizedBox(width: 10, height: 1, child: ColoredBox(color: color)),
+          window.minimize,
+          enabled: window.canMinimize),
+      button(
+          'Maximize',
+          (color) => _WindowGlyph(
+              restore: state == WindowState.maximised,
+              extent: 10,
+              color: color),
+          window.toggleMaximized,
+          enabled: window.canMaximize),
+      button('Close', (color) => Icon(Icons.close, size: 20, color: color),
+          window.requestClose,
+          close: true),
+    ]);
   }
 }

@@ -21,6 +21,7 @@ import 'dart:ffi';
 
 import '../../foundation/diagnostics.dart';
 import '../../foundation/lifecycle.dart';
+import '../../foundation/value_notifier.dart';
 import '../../geometry/offset.dart';
 import '../../geometry/rect.dart';
 import '../../geometry/size.dart';
@@ -32,6 +33,7 @@ import 'uia/uia_bridge.dart';
 import 'win32_api.dart';
 import 'win32_constants.dart';
 import 'win32_coordinates.dart';
+import 'win32_custom_frame.dart';
 import 'win32_diagnostics.dart';
 import 'win32_dib_surface.dart';
 import 'win32_structs.dart';
@@ -247,7 +249,8 @@ final class Win32Window
         ActivatableWindow,
         EnableableWindow,
         LiveResizeWindow,
-        WindowStateControl {
+        WindowStateControl,
+        ClientCaptionWindow {
   Win32Window._({
     required Win32Api api,
     required Win32WindowClass windowClass,
@@ -257,6 +260,7 @@ final class Win32Window
     required int style,
     required int exStyle,
     required this.kind,
+    required Win32CustomFrame? customFrame,
     required Size? minimumSize,
     required Size? maximumSize,
     required int? backgroundColor,
@@ -268,7 +272,8 @@ final class Win32Window
         _style = style,
         _exStyle = exStyle,
         _minimumSize = minimumSize,
-        _maximumSize = maximumSize {
+        _maximumSize = maximumSize,
+        _customFrame = customFrame {
     _desktopDpi = api.systemDpi();
     // A brush of our own rather than the class's `hbrBackground`, and the two
     // are not interchangeable: a class brush is painted by `DefWindowProcW`
@@ -366,6 +371,9 @@ final class Win32Window
       style: style,
       exStyle: exStyle,
       kind: kind,
+      customFrame: decorated && options.titleBar == WindowTitleBar.hidden
+          ? Win32CustomFrame.tryCreate(api)
+          : null,
       minimumSize: options.minimumSize,
       maximumSize: options.maximumSize,
       backgroundColor: options.backgroundColor,
@@ -425,6 +433,21 @@ final class Win32Window
       if (dpi > 0) window._dpi = dpi;
     }
 
+    if (window._customFrame != null) {
+      window._customFrame.extend(handle);
+      api.setWindowPos(
+          handle,
+          0,
+          0,
+          0,
+          0,
+          0,
+          swpFramechanged |
+              swpNomove |
+              swpNosize |
+              swpNozorder |
+              swpNoactivate);
+    }
     final failure = window._applyClientBounds(
       logicalSize: options.size,
       logicalPosition: options.position,
@@ -438,6 +461,7 @@ final class Win32Window
     // exactly the requested size never gets one.
     window._ensureSurface();
 
+    window._updateSystemButtons();
     if (options.visible) window.show();
     return window;
   }
@@ -446,6 +470,93 @@ final class Win32Window
   /// tooltip. Decides its styles, whether showing it activates it, and whether
   /// closing it can end the application.
   final WindowKind kind;
+
+  final Win32CustomFrame? _customFrame;
+  final ValueNotifier<WindowState> _captionState =
+      ValueNotifier<WindowState>(WindowState.normal);
+
+  @override
+  ValueListenable<WindowState> get captionState => _captionState;
+  final ValueNotifier<Rect> _systemButtons = ValueNotifier<Rect>(Rect.zero);
+
+  @override
+  bool get isTitleBarHidden => _customFrame != null;
+
+  @override
+  ValueNotifier<Rect> get systemButtons => _systemButtons;
+
+  @override
+  double get titleBarHeight => 40;
+
+  @override
+  bool beginMove() {
+    if (_hwnd == 0 ||
+        !isTitleBarHidden ||
+        _state == WindowState.fullscreen ||
+        !_heldButtons.contains(PointerButton.primary)) {
+      return false;
+    }
+    _api.releaseCapture();
+    return _api.postMessageW(_hwnd, _wmNclbuttondown, htCaption,
+            _captionScreenPoint(_lastPointerPosition)) !=
+        0;
+  }
+
+  int _captionScreenPoint(Offset local) {
+    final screen = clientToScreen(local);
+    return ((screen.dx * renderScale).round() & 0xffff) |
+        (((screen.dy * renderScale).round() & 0xffff) << 16);
+  }
+
+  @override
+  bool showWindowMenu(Offset local) =>
+      _api.postMessageW(_hwnd, 0x00A5, htCaption, _captionScreenPoint(local)) !=
+      0;
+
+  @override
+  void toggleMaximized() => requestState(_state == WindowState.maximised
+      ? WindowState.normal
+      : WindowState.maximised);
+
+  void _updateSystemButtons() {
+    if (_hwnd == 0 || _customFrame == null) return;
+    if (_state == WindowState.fullscreen) {
+      _systemButtons.value = Rect.zero;
+      return;
+    }
+    _systemButtons.value = Rect.fromLTWH(clientSize.width - 138, 0, 138, 32);
+  }
+
+  @override
+  bool get canMinimize => (_style & wsMinimizebox) != 0;
+
+  @override
+  bool get canMaximize => (_style & wsMaximizebox) != 0;
+
+  @override
+  void minimize() => requestState(WindowState.minimised);
+
+  @override
+  void requestClose() => _api.postMessageW(_hwnd, wmClose, 0, 0);
+
+  int _frameBorderPixels() {
+    var border = 0;
+    _withScratchRect((rect) {
+      rect.ref
+        ..left = 0
+        ..top = 0
+        ..right = 0
+        ..bottom = 0;
+      _api.adjustWindowRect(rect, _style, _exStyle, _dpi);
+      border = -rect.ref.left;
+    });
+    return border;
+  }
+
+  /// Keep the platform's side and bottom borders, replacing only its caption.
+  void _adjustCustomClientRect(Pointer<Win32Rect> rect) {
+    if (_customFrame != null && _beforeFullscreen == null) rect.ref.top = -1;
+  }
 
   final Win32Api _api;
   final Win32WindowClass _class;
@@ -890,6 +1001,8 @@ final class Win32Window
   void _setState(WindowState next) {
     if (next == _state) return;
     _state = next;
+    _captionState.value = next;
+    _updateSystemButtons();
     _emit(WindowStateChangedEvent(
       windowId: id,
       generation: _generation.current,
@@ -1099,7 +1212,20 @@ final class Win32Window
   ///
   /// Internal: public only because the router lives in another library.
   int handleMessage(int hwnd, int msg, int wParam, int lParam) {
+    final customFrame = _beforeFullscreen == null ? _customFrame : null;
     switch (msg) {
+      case 0x0083: // WM_NCCALCSIZE: the first RECT exists for both wParam forms.
+        if (customFrame == null) {
+          return _api.defWindowProcW(hwnd, msg, wParam, lParam);
+        }
+        final rect = Pointer<Win32Rect>.fromAddress(lParam);
+        final top = rect.ref.top;
+        final result = _api.defWindowProcW(hwnd, msg, wParam, lParam);
+        rect.ref.top = top +
+            ((_api.getWindowLongPtrW(hwnd, gwlStyle) & 0x01000000) != 0
+                ? _frameBorderPixels()
+                : 1);
+        return result;
       case wmErasebkgnd:
         return _onEraseBackground(wParam);
 
@@ -1146,6 +1272,7 @@ final class Win32Window
         return _onDpiChanged(wParam, lParam);
 
       case wmActivate:
+        customFrame?.extend(hwnd);
         // A half-delivered surrogate pair cannot survive the window losing the
         // keyboard: its low half is going to another window, and keeping the
         // high half would fuse it onto whatever is typed here next.
@@ -1205,6 +1332,46 @@ final class Win32Window
         // draggable and the border resizable (see the audit in
         // `win32_constants.dart`).
         if (kind == WindowKind.tooltip) return _htTransparent;
+        if (customFrame != null) {
+          final point = Offset(win32SignedLoWord(lParam) / renderScale,
+              win32SignedHiWord(lParam) / renderScale);
+          final local = screenToClient(point);
+          final buttons = _systemButtons.value;
+          if (buttons.contains(local)) {
+            if (local.dx >= buttons.right - 46) return 20; // HTCLOSE
+            if (local.dx >= buttons.right - 92) {
+              return canMaximize ? 9 : htClient; // HTMAXBUTTON enables Snap.
+            }
+            return canMinimize ? 8 : htClient; // HTMINBUTTON
+          }
+          final border = _frameBorderPixels();
+          if (_state != WindowState.maximised &&
+              (_style & wsThickframe) != 0 &&
+              local.dy >= 0 &&
+              local.dy * renderScale < border - 1) {
+            if (local.dx * renderScale < border) return 13;
+            if (local.dx >= clientSize.width - border / renderScale) return 14;
+            return 12;
+          }
+        }
+        return _api.defWindowProcW(hwnd, msg, wParam, lParam);
+
+      case 0x00A0: // WM_NCMOUSEMOVE uses screen pixels, not client pixels.
+        if (customFrame != null &&
+            (wParam == 8 || wParam == 9 || wParam == 20)) {
+          _withScratchPoint((point) {
+            point.ref
+              ..x = win32SignedLoWord(lParam)
+              ..y = win32SignedHiWord(lParam);
+            _api.screenToClient(hwnd, point);
+            _onPointerMove(
+                (point.ref.x & 0xffff) | ((point.ref.y & 0xffff) << 16),
+                nonClient: true);
+          });
+        }
+        return _api.defWindowProcW(hwnd, msg, wParam, lParam);
+      case 0x02A2: // WM_NCMOUSELEAVE
+        if (customFrame != null) _onPointerLeave();
         return _api.defWindowProcW(hwnd, msg, wParam, lParam);
 
       case _wmNclbuttondown:
@@ -1439,15 +1606,17 @@ final class Win32Window
   void attachHandle(int hwnd) => _hwnd = hwnd;
 
   bool _trackingMouse = false;
+  bool _trackingNonClient = false;
 
-  int _onPointerMove(int lParam) {
-    if (!_trackingMouse) {
+  int _onPointerMove(int lParam, {bool nonClient = false}) {
+    if (!_trackingMouse || _trackingNonClient != nonClient) {
       _trackingMouse = true;
+      _trackingNonClient = nonClient;
       final tme = _api.allocator<TrackMouseEventStruct>();
       try {
         tme.ref
           ..cbSize = sizeOf<TrackMouseEventStruct>()
-          ..dwFlags = tmeLeave
+          ..dwFlags = tmeLeave | (nonClient ? 0x10 : 0)
           ..hwndTrack = _hwnd
           ..dwHoverTime = 0;
         _api.trackMouseEvent(tme);
@@ -1502,6 +1671,8 @@ final class Win32Window
     // of the window freezes it, which is the same bug one layer down.
     if (_heldButtons.isEmpty && _hwnd != 0) _api.setCapture(_hwnd);
     _heldButtons.add(button);
+    _lastPointerPosition = _space.physicalToLogical(
+        win32SignedLoWord(lParam), win32SignedHiWord(lParam));
     _emit(
       PointerDownEvent(
         windowId: id,
@@ -1976,6 +2147,7 @@ final class Win32Window
 
     _pixelWidth = width;
     _pixelHeight = height;
+    _updateSystemButtons();
     // The surfaces are about to be freed, so everything stamped with the old
     // generation is now stale by definition.
     _generation.invalidate();
@@ -2158,6 +2330,7 @@ final class Win32Window
         ..right = pixels.width
         ..bottom = pixels.height;
       if (_api.adjustWindowRect(rect, _style, _exStyle, _dpi) == 0) return;
+      _adjustCustomClientRect(rect);
       width = rect.ref.right - rect.ref.left;
       height = rect.ref.bottom - rect.ref.top;
     });
@@ -2475,6 +2648,7 @@ final class Win32Window
         );
         return;
       }
+      _adjustCustomClientRect(rect);
       width = rect.ref.right - rect.ref.left;
       height = rect.ref.bottom - rect.ref.top;
       if (logicalPosition == null) {
@@ -2563,6 +2737,8 @@ final class Win32Window
   void onDispose() {
     _resources.dispose();
     _releaseSurface();
+    _systemButtons.dispose();
+    _captionState.dispose();
   }
 
   void _emit(PlatformWindowEvent event) {

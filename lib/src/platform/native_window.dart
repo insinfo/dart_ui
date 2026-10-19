@@ -414,8 +414,8 @@ abstract interface class HiddenTitleBarWindow {
   /// ones that asked for it answer true.
   bool get isTitleBarHidden;
 
-  /// Where the platform's own window buttons sit over the client area, in
-  /// logical client coordinates - macOS's three buttons at the top left -
+  /// Where the window's caption controls belong over the client area, in
+  /// logical client coordinates - macOS at the top left, Windows at the right -
   /// or [Rect.zero] where there are none (in full screen, or on a platform
   /// whose application must draw its own).
   ValueNotifier<Rect> get systemButtons;
@@ -430,6 +430,19 @@ abstract interface class HiddenTitleBarWindow {
 
   /// What a double click on a title bar does: zoom, or restore.
   void toggleMaximized();
+}
+
+/// A hidden title bar whose caption controls are painted by the framework.
+///
+/// The native frame still owns caption hit testing, system commands and Snap.
+/// `WindowDragArea` draws the controls inside [HiddenTitleBarWindow.systemButtons].
+abstract interface class ClientCaptionWindow implements HiddenTitleBarWindow {
+  ValueListenable<WindowState> get captionState;
+  bool get canMinimize;
+  bool get canMaximize;
+  bool showWindowMenu(Offset position);
+  void minimize();
+  void requestClose();
 }
 
 /// A window whose operating-system handle can be passed to native UI.

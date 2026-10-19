@@ -464,22 +464,34 @@ class ExplorerWindowState extends State<ExplorerWindow>
     if (bar == null) return _tabs(theme, leading: 8, height: 40);
     return ValueListenableBuilder<Rect>(
       valueListenable: bar.systemButtons,
-      builder: (BuildContext context, Rect buttons, _) => WindowDragArea(
-        child: _tabs(
-          theme,
-          leading: buttons.isEmpty ? 8 : buttons.right + 14,
-          height: bar.titleBarHeight > 40 ? bar.titleBarHeight : 40,
+      builder: (BuildContext context, Rect buttons, _) => LayoutBuilder(
+        builder: (BuildContext context, BoxConstraints constraints) =>
+            WindowDragArea(
+          child: _tabs(
+            theme,
+            leading:
+                buttons.isEmpty || buttons.center.dx >= constraints.maxWidth / 2
+                    ? 8
+                    : buttons.right + 14,
+            trailing:
+                buttons.isEmpty || buttons.center.dx < constraints.maxWidth / 2
+                    ? 0
+                    : (constraints.maxWidth - buttons.left + 8),
+            height: bar.titleBarHeight > 40 ? bar.titleBarHeight : 40,
+          ),
         ),
       ),
     );
   }
 
   Widget _tabs(ThemeData theme,
-          {required double leading, required double height}) =>
+          {required double leading,
+          required double height,
+          double trailing = 0}) =>
       SizedBox(
         height: height,
         child: Padding(
-          padding: EdgeInsets.only(left: leading, top: 4),
+          padding: EdgeInsets.only(left: leading, right: trailing, top: 4),
           child: Align(
             alignment: Alignment.bottomLeft,
             child: DocumentTabStrip(
