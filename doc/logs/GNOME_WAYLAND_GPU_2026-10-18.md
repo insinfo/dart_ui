@@ -44,6 +44,20 @@ que o compositor nunca recebeu.
 
 ![Menu de colunas no File Explorer AOT com Wayland/OpenGL](GNOME_WAYLAND_GPU_2026-10-18.png)
 
+## Seleção das opções do menu
+
+Após corrigir o tamanho, clicar nas opções ainda fechava o menu sem executar
+o comando. A causa estava em `MenuItemButton`: `closeChain()` destrói
+sincronamente o estado de uma janela de popup, e a leitura posterior de
+`widget.onPressed` lançava `StateError`. A função da ação agora é guardada
+antes de fechar a cadeia e executada depois, preservando a ordem de fechamento.
+
+O teste novo com `WindowPopupHost` reproduziu a exceção antes da correção e
+passou depois. Ele exige que o comando rode exatamente uma vez, com a janela
+já removida, sem erros da aplicação. O lote de menus, popups e DataGrid passou
+em 97 testes. No AOT GNOME Wayland/OpenGL da VM, clicar em “Tipo” ocultou a
+coluna e um segundo clique a reexibiu, com os dados das linhas acompanhando.
+
 ## Sessão para testes
 
 A pedido do proprietário, o GDM usa `AutomaticLoginEnable=true` e

@@ -523,6 +523,58 @@ void main() {
   });
 
   group('WindowPopupHost', () {
+    test('a menu command runs after its native popup is disposed', () async {
+      final app = await _start();
+      addTearDown(() => _stop(app));
+      final owner = app.primaryWindow;
+      final host = WindowPopupHost(application: app, owner: owner);
+      final controller = MenuController();
+      final calls = <bool>[];
+      owner.updateRoot(PopupHostScope(
+        host: host,
+        child: MenuAnchor(
+          controller: controller,
+          menuChildren: <Widget>[
+            MenuItemButton(
+              onPressed: () => calls.add(app.windows.length == 1),
+              child: const Text('Toggle column'),
+            ),
+          ],
+          child: const SizedBox(width: 80, height: 20),
+        ),
+      ));
+      await owner.drawFrame();
+      controller.open();
+      await _settle();
+      final popup = app.windows.last;
+      expect(popup, isNot(same(owner)));
+      await popup.drawFrame();
+      RenderMenuItemButton? row;
+      void walk(RenderBox box) {
+        if (box is RenderMenuItemButton) row = box;
+        box.visitChildren(walk);
+      }
+
+      walk(popup.buildOwner.renderRoot!);
+      expect(row, isNotNull);
+      final position =
+          row!.localToGlobal(Offset(row!.size.width / 2, row!.size.height / 2));
+      app.handleEvent(_down(popup, position));
+      app.handleEvent(PointerUpEvent(
+        windowId: popup.id,
+        generation: popup.nativeWindow.generation,
+        timestamp: Duration.zero,
+        pointerId: 0,
+        kind: PointerKind.mouse,
+        logicalPosition: position,
+        button: PointerButton.primary,
+      ));
+      expect(popup.isDisposed, isTrue);
+      expect(calls, <bool>[true],
+          reason: 'closing synchronously must not discard the chosen command');
+      expect(app.errors, isEmpty);
+    });
+
     test('reports that it leaves the owner window, and counts what is open',
         () async {
       final app = await _start();

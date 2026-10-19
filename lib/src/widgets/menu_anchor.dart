@@ -1744,8 +1744,10 @@ final class _MenuItemButtonState extends State<MenuItemButton> {
         // menu - must not have it torn down by the dismissal of the menu it
         // came from, which is the order `ContextMenu` settled on for the same
         // reason.
+        // A native popup is disposed synchronously when the chain closes.
+        final onPressed = widget.onPressed;
         scope?.holder.closeChain();
-        widget.onPressed?.call();
+        onPressed?.call();
       },
       children: <Widget>[
         if (widget.leadingIcon != null)
