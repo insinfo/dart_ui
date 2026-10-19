@@ -50,6 +50,7 @@ final class PointerListener extends SingleChildRenderObjectWidget {
     super.key,
     this.stopPropagation,
     this.onPointerDown,
+    this.onPointerDownCapture,
     this.onPointerMove,
     this.onPointerUp,
     this.onPointerCancel,
@@ -63,6 +64,10 @@ final class PointerListener extends SingleChildRenderObjectWidget {
   /// controls inside selectable rows: their press must not also select/open
   /// the row. Captured releases follow the path chosen on the press.
   final bool Function(PointerEvent event)? stopPropagation;
+
+  /// Observes presses before children, even if a child stops propagation.
+  /// Useful for outside-click handling; never claims or cancels the gesture.
+  final void Function(PointerDownEvent event)? onPointerDownCapture;
 
   final void Function(PointerDownEvent event)? onPointerDown;
   final void Function(PointerMoveEvent event)? onPointerMove;
@@ -92,6 +97,7 @@ final class PointerListener extends SingleChildRenderObjectWidget {
   RenderPointerListener createRenderObject(BuildContext context) =>
       RenderPointerListener(behavior: behavior)
         ..stopPropagation = stopPropagation
+        ..onPointerDownCapture = onPointerDownCapture
         ..onPointerDown = onPointerDown
         ..onPointerMove = onPointerMove
         ..onPointerUp = onPointerUp
@@ -107,6 +113,7 @@ final class PointerListener extends SingleChildRenderObjectWidget {
     renderObject
       ..behavior = behavior
       ..stopPropagation = stopPropagation
+      ..onPointerDownCapture = onPointerDownCapture
       ..onPointerDown = onPointerDown
       ..onPointerMove = onPointerMove
       ..onPointerUp = onPointerUp
@@ -118,7 +125,7 @@ final class PointerListener extends SingleChildRenderObjectWidget {
 
 /// The render-tree endpoint for [PointerListener].
 final class RenderPointerListener extends RenderSingleChildBox
-    implements ConditionalPointerEventBarrier {
+    implements ConditionalPointerEventBarrier, PointerDownObserver {
   RenderPointerListener({
     this.behavior = GestureHitTestBehavior.opaque,
     super.child,
@@ -130,6 +137,11 @@ final class RenderPointerListener extends RenderSingleChildBox
       stopPropagation?.call(event) ?? false;
 
   GestureHitTestBehavior behavior;
+
+  void Function(PointerDownEvent event)? onPointerDownCapture;
+  @override
+  void observePointerDown(PointerDownEvent event) =>
+      onPointerDownCapture?.call(event);
 
   void Function(PointerDownEvent event)? onPointerDown;
   void Function(PointerMoveEvent event)? onPointerMove;

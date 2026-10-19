@@ -61,6 +61,7 @@ class ExplorerWindowState extends State<ExplorerWindow>
   final TextEditingController rename = TextEditingController('');
   final FocusNode renameFocus = FocusNode(debugLabel: 'Rename');
   String? _renameSeeded;
+  final _renameRegion = GlobalKey();
 
   /// Subfolders of the address bar's steps, read when a chevron opens.
   final Map<String, List<FileEntry>> _subfolders = <String, List<FileEntry>>{};
@@ -76,7 +77,6 @@ class ExplorerWindowState extends State<ExplorerWindow>
     super.initState();
     registerExplorerCommands(registry, model, this);
     model.addListener(_changed);
-    renameFocus.addListener(_renameFocusChanged);
     final BuildContext self = context;
     _keysOwner = self is Element ? self.owner : null;
     _keysOwner?.addTextInputHandler(_typeAhead);
@@ -113,9 +113,7 @@ class ExplorerWindowState extends State<ExplorerWindow>
     _keysOwner?.removeTextInputHandler(_typeAhead);
     _thumbnails?.dispose();
     model.removeListener(_changed);
-    renameFocus
-      ..removeListener(_renameFocusChanged)
-      ..dispose();
+    renameFocus.dispose();
     searchFocus.dispose();
     super.dispose();
   }
@@ -255,12 +253,25 @@ class ExplorerWindowState extends State<ExplorerWindow>
 
   // --- rename in place ------------------------------------------------------
 
-  /// Clicking away from the field commits the name, as in Explorer.
-  void _renameFocusChanged(FocusNode node) {
-    final String? path = model.tab.renaming;
-    if (!node.hasPrimaryFocus && path != null && _renameSeeded == path) {
-      unawaited(model.rename(path, rename.value));
+  /// Only a press outside the editor commits an unfinished name.
+  void _renamePointerDown(PointerDownEvent event) {
+    final element = _renameRegion.currentElement;
+    if (element is RenderObjectElement) {
+      final box = element.renderObject;
+      if (box.hasSize &&
+          Rect.fromLTWH(0, 0, box.size.width, box.size.height)
+              .contains(box.globalToLocal(event.logicalPosition))) {
+        return;
+      }
     }
+    _commitRename();
+  }
+
+  void _commitRename() {
+    final path = model.tab.renaming;
+    if (path == null || _renameSeeded != path) return;
+    _renameSeeded = null;
+    unawaited(model.rename(path, rename.value));
   }
 
   Widget _renameField(FileEntry entry) {
@@ -272,25 +283,34 @@ class ExplorerWindowState extends State<ExplorerWindow>
           0, entry.isDirectory ? entry.name.length : entry.stem.length);
       scheduleMicrotask(renameFocus.requestFocus);
     }
-    return CallbackShortcuts(
-      bindings: <KeyGesture, void Function()?>{
-        const KeyGesture(logicalKeyEscape): () {
-          _renameSeeded = null;
-          model.cancelRename();
-        },
-      },
-      child: SizedBox(
-        height: 26,
-        child: TextField(
-          controller: rename,
-          focusNode: renameFocus,
-          onSubmitted: (String name) {
-            _renameSeeded = null;
-            unawaited(model.rename(entry.path, name));
+    return PointerListener(
+        key: _renameRegion,
+        // Editing owns these gestures. Letting them bubble to the row/grid
+        // retakes its focus and commits the name while selecting text.
+        stopPropagation: (event) =>
+            event is PointerDownEvent ||
+            event is PointerUpEvent ||
+            event is PointerMoveEvent ||
+            event is PointerCancelEvent,
+        child: CallbackShortcuts(
+          bindings: <KeyGesture, void Function()?>{
+            const KeyGesture(logicalKeyEscape): () {
+              _renameSeeded = null;
+              model.cancelRename();
+            },
           },
-        ),
-      ),
-    );
+          child: SizedBox(
+            height: 26,
+            child: TextField(
+              controller: rename,
+              focusNode: renameFocus,
+              onSubmitted: (String name) {
+                _renameSeeded = null;
+                unawaited(model.rename(entry.path, name));
+              },
+            ),
+          ),
+        ));
   }
 
   // --- the address -------------------------------------------------------------
@@ -402,34 +422,38 @@ class ExplorerWindowState extends State<ExplorerWindow>
   @override
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
-    return TooltipPresentation(
-        mode: model.preferences['overlayTooltips']
-            ? TooltipMode.overlay
-            : TooltipMode.auto,
-        child: CallbackShortcuts(
-          bindings: registry.keyBindings(),
-          child: ColoredBox(
-            color: theme.surfaceBase,
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: <Widget>[
-                _tabStrip(theme),
-                Expanded(
-                  child: ColoredBox(
-                    color: theme.surface,
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: <Widget>[
-                        _addressRow(theme),
-                        Expanded(child: _body(theme)),
-                      ],
+    return PointerListener(
+        // Capture observes outside presses even on scrollbars and other
+        // controls that correctly stop normal event bubbling.
+        onPointerDownCapture: _renamePointerDown,
+        child: TooltipPresentation(
+            mode: model.preferences['overlayTooltips']
+                ? TooltipMode.overlay
+                : TooltipMode.auto,
+            child: CallbackShortcuts(
+              bindings: registry.keyBindings(),
+              child: ColoredBox(
+                color: theme.surfaceBase,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: <Widget>[
+                    _tabStrip(theme),
+                    Expanded(
+                      child: ColoredBox(
+                        color: theme.surface,
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: <Widget>[
+                            _addressRow(theme),
+                            Expanded(child: _body(theme)),
+                          ],
+                        ),
+                      ),
                     ),
-                  ),
+                  ],
                 ),
-              ],
-            ),
-          ),
-        ));
+              ),
+            )));
   }
 
   /// The tabs, where the title bar was: clear of the window buttons the

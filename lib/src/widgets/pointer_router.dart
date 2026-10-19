@@ -17,6 +17,12 @@ abstract interface class PointerEventTarget {
   void handlePointerEvent(PointerEvent event);
 }
 
+/// Observes a press before normal dispatch, even across bubbling barriers.
+/// Does not capture the pointer or participate in gesture arbitration.
+abstract interface class PointerDownObserver {
+  void observePointerDown(PointerDownEvent event);
+}
+
 /// Stops a hit-tested pointer event from bubbling to ancestor targets.
 ///
 /// Overlay controls such as a scrollbar are interaction surfaces in their own
@@ -180,6 +186,11 @@ final class PointerRouter {
 
     if (event is PointerDownEvent) {
       _cancelCapture(event.pointerId, event);
+      for (var i = _path.length - 1; i >= 0; i--) {
+        if (_path[i] case final PointerDownObserver observer) {
+          observer.observePointerDown(event);
+        }
+      }
       final targets = <PointerEventTarget>[];
       _dispatchPath(event, captureInto: targets);
       if (targets.isNotEmpty) _captures[event.pointerId] = targets;

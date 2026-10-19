@@ -213,6 +213,99 @@ void main() {
         await h.settle();
         expect(h.model.tab.renaming, entry.path,
             reason: '$mode enters rename on the selected name');
+        final field = h
+            .renders<RenderTextField>()
+            .firstWhere((f) => identical(f.controller, h.window.rename));
+        final inside = field.localToGlobal(const Offset(12, 12));
+        h.owner.dispatchPointerEvent(PointerDownEvent(
+            windowId: const NativeWindowId(1),
+            generation: 1,
+            timestamp: const Duration(milliseconds: 2000),
+            pointerId: 0,
+            kind: PointerKind.mouse,
+            logicalPosition: inside,
+            button: PointerButton.primary));
+        h.owner.dispatchPointerEvent(PointerMoveEvent(
+            windowId: const NativeWindowId(1),
+            generation: 1,
+            timestamp: const Duration(milliseconds: 2010),
+            pointerId: 0,
+            kind: PointerKind.mouse,
+            logicalPosition: inside + const Offset(25, 0)));
+        h.owner.dispatchPointerEvent(PointerUpEvent(
+            windowId: const NativeWindowId(1),
+            generation: 1,
+            timestamp: const Duration(milliseconds: 2020),
+            pointerId: 0,
+            kind: PointerKind.mouse,
+            logicalPosition: inside + const Offset(25, 0),
+            button: PointerButton.primary));
+        await h.settle();
+        expect(h.model.tab.renaming, entry.path,
+            reason: '$mode must keep editing during text selection');
+        expect(h.window.rename.hasSelection, isTrue,
+            reason: '$mode supports drag selection');
+        h.owner.dispatchPointerEvent(PointerDownEvent(
+            windowId: const NativeWindowId(1),
+            generation: 1,
+            timestamp: const Duration(milliseconds: 2200),
+            pointerId: 0,
+            kind: PointerKind.mouse,
+            logicalPosition: inside,
+            button: PointerButton.primary,
+            clickCount: 2));
+        h.owner.dispatchPointerEvent(PointerUpEvent(
+            windowId: const NativeWindowId(1),
+            generation: 1,
+            timestamp: const Duration(milliseconds: 2210),
+            pointerId: 0,
+            kind: PointerKind.mouse,
+            logicalPosition: inside,
+            button: PointerButton.primary));
+        await h.settle();
+        expect(h.model.tab.renaming, entry.path,
+            reason:
+                '$mode double-click edits text instead of opening the folder');
+        expect(h.model.currentFolder, '/Users/ana/Documents');
+        h.window.searchFocus.requestFocus();
+        await h.settle();
+        expect(h.model.tab.renaming, entry.path,
+            reason: '$mode unrelated focus changes do not finish editing');
+        h.window.renameFocus.requestFocus();
+
+        h.window.rename.value = 'Discarded draft';
+        h.key(logicalKeyEscape);
+        await h.settle();
+        expect(h.model.tab.renaming, isNull, reason: '$mode Escape cancels');
+        expect(await h.model.fs.stat(entry.path), isNotNull);
+        h.key(logicalKeyF2);
+        await h.settle();
+        expect(h.window.rename.value, entry.name,
+            reason: '$mode starts a fresh edit');
+        h.window.rename.value = 'Renamed folder';
+        const outside = Offset(1260, 740);
+        h.owner.dispatchPointerEvent(const PointerDownEvent(
+            windowId: NativeWindowId(1),
+            generation: 1,
+            timestamp: Duration(milliseconds: 3000),
+            pointerId: 0,
+            kind: PointerKind.mouse,
+            logicalPosition: outside,
+            button: PointerButton.primary));
+        h.owner.dispatchPointerEvent(const PointerUpEvent(
+            windowId: NativeWindowId(1),
+            generation: 1,
+            timestamp: Duration(milliseconds: 3010),
+            pointerId: 0,
+            kind: PointerKind.mouse,
+            logicalPosition: outside,
+            button: PointerButton.primary));
+        await h.settle();
+        expect(h.model.tab.renaming, isNull,
+            reason: '$mode outside click finishes editing');
+        expect(await h.model.fs.stat('/Users/ana/Documents/Renamed folder'),
+            isNotNull,
+            reason: '$mode outside click commits the edited name');
       } finally {
         h.dispose();
       }

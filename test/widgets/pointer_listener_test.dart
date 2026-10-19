@@ -13,6 +13,23 @@ import 'package:dart_ui/dart_ui.dart';
 import 'package:test/test.dart';
 
 void main() {
+  test(
+      'capture observes outside presses before children across a bubbling barrier',
+      () {
+    final calls = <String>[];
+    final h = _Harness(PointerListener(
+        onPointerDownCapture: (_) => calls.add('capture'),
+        onPointerDown: (_) => calls.add('bubble'),
+        child: PointerListener(
+            stopPropagation: (_) => true,
+            onPointerDown: (_) => calls.add('child'),
+            child: const SizedBox(width: 200, height: 100))));
+    h.pointer(_down(const Offset(20, 20), PointerButton.primary));
+    h.pointer(_up(const Offset(20, 20), PointerButton.primary));
+    expect(calls, ['capture', 'child']);
+    h.dispose();
+  });
+
   group('PointerListener', () {
     test('a wheel notch reaches an ordinary widget', () {
       final List<PointerScrollEvent> wheel = <PointerScrollEvent>[];
