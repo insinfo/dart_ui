@@ -57,6 +57,8 @@ const int _wsExTopmost = 0x00000008;
 const int _wmMouseactivate = 0x0021;
 const int _maNoactivate = 3;
 const int _wmNclbuttondown = 0x00A1;
+const int _wmNclbuttonup = 0x00A2;
+const int _wmNclbuttondblclk = 0x00A3;
 const int _htTransparent = -1;
 
 /// Whoever currently owns this window's input context.
@@ -101,7 +103,7 @@ abstract interface class Win32ImeMessageHandler {
 /// `GetClassInfoExW` hands back the class Windows actually registered -
 /// including `lpfnWndProc`, which is the `NativeCallable` trampoline
 /// `Win32WindowClass` owns. Re-declaring the fields here would mean a second
-/// place that has to be kept in step with the first (the null cursor, the null
+/// place that has to be kept in step with the first (the arrow cursor, the null
 /// background brush, `CS_DBLCLKS`), and the day the two drift is the day
 /// popups stop reporting double clicks for no visible reason. Cloning cannot
 /// drift.
@@ -282,12 +284,8 @@ final class Win32Window
     // refuses. This one is used by [_onEraseBackground], which paints only the
     // strip nothing has drawn into yet.
     _backgroundBrush = _createBackgroundBrush(api, backgroundColor);
-    // The window class deliberately has no cursor (see Win32WindowClass), so
-    // WM_SETCURSOR belongs to us - which means a window that never calls
-    // setCursor() would answer that message with nothing and leave whatever
-    // the *previous* window put on screen: the resize arrow from dragging a
-    // border, or the app-starting spinner. Starting from a real arrow handle
-    // is what makes the client area look like a window rather than a hang.
+    // Keep a per-window cursor ready for WM_SETCURSOR before the first move.
+    // The class arrow is only a fallback for unhandled native messages.
     _cursorHandle = _handleForCursor(SystemCursor.arrow);
     _token = Win32WindowRegistry.attach(this);
     // Acquisition order, released in reverse by [onDispose]: token, scratch
@@ -1375,6 +1373,20 @@ final class Win32Window
         return _api.defWindowProcW(hwnd, msg, wParam, lParam);
 
       case _wmNclbuttondown:
+      case _wmNclbuttondblclk:
+        if (customFrame != null &&
+            (wParam == 8 || wParam == 9 || wParam == 20)) {
+          // These controls are painted and activated by the widget layer.
+          // Keep native hit codes for Snap, but do not let DefWindowProc track
+          // a different, invisible system caption rectangle on press.
+          _emit(WindowNonClientPressEvent(
+              windowId: id,
+              generation: _generation.current,
+              timestamp: _eventTimestamp()));
+          return _onPointerDown(
+              PointerButton.primary, _clientMousePosition(lParam),
+              clickCount: msg == _wmNclbuttondblclk ? 2 : 1);
+        }
         // Reported *and* handed on. The event is how an open menu learns that
         // its owner's title bar was grabbed - the menu is a different window
         // and never sees that click - and DefWindowProcW is what actually
@@ -1390,7 +1402,23 @@ final class Win32Window
         );
         return _api.defWindowProcW(hwnd, msg, wParam, lParam);
 
+      case _wmNclbuttonup:
+        if (customFrame != null &&
+            (wParam == 8 || wParam == 9 || wParam == 20)) {
+          return _onPointerUp(
+              PointerButton.primary, _clientMousePosition(lParam));
+        }
+        return _api.defWindowProcW(hwnd, msg, wParam, lParam);
+
       case wmSetcursor:
+        final hit = win32LoWord(lParam);
+        if (customFrame != null && (hit == 8 || hit == 9 || hit == 20)) {
+          final arrow = _handleForCursor(SystemCursor.arrow);
+          if (arrow != 0) {
+            _api.setCursor(arrow);
+            return 1;
+          }
+        }
         // Only the client area is ours; the frame's cursors (resize arrows on
         // the border) belong to DefWindowProc.
         if (win32LoWord(lParam) == htClient && _cursorHandle != 0) {
@@ -1645,6 +1673,19 @@ final class Win32Window
       ),
     );
     return 0;
+  }
+
+  /// Converts non-client screen coordinates to the client mouse-message form.
+  int _clientMousePosition(int screenPosition) {
+    var result = 0;
+    _withScratchPoint((point) {
+      point.ref
+        ..x = win32SignedLoWord(screenPosition)
+        ..y = win32SignedHiWord(screenPosition);
+      _api.screenToClient(_hwnd, point);
+      result = (point.ref.x & 0xffff) | ((point.ref.y & 0xffff) << 16);
+    });
+    return result;
   }
 
   /// Which side button a `WM_XBUTTON*` message is about.

@@ -156,10 +156,10 @@ final class Win32WindowClass {
           ..cbWndExtra = 0
           ..hInstance = instanceHandle
           ..hIcon = 0
-          // The class cursor is null so that WM_SETCURSOR is ours: with a class
-          // cursor, Windows resets the pointer on every move and setCursor()
-          // would flicker back to an arrow.
-          ..hCursor = 0
+          // A valid fallback for messages handled by DefWindowProc. Client
+          // WM_SETCURSOR returns TRUE after setting the requested cursor, so
+          // this does not override text, resize or other custom cursors.
+          ..hCursor = cursor
           // No background brush: every pixel comes from the framebuffer, and a
           // brush would paint over it between the erase and the present.
           ..hbrBackground = 0

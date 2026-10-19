@@ -314,7 +314,7 @@ final class _WindowGlyph extends StatelessWidget {
   }
 }
 
-/// Caption controls for a client title bar. Native hit testing owns their clicks.
+/// Painted controls for a client title bar, activated by framework pointer input.
 final class WindowCaptionControls extends StatelessWidget {
   const WindowCaptionControls({super.key, required this.window});
 

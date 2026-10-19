@@ -12,7 +12,9 @@ import 'package:dart_ui/src/backends/win32/win32_window.dart';
 import 'package:dart_ui/src/geometry/offset.dart';
 import 'package:dart_ui/src/geometry/rect.dart';
 import 'package:dart_ui/src/geometry/size.dart';
+import 'package:dart_ui/src/platform/input_events.dart';
 import 'package:dart_ui/src/platform/native_window.dart';
+import 'package:dart_ui/src/platform/window_events.dart';
 import 'package:test/test.dart';
 
 void main() {
@@ -66,6 +68,75 @@ void main() {
       expect(window.beginMove(), isFalse); // No held primary press to quote.
       expect(hit(const Offset(120, 20)), htClient);
       expect(hit(const Offset(320, 1)), 12); // HTTOP
+    });
+
+    test('painted caption presses reach widgets and release native capture',
+        () async {
+      final events = <PlatformWindowEvent>[];
+      final subscription = window.events.listen(events.add);
+      addTearDown(subscription.cancel);
+      final buttons = window.systemButtons.value;
+      for (final hitCode in [8, 9, 20]) {
+        final local = Offset(
+            buttons.left +
+                (hitCode == 8
+                    ? 23
+                    : hitCode == 9
+                        ? 69
+                        : 115),
+            buttons.center.dy);
+        final screen = window.clientToScreen(local);
+        int pack(double x, double y) =>
+            ((x * window.renderScale).round() & 0xffff) |
+            (((y * window.renderScale).round() & 0xffff) << 16);
+        events.clear();
+        api.postMessageW(
+            window.handle, 0x00A1, hitCode, pack(screen.dx, screen.dy));
+        // Capture changes the normal release into a client mouse message.
+        api.postMessageW(
+            window.handle, wmLbuttonup, 0, pack(local.dx, local.dy));
+        backend.pumpEvents();
+        await Future<void>.delayed(Duration.zero);
+        expect(events.whereType<WindowNonClientPressEvent>(), hasLength(1));
+        final down = events.whereType<PointerDownEvent>().single;
+        expect(
+            down.logicalPosition.dx, closeTo(local.dx, 1 / window.renderScale));
+        expect(
+            down.logicalPosition.dy, closeTo(local.dy, 1 / window.renderScale));
+        expect(events.whereType<PointerUpEvent>(), hasLength(1));
+        expect(api.getCapture(), 0,
+            reason: 'a caption press cannot retain the mouse');
+        expect(window.state, WindowState.normal,
+            reason:
+                'the widget command, not an invisible system caption, owns activation');
+      }
+    });
+
+    test(
+        'caption cursor is an arrow and does not replace the client text cursor',
+        () {
+      final user = DynamicLibrary.open('user32.dll');
+      final current =
+          user.lookupFunction<IntPtr Function(), int Function()>('GetCursor');
+      final classCursor = user.lookupFunction<IntPtr Function(IntPtr, Int32),
+          int Function(int, int)>('GetClassLongPtrW');
+      expect(classCursor(window.handle, -12), isNot(0),
+          reason: 'native messages need a class cursor fallback');
+      final arrow = window.cursorHandle;
+      window.setCursor(SystemCursor.text);
+      final text = window.cursorHandle;
+      for (final code in [8, 9, 20]) {
+        expect(
+            window.handleMessage(window.handle, wmSetcursor, window.handle,
+                code | (wmMousemove << 16)),
+            1);
+        expect(current(), arrow);
+        expect(window.cursorHandle, text,
+            reason: 'the client cursor request is retained');
+      }
+      window.handleMessage(window.handle, wmSetcursor, window.handle,
+          htClient | (wmMousemove << 16));
+      expect(current(), text);
     });
 
     test('maximise, restore, owned dialog closure preserve owner geometry',

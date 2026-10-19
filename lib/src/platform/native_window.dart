@@ -434,8 +434,10 @@ abstract interface class HiddenTitleBarWindow {
 
 /// A hidden title bar whose caption controls are painted by the framework.
 ///
-/// The native frame still owns caption hit testing, system commands and Snap.
-/// `WindowDragArea` draws the controls inside [HiddenTitleBarWindow.systemButtons].
+/// `WindowDragArea` paints and activates controls inside
+/// [HiddenTitleBarWindow.systemButtons]. Backends may retain native caption hit
+/// codes for system features such as Snap and translate those presses to the
+/// framework's pointer route.
 abstract interface class ClientCaptionWindow implements HiddenTitleBarWindow {
   ValueListenable<WindowState> get captionState;
   bool get canMinimize;

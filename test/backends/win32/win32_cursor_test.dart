@@ -1,13 +1,8 @@
 /// A real window must own a real cursor from the moment it exists.
 ///
-/// The window class is registered with `hCursor = 0` on purpose, so that
-/// `WM_SETCURSOR` belongs to the framework rather than to Windows. That choice
-/// has a consequence that is easy to miss and very visible when it bites: a
-/// window that never sets a cursor answers `WM_SETCURSOR` with nothing, and
-/// `DefWindowProc` has no class cursor to fall back on. The pointer then keeps
-/// whatever the *previous* window left on screen - the horizontal resize arrow
-/// from dragging a border, or the app-starting spinner - and the application
-/// looks hung while it is in fact idle.
+/// The registered class keeps an arrow fallback for native messages. Client
+/// WM_SETCURSOR uses the per-window cursor and returns TRUE, so the fallback
+/// cannot override a requested text, hand or other custom cursor.
 ///
 /// So the invariant is: `cursorHandle` is non-zero before the window is ever
 /// shown, not after the first `setCursor` call.
