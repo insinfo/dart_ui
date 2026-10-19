@@ -40,6 +40,7 @@ import '../layout/box_constraints.dart';
 import '../layout/render_box.dart';
 import '../layout/render_flex.dart' show Axis;
 import '../platform/input_events.dart';
+import '../platform/native_window.dart' show SystemCursor;
 import '../semantics/semantics.dart';
 import '../text/shaper.dart' show TextDirection;
 import 'control.dart';
@@ -47,6 +48,7 @@ import 'directionality.dart';
 import 'element.dart';
 import 'focus.dart';
 import 'focus_scope.dart';
+import 'pointer_router.dart' show MouseCursorTarget;
 import 'theme.dart';
 import 'widget.dart';
 
@@ -423,7 +425,16 @@ final class _SplitDividerWidget extends RenderObjectWidget {
 }
 
 /// The grab handle: a drag, a keyboard, and a slider to a screen reader.
-final class RenderSplitDivider extends RenderBox with ControlBehavior {
+final class RenderSplitDivider extends RenderBox
+    with ControlBehavior
+    implements MouseCursorTarget {
+  @override
+  SystemCursor? cursorFor(PointerEvent event) => enabled
+      ? (axis == Axis.horizontal
+          ? SystemCursor.resizeHorizontal
+          : SystemCursor.resizeVertical)
+      : null;
+
   Axis axis = Axis.horizontal;
   TextDirection textDirection = TextDirection.leftToRight;
   double step = 10;

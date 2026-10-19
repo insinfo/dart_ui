@@ -29,6 +29,21 @@ void main() {
   ExplorerModel make(MemoryFileSystem fs) => ExplorerModel(
       fs: fs, places: const {}, start: const FolderLocation('/docs'));
 
+  test(
+      'navigation width ignores corrupt preferences and loads without a session',
+      () {
+    final fs = MemoryFileSystem()..addFolder('/docs');
+    final m = make(fs);
+    addTearDown(m.dispose);
+    for (final width in [null, 'wide', -50, 0, double.nan, double.infinity]) {
+      m.restoreState({'navigationPaneWidth': width}, restoreSession: false);
+      expect(m.navigationPaneWidth, 232);
+    }
+    m.restoreState({'navigationPaneWidth': 480}, restoreSession: false);
+    expect(m.navigationPaneWidth, 480);
+    expect(m.exportState()['navigationPaneWidth'], 480);
+  });
+
   test('queries combine quoted names, wildcards, OR, NOT, sizes and dates', () {
     final pdf = FileEntry(
         path: '/report.pdf',
@@ -203,13 +218,16 @@ void main() {
     final file = File('${dir.path}/preferences.json');
     final store = PreferencesStore(file)..attach(m);
     m.preferences['compact'] = true;
+    m.resizeNavigationPane(500);
     await store.save();
     m.preferences['compact'] = false;
+    m.resizeNavigationPane(420);
     await store.close();
     final fresh = make(fs);
     addTearDown(fresh.dispose);
     await PreferencesStore(file).load(fresh);
     expect(fresh.preferences['compact'], isFalse);
+    expect(fresh.navigationPaneWidth, 420);
     await file.writeAsString('{broken');
     final broken = PreferencesStore(file);
     await broken.load(fresh);

@@ -105,6 +105,19 @@ final class ExplorerModel {
 
   bool _shows(FileEntry e) =>
       (!e.isHidden || showHidden) && (!e.isSystem || showProtected);
+  double _navigationPaneWidth = 232;
+
+  /// Preferred navigation width; shrinking the window only clamps its layout.
+  double get navigationPaneWidth => _navigationPaneWidth;
+
+  void resizeNavigationPane(double width) {
+    if (!width.isFinite || width < 0) return;
+    final next = width < 160 ? 160.0 : width;
+    if (_navigationPaneWidth == next) return;
+    _navigationPaneWidth = next;
+    notify();
+  }
+
   bool get navigationPane => preferences['navigationPane'];
   set navigationPane(bool value) => preferences['navigationPane'] = value;
   bool get detailsPane => preferences['detailsPane'];
@@ -265,6 +278,7 @@ final class ExplorerModel {
     return {
       'version': 1,
       'options': preferences.toJson(),
+      'navigationPaneWidth': navigationPaneWidth,
       'view': viewSettings,
       'defaultView': _defaultView ?? viewSettings,
       'folderViews': folderViews,
@@ -278,6 +292,10 @@ final class ExplorerModel {
   }
 
   void restoreState(Map<String, Object?> data, {bool restoreSession = true}) {
+    final width = data['navigationPaneWidth'];
+    if (width is num && width.isFinite && width >= 160) {
+      _navigationPaneWidth = width.toDouble();
+    }
     final options = data['options'];
     if (options is Map) {
       preferences = ExplorerPreferences(Map<String, Object?>.from(options));

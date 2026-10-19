@@ -145,6 +145,78 @@ void main() {
   tearDownAll(FontRegistry.instance.reset);
 
   test(
+      'navigation divider resizes, clamps, hides and retains the preferred width',
+      () async {
+    final h = _Harness();
+    addTearDown(h.dispose);
+    await h.settle();
+    RenderSplitView split() => h.renders<RenderSplitView>().single;
+    expect(split().firstExtent, 232);
+    h.model.select([h.model.tab.visible.first.path]);
+    await h.settle();
+    final selection = h.model.tab.selection.toSet();
+
+    Future<void> drag(double delta) async {
+      final divider = h.renders<RenderSplitDivider>().single;
+      final at = divider.localToGlobal(
+          Offset(divider.size.width / 2, divider.size.height / 2));
+      h.owner.dispatchPointerEvent(PointerDownEvent(
+          windowId: const NativeWindowId(1),
+          generation: 1,
+          timestamp: Duration.zero,
+          pointerId: 0,
+          kind: PointerKind.mouse,
+          logicalPosition: at,
+          button: PointerButton.primary));
+      h.owner.dispatchPointerEvent(PointerMoveEvent(
+          windowId: const NativeWindowId(1),
+          generation: 1,
+          timestamp: Duration.zero,
+          pointerId: 0,
+          kind: PointerKind.mouse,
+          logicalPosition: at + Offset(delta, 0)));
+      await h.settle();
+      h.owner.dispatchPointerEvent(PointerUpEvent(
+          windowId: const NativeWindowId(1),
+          generation: 1,
+          timestamp: Duration.zero,
+          pointerId: 0,
+          kind: PointerKind.mouse,
+          logicalPosition: at + Offset(delta, 0),
+          button: PointerButton.primary));
+      await h.settle();
+    }
+
+    await drag(268);
+    expect(split().firstExtent, 500);
+    expect(h.model.navigationPaneWidth, 500);
+    expect(h.model.tab.selection, selection);
+    h.owner.pipelineOwner.rootConstraints =
+        BoxConstraints.tight(const Size(640, 600));
+    await h.settle();
+    expect(split().firstExtent, 314);
+    expect(split().secondExtent, 320);
+    expect(h.model.navigationPaneWidth, 500,
+        reason: 'temporary window clamps are not saved');
+    h.owner.pipelineOwner.rootConstraints =
+        BoxConstraints.tight(const Size(1280, 800));
+    await h.settle();
+    expect(split().firstExtent, 500);
+    await drag(-1000);
+    expect(split().firstExtent, 160);
+    expect(h.model.navigationPaneWidth, 160);
+    await drag(200);
+    h.model.navigationPane = false;
+    h.model.notify();
+    await h.settle();
+    expect(h.renders<RenderSplitView>(), isEmpty);
+    h.model.navigationPane = true;
+    h.model.notify();
+    await h.settle();
+    expect(split().firstExtent, 360);
+  });
+
+  test(
       'screenshot chords preserve the view and layout changes release grid focus',
       () async {
     final h = _Harness();

@@ -19,6 +19,22 @@ void main() {
   });
   tearDownAll(FontRegistry.instance.reset);
 
+  test('divider cursor follows its resize axis and disabled state', () {
+    final divider = RenderSplitDivider();
+    const event = PointerMoveEvent(
+        windowId: NativeWindowId(1),
+        generation: 1,
+        timestamp: Duration.zero,
+        pointerId: 0,
+        kind: PointerKind.mouse,
+        logicalPosition: Offset.zero);
+    expect(divider.cursorFor(event), SystemCursor.resizeHorizontal);
+    divider.axis = Axis.vertical;
+    expect(divider.cursorFor(event), SystemCursor.resizeVertical);
+    divider.enabled = false;
+    expect(divider.cursorFor(event), isNull);
+  });
+
   group('layout', () {
     test('the panels start at the initial fraction and fill the box', () {
       final _Harness harness = _Harness()..frame();

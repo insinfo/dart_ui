@@ -661,76 +661,76 @@ class ExplorerWindowState extends State<ExplorerWindow>
         ),
       );
 
-  Widget _body(ThemeData theme) => Row(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: <Widget>[
-          if (model.navigationPane)
-            SizedBox(
-              width: 232,
-              child: Sidebar(
-                model: model,
-                registry: registry,
-                settingsMenu: () => menus.widgets(settingsMenu(model.strings)),
-              ),
-            ),
-          Expanded(
-            child: Padding(
-              padding:
-                  EdgeInsets.only(left: model.navigationPane ? 0 : 8, right: 8),
-              child: Column(
+  Widget _body(ThemeData theme) {
+    final content = _mainPane(theme);
+    if (!model.navigationPane) return content;
+    return SplitView(
+      firstExtent: model.navigationPaneWidth,
+      minFirst: 160,
+      minSecond: 320,
+      dividerThickness: 6,
+      onResized: model.resizeNavigationPane,
+      first: Sidebar(
+        model: model,
+        registry: registry,
+        settingsMenu: () => menus.widgets(settingsMenu(model.strings)),
+      ),
+      second: content,
+    );
+  }
+
+  Widget _mainPane(ThemeData theme) => Padding(
+        padding: EdgeInsets.only(left: model.navigationPane ? 0 : 8, right: 8),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: <Widget>[
+            _card(theme, _commandBar(theme)),
+            const SizedBox(height: 4),
+            if (model.tab.location is SearchLocation &&
+                (model.tab.loading || model.tab.searchTruncated))
+              Row(children: [
+                Expanded(
+                    child: Text(model.tab.searchTruncated
+                        ? (model.strings.locale.startsWith('pt')
+                            ? 'Limite de 5.000 resultados atingido.'
+                            : '5,000 result limit reached.')
+                        : (model.strings.locale.startsWith('pt')
+                            ? 'Pesquisando…'
+                            : 'Searching…'))),
+                if (model.tab.loading)
+                  Button(
+                      label: model.strings.locale.startsWith('pt')
+                          ? 'Parar'
+                          : 'Stop',
+                      accent: false,
+                      onPressed: model.cancelSearch),
+              ]),
+            Expanded(
+              child: Row(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: <Widget>[
-                  _card(theme, _commandBar(theme)),
-                  const SizedBox(height: 4),
-                  if (model.tab.location is SearchLocation &&
-                      (model.tab.loading || model.tab.searchTruncated))
-                    Row(children: [
-                      Expanded(
-                          child: Text(model.tab.searchTruncated
-                              ? (model.strings.locale.startsWith('pt')
-                                  ? 'Limite de 5.000 resultados atingido.'
-                                  : '5,000 result limit reached.')
-                              : (model.strings.locale.startsWith('pt')
-                                  ? 'Pesquisando…'
-                                  : 'Searching…'))),
-                      if (model.tab.loading)
-                        Button(
-                            label: model.strings.locale.startsWith('pt')
-                                ? 'Parar'
-                                : 'Stop',
-                            accent: false,
-                            onPressed: model.cancelSearch),
-                    ]),
-                  Expanded(
-                    child: Row(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: <Widget>[
-                        Expanded(child: _card(theme, _content(theme))),
-                        if (model.preferences['previewPane']) ...<Widget>[
-                          const SizedBox(width: 6),
-                          SizedBox(
-                              width: 280,
-                              child: _card(
-                                  theme,
-                                  PreviewPane(
-                                      model: model,
-                                      loader: widget.thumbnailLoader))),
-                        ] else if (model.detailsPane) ...<Widget>[
-                          const SizedBox(width: 6),
-                          SizedBox(
-                            width: 280,
-                            child: _card(theme, DetailsPane(model: model)),
-                          ),
-                        ],
-                      ],
+                  Expanded(child: _card(theme, _content(theme))),
+                  if (model.preferences['previewPane']) ...<Widget>[
+                    const SizedBox(width: 6),
+                    SizedBox(
+                        width: 280,
+                        child: _card(
+                            theme,
+                            PreviewPane(
+                                model: model, loader: widget.thumbnailLoader))),
+                  ] else if (model.detailsPane) ...<Widget>[
+                    const SizedBox(width: 6),
+                    SizedBox(
+                      width: 280,
+                      child: _card(theme, DetailsPane(model: model)),
                     ),
-                  ),
-                  if (model.preferences['showStatusBar']) _statusBar(theme),
+                  ],
                 ],
               ),
             ),
-          ),
-        ],
+            if (model.preferences['showStatusBar']) _statusBar(theme),
+          ],
+        ),
       );
 
   /// A rounded white card on the layer - Files' command bar and file area.
