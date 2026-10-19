@@ -407,6 +407,7 @@ final class XcbBindings {
     'xcb_get_selection_owner_reply',
     'xcb_convert_selection',
     'xcb_send_event',
+    'xcb_ungrab_pointer',
     'xcb_create_gc',
     'xcb_create_gc_checked',
     'xcb_free_gc',
@@ -504,6 +505,7 @@ final class XcbBindings {
       library.lookupFunction<XcbPValN, XcbPValD>('xcb_get_atom_name_name');
   late final XcbPLnD getAtomNameLength =
       library.lookupFunction<XcbPLnN, XcbPLnD>('xcb_get_atom_name_name_length');
+  late final XcbWinD ungrabPointer = _win('xcb_ungrab_pointer');
   late final XcbSendEvtD sendEvent =
       library.lookupFunction<XcbSendEvtN, XcbSendEvtD>('xcb_send_event');
   late final XcbColormapD createColormapChecked =

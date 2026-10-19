@@ -10,6 +10,21 @@ import 'package:test/test.dart';
 
 void main() {
   group('ClientDecorationFrame', () {
+    test(
+        'integrated title strip keeps its content at the top and retains resize edges',
+        () {
+      final window = _IntegratedWindow();
+      final presses = <Offset>[];
+      final harness = _Harness(_frame(window, presses));
+      addTearDown(harness.dispose);
+      harness.click(const Offset(100, 16));
+      expect(presses, [const Offset(100, 16)],
+          reason: 'no additional title bar above the tabs');
+      harness.click(const Offset(398, 150));
+      expect(window.resizes, [WindowResizeEdge.right]);
+      expect(window.moves, 0);
+    });
+
     test('draws nothing while the system decorates the window', () {
       final _FakeWindow window = _FakeWindow(decorated: false);
       final List<Offset> presses = <Offset>[];
@@ -191,6 +206,20 @@ final class _FakeWindow implements ClientDecoratedWindow {
 
   @override
   void requestClose() => closeRequests++;
+}
+
+final class _IntegratedWindow extends _FakeWindow
+    implements HiddenTitleBarWindow {
+  _IntegratedWindow() : super(decorated: true);
+  @override
+  bool get isTitleBarHidden => true;
+  @override
+  final systemButtons =
+      ValueNotifier<Rect>(const Rect.fromLTWH(262, 0, 138, 40));
+  @override
+  double get titleBarHeight => 40;
+  @override
+  void toggleMaximized() => setMaximized(!isMaximized);
 }
 
 final class _Harness {

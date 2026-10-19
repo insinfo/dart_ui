@@ -13,10 +13,9 @@
 ///   * **No drawing before configure.** The surface list stays empty until the
 ///     first `xdg_surface.configure` has been acked; presentation code that
 ///     asks earlier simply finds no surface, which is the honest state.
-///   * **Client-side decorations are not drawn.** Without the xdg-decoration
-///     extension the compositor may show no title bar (GNOME); the window is
-///     still usable. `WindowOptions.decorated: false` is thus the one option
-///     every compositor honours exactly.
+///   * **Client-side decorations.** The framework supplies a fallback frame
+///     when the compositor does not provide SSD. Hidden title bars instead
+///     use the application's top strip and retain framework resize borders.
 library;
 
 import 'dart:async';
@@ -27,11 +26,13 @@ import '../../foundation/value_notifier.dart';
 import '../../geometry/offset.dart';
 import '../../geometry/rect.dart';
 import '../../geometry/size.dart';
+import '../../platform/client_title_bar.dart';
 import '../../platform/compose_sequences.dart';
 import '../../platform/input_events.dart';
 import '../../platform/native_window.dart';
 import '../../platform/window_events.dart';
 import '../../rendering/renderer.dart';
+
 import 'wayland_connection.dart';
 import 'wayland_dma_buf.dart';
 import 'wayland_events.dart';
@@ -39,7 +40,7 @@ import 'wayland_positioner.dart';
 import 'wayland_shm.dart';
 
 final class WaylandWindow
-    with DisposableMixin
+    with DisposableMixin, ClientTitleBarMixin
     implements
         NativeWindow,
         PositionedPopupWindow,
@@ -56,6 +57,8 @@ final class WaylandWindow
     this.isPopup = false,
     this.popupDepth = 0,
     this.decorated = false,
+    this.integratedTitleBar = false,
+    this.canMaximize = true,
     String title = '',
   })  : _toplevelIds = toplevelIds,
         _client = client,
@@ -219,11 +222,16 @@ final class WaylandWindow
           maximum == null ? null : _clampExtent(maximum.height.round()),
     ));
     // Ask for a server-side frame when the application wanted a decorated
-    // window and the compositor speaks xdg-decoration. Without the protocol
+    // window with a standard title bar and the compositor speaks xdg-decoration.
+    // A hidden title bar deliberately creates no decoration object: without
+    // negotiating SSD the protocol leaves decorations to the client.
+    // Without the protocol
     // (GNOME does not implement it) the answer never comes and
     // [hasServerSideDecorations] stays false, which is the framework's signal
     // to draw the frame itself.
-    if (options.decorated) client.requestServerSideDecoration(ids);
+    if (options.decorated && options.titleBar != WindowTitleBar.hidden) {
+      client.requestServerSideDecoration(ids);
+    }
 
     return WaylandWindow._(
       client: client,
@@ -234,6 +242,9 @@ final class WaylandWindow
       visible: options.visible,
       onClosed: onClosed,
       decorated: options.decorated,
+      integratedTitleBar:
+          options.decorated && options.titleBar == WindowTitleBar.hidden,
+      canMaximize: options.resizable,
       title: options.title,
     );
   }
@@ -411,6 +422,17 @@ final class WaylandWindow
   /// Whether the application asked for a decorated window.
   final bool decorated;
 
+  /// Hidden title bars self-decorate without negotiating an SSD frame.
+  final bool integratedTitleBar;
+  @override
+  final bool canMaximize;
+  @override
+  bool get isTitleBarHidden => integratedTitleBar && !isPopup;
+  @override
+  void toggleMaximized() {
+    if (canMaximize) super.toggleMaximized();
+  }
+
   String _title;
 
   @override
@@ -425,6 +447,7 @@ final class WaylandWindow
 
   bool get _wantsClientDecorations {
     if (!decorated || isPopup) return false;
+    if (integratedTitleBar) return true;
     if (_client.supportsServerSideDecorations && !_decorationKnown) {
       return false;
     }
@@ -445,7 +468,7 @@ final class WaylandWindow
 
   @override
   bool beginResize(WindowResizeEdge edge) {
-    if (isDisposed || isPopup) return false;
+    if (isDisposed || isPopup || !canMaximize) return false;
     if (!_client.resizeToplevel(toplevelIds, _xdgEdge(edge))) return false;
     _cancelImplicitGrab();
     return true;
@@ -876,6 +899,9 @@ final class WaylandWindow
   WindowState _reportedState = WindowState.normal;
 
   void _emit(PlatformWindowEvent event) {
+    if (event is WindowResizedEvent || event is WindowStateChangedEvent) {
+      updateClientTitleBar();
+    }
     if (!_events.isClosed) _events.add(event);
   }
 
@@ -930,6 +956,7 @@ final class WaylandWindow
       _closedEventEmitted = true;
       _emit(WindowClosedEvent(windowId: id, generation: generation));
     }
+    disposeClientTitleBar();
     _events.close();
     _onClosed(this);
   }

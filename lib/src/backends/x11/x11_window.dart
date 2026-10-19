@@ -8,13 +8,17 @@ import 'dart:async';
 
 import '../../foundation/diagnostics.dart';
 import '../../foundation/lifecycle.dart';
+import '../../foundation/value_notifier.dart';
 import '../../geometry/offset.dart';
 import '../../geometry/rect.dart';
 import '../../geometry/size.dart';
+import '../../platform/client_title_bar.dart';
 import '../../platform/compose_sequences.dart';
+import '../../platform/input_events.dart';
 import '../../platform/native_window.dart';
 import '../../platform/window_events.dart';
 import '../../rendering/renderer.dart';
+
 import 'x11_connection.dart';
 import 'x11_coordinates.dart';
 import 'x11_events.dart';
@@ -103,8 +107,8 @@ final class X11WindowKindPlan {
 }
 
 final class X11Window
-    with DisposableMixin
-    implements NativeWindow, WindowStateControl {
+    with DisposableMixin, ClientTitleBarMixin
+    implements NativeWindow, WindowStateControl, ClientDecoratedWindow {
   X11Window._({
     required X11WindowClient client,
     required this.xcbWindow,
@@ -116,8 +120,12 @@ final class X11Window
     required bool visible,
     required void Function(X11Window window) onClosed,
     bool managed = true,
+    this.isTitleBarHidden = false,
+    this.canMaximize = true,
+    String title = '',
   })  : _client = client,
         _managed = managed,
+        _title = title,
         _cpuClient = client is X11CpuClient ? client as X11CpuClient : null,
         _id = id,
         _scale = scale,
@@ -173,7 +181,9 @@ final class X11Window
         y: y,
         title: options.title,
         resizable: options.resizable,
-        decorated: options.decorated && plan.decorated,
+        decorated: options.decorated &&
+            plan.decorated &&
+            options.titleBar != WindowTitleBar.hidden,
         visible: options.visible,
         overrideRedirect: plan.overrideRedirect,
         windowTypeAtom: plan.windowTypeAtom,
@@ -191,6 +201,11 @@ final class X11Window
       visible: options.visible,
       onClosed: onClosed,
       managed: !plan.overrideRedirect,
+      isTitleBarHidden: options.decorated &&
+          plan.decorated &&
+          options.titleBar == WindowTitleBar.hidden,
+      canMaximize: options.resizable,
+      title: options.title,
     )
       .._protocol.originX = x ?? 0
       .._protocol.originY = y ?? 0;
@@ -202,6 +217,103 @@ final class X11Window
   /// False for an override-redirect window, which no window manager sees and
   /// so none can maximise.
   final bool _managed;
+
+  @override
+  final bool isTitleBarHidden;
+  @override
+  final bool canMaximize;
+  String _title;
+  @override
+  String get title => _title;
+  @override
+  late final clientDecorations = ValueNotifier<bool>(isTitleBarHidden);
+  @override
+  bool get isMaximized => state == WindowState.maximised;
+  @override
+  void setMaximized(bool value) {
+    if (canMaximize) {
+      requestState(value ? WindowState.maximised : WindowState.normal);
+    }
+  }
+
+  @override
+  void toggleMaximized() {
+    if (canMaximize) super.toggleMaximized();
+  }
+
+  @override
+  void requestClose() =>
+      _emit(WindowCloseRequestedEvent(windowId: id, generation: generation));
+
+  PointerDownEvent? _lastPress;
+  bool _interactivePending = false;
+  int _pressRootX = 0, _pressRootY = 0, _pressTimestamp = 0;
+  DateTime? _pressTime;
+
+  bool _beginInteractive(int direction) {
+    final client = _client;
+    final press = _lastPress;
+    if (isDisposed ||
+        !_managed ||
+        client is! X11InteractiveWindowClient ||
+        press == null ||
+        press.button != PointerButton.primary ||
+        _pressTime == null ||
+        DateTime.now().difference(_pressTime!).inSeconds >= 2) {
+      return false;
+    }
+    final interactive = client as X11InteractiveWindowClient;
+    interactive.ungrabPointer(_pressTimestamp);
+    _interactivePending = true;
+    interactive.sendWindowManagerMessage(
+        window: xcbWindow,
+        type: _client.atom('_NET_WM_MOVERESIZE'),
+        data: [_pressRootX, _pressRootY, direction, 1, 1]);
+    _client.flush();
+    _lastPress = null;
+    _emit(PointerCancelEvent(
+        windowId: id,
+        generation: generation,
+        timestamp: press.timestamp,
+        pointerId: press.pointerId,
+        kind: press.kind,
+        logicalPosition: press.logicalPosition));
+    return true;
+  }
+
+  @override
+  bool beginMove() => _beginInteractive(8);
+  @override
+  bool beginResize(WindowResizeEdge edge) =>
+      canMaximize &&
+      _beginInteractive(switch (edge) {
+        WindowResizeEdge.topLeft => 0,
+        WindowResizeEdge.top => 1,
+        WindowResizeEdge.topRight => 2,
+        WindowResizeEdge.right => 3,
+        WindowResizeEdge.bottomRight => 4,
+        WindowResizeEdge.bottom => 5,
+        WindowResizeEdge.bottomLeft => 6,
+        WindowResizeEdge.left => 7,
+      });
+  @override
+  bool showWindowMenu(Offset position) {
+    final client = _stateClient;
+    if (isDisposed || !_managed || client == null) return false;
+    final root = clientToScreen(position);
+    client.sendWindowManagerMessage(
+        window: xcbWindow,
+        type: _client.atom('_GTK_SHOW_WINDOW_MENU'),
+        data: [
+          0,
+          _pressTimestamp,
+          (root.dx * _scale).round(),
+          (root.dy * _scale).round(),
+          0
+        ]);
+    _client.flush();
+    return true;
+  }
 
   WindowState _state = WindowState.normal;
   final NativeWindowId _id;
@@ -431,6 +543,7 @@ final class X11Window
   @override
   void setTitle(String value) {
     throwIfDisposed();
+    _title = value;
     _client.setTopLevelTitle(xcbWindow, value);
     _client.flush();
   }
@@ -525,6 +638,26 @@ final class X11Window
       generation: generation,
       scale: _scale,
     );
+    if (pointerEvent is PointerUpEvent) {
+      _lastPress = null;
+      // If the WM did not grab in time, it cannot see this release itself.
+      if (_interactivePending) {
+        _interactivePending = false;
+        _stateClient?.sendWindowManagerMessage(
+            window: xcbWindow,
+            type: _client.atom('_NET_WM_MOVERESIZE'),
+            data: [0, 0, 11, 1, 1]);
+        _client.flush();
+      }
+    }
+    if (pointerEvent is PointerDownEvent) {
+      _interactivePending = false;
+      _lastPress = pointerEvent;
+      _pressRootX = raw.rootX;
+      _pressRootY = raw.rootY;
+      _pressTimestamp = raw.timestamp;
+      _pressTime = DateTime.now();
+    }
     if (pointerEvent != null) _emit(pointerEvent);
     if (raw.type == xcbKeyPress || raw.type == xcbKeyRelease) {
       X11EventTranslator.translateKey(
@@ -588,6 +721,9 @@ final class X11Window
   }
 
   void _emit(PlatformWindowEvent event) {
+    if (event is WindowResizedEvent || event is WindowStateChangedEvent) {
+      updateClientTitleBar();
+    }
     if (!_events.isClosed) _events.add(event);
   }
 
@@ -639,6 +775,8 @@ final class X11Window
       _closedEventEmitted = true;
       _emit(WindowClosedEvent(windowId: id, generation: generation));
     }
+    disposeClientTitleBar();
+    clientDecorations.dispose();
     _events.close();
     _onClosed(this);
   }

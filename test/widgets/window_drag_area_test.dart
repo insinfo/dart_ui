@@ -2,6 +2,29 @@ import 'package:dart_ui/dart_ui.dart';
 import 'package:test/test.dart';
 
 void main() {
+  test('the drag strip counts double clicks when the backend supplies no count',
+      () {
+    final window = _CaptionWindow();
+    final harness = _Harness(WindowScope(
+        controller: _Controller(window),
+        child: const WindowDragArea(child: SizedBox(width: 400, height: 40))));
+    addTearDown(harness.dispose);
+    for (final ms in [100, 200]) {
+      harness.pointer(PointerDownEvent(
+          windowId: const NativeWindowId(1),
+          generation: 1,
+          timestamp: Duration(milliseconds: ms),
+          pointerId: 0,
+          kind: PointerKind.mouse,
+          logicalPosition: const Offset(160, 20),
+          button: PointerButton.primary));
+      harness.pointer(_up(const Offset(160, 20)));
+    }
+    harness.frame();
+    expect(window.moves, 1);
+    expect(window.state, WindowState.maximised);
+  });
+
   test('integrated caption preserves tabs, drag handle and all three controls',
       () {
     final window = _CaptionWindow();

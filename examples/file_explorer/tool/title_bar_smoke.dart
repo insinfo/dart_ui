@@ -19,7 +19,7 @@ Future<void> main(List<String> args) async {
       places: kDemoPlaces,
       start: const FolderLocation('/Users/ana/Documents'));
   final options = ApplicationOptions.fromArguments(
-      args.where((a) => a != '--hold').toList(),
+      args.where((a) => a != '--hold' && a != '--exercise').toList(),
       size: const Size(900, 650),
       title: 'Integrated title bar smoke',
       titleBar: WindowTitleBar.hidden,
@@ -39,13 +39,46 @@ Future<void> main(List<String> args) async {
     native.setBounds(const Rect.fromLTWH(60, 60, 900, 600));
     await Future<void>.delayed(const Duration(milliseconds: 800));
     if (app.errors.isNotEmpty) throw StateError('${app.errors}');
+    if (args.contains('--exercise')) {
+      if (native is! HiddenTitleBarWindow ||
+          !(native as HiddenTitleBarWindow).isTitleBarHidden) {
+        throw StateError('The backend did not integrate the title bar');
+      }
+      final caption = native as HiddenTitleBarWindow;
+      final stateControl = native as WindowStateControl;
+      Future<void> state(WindowState target) async {
+        if (!stateControl.requestState(target)) {
+          throw StateError('State request refused: $target');
+        }
+        final deadline = DateTime.now().add(const Duration(seconds: 8));
+        while (native.state != target) {
+          if (DateTime.now().isAfter(deadline)) {
+            throw StateError('State timeout: $target, actual ${native.state}');
+          }
+          await Future<void>.delayed(const Duration(milliseconds: 20));
+        }
+        await Future<void>.delayed(const Duration(milliseconds: 200));
+        final bounds = caption.systemButtons.value;
+        if (target == WindowState.fullscreen
+            ? !bounds.isEmpty
+            : bounds.isEmpty) {
+          throw StateError('Incorrect caption bounds in $target: $bounds');
+        }
+      }
+
+      await state(WindowState.maximised);
+      await state(WindowState.normal);
+      await state(WindowState.fullscreen);
+      await state(WindowState.normal);
+      stdout.writeln('TITLEBAR_STATES=PASS backend=${app.backend.name}');
+    }
     stdout.writeln('TITLEBAR_READY size=${native.clientSize}');
     if (native is HiddenTitleBarWindow) {
       stdout.writeln(
           'BUTTONS=${(native as HiddenTitleBarWindow).systemButtons.value}');
     }
     await Future<void>.delayed(
-        Duration(seconds: args.contains('--hold') ? 60 : 1));
+        Duration(seconds: args.contains('--hold') ? 15 : 1));
     if (app.errors.isNotEmpty) throw StateError('${app.errors}');
   } finally {
     app.requestClose();

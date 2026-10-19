@@ -203,7 +203,10 @@ final class _FakeX11WindowClient
 /// A connection that can read and ask for window-manager state, as the real
 /// one does; [_FakeX11WindowClient] alone stands for the doubles that cannot.
 final class _FakeStateClient extends _FakeX11WindowClient
-    implements X11WindowStateClient {
+    implements X11WindowStateClient, X11InteractiveWindowClient {
+  final List<int> ungrabs = [];
+  @override
+  void ungrabPointer(int timestamp) => ungrabs.add(timestamp);
   List<int> netWmState = <int>[];
   int wmState = 1;
   final List<({int type, List<int> data})> messages =
@@ -269,6 +272,92 @@ X11RawEvent _raw({
 }
 
 void main() {
+  test('hidden X11 title bar stays managed and uses native move/resize',
+      () async {
+    final client = _FakeStateClient();
+    final window = _createWindow(client,
+        scale: 2,
+        options: const WindowOptions(
+            size: Size(640, 480),
+            title: 'Tabs',
+            titleBar: WindowTitleBar.hidden));
+    addTearDown(window.dispose);
+    final events = <PlatformWindowEvent>[];
+    final subscription = window.events.listen(events.add);
+    addTearDown(subscription.cancel);
+    expect(client.createRequests.single.overrideRedirect, isFalse);
+    expect(client.createRequests.single.decorated, isFalse);
+    expect(window.clientDecorations.value, isTrue);
+    expect(window.isTitleBarHidden, isTrue);
+    expect(window.systemButtons.value, const Rect.fromLTWH(502, 0, 138, 40));
+    expect(window.beginMove(), isFalse);
+    void press([int button = 1]) => window.handleRawEvent(_raw(
+        type: xcbButtonPress, detail: button, x: 50, y: 15, timestamp: 1234)
+      ..rootX = 730
+      ..rootY = 245);
+    press(3);
+    expect(window.beginMove(), isFalse);
+    press();
+    expect(window.beginMove(), isTrue);
+    expect(client.ungrabs, [1234]);
+    expect(client.messages.last.type, client.atom('_NET_WM_MOVERESIZE'));
+    expect(client.messages.last.data, [730, 245, 8, 1, 1]);
+    expect(window.beginMove(), isFalse,
+        reason: 'one press starts one native grab');
+    await Future<void>.delayed(Duration.zero);
+    expect(events.whereType<PointerCancelEvent>(), hasLength(1));
+    const edges = [
+      WindowResizeEdge.topLeft,
+      WindowResizeEdge.top,
+      WindowResizeEdge.topRight,
+      WindowResizeEdge.right,
+      WindowResizeEdge.bottomRight,
+      WindowResizeEdge.bottom,
+      WindowResizeEdge.bottomLeft,
+      WindowResizeEdge.left
+    ];
+    for (var i = 0; i < edges.length; i++) {
+      press();
+      expect(window.beginResize(edges[i]), isTrue);
+      expect(client.messages.last.data, [730, 245, i, 1, 1]);
+    }
+    window.handleRawEvent(_raw(type: xcbButtonRelease, detail: 1));
+    expect(client.messages.last.data, [0, 0, 11, 1, 1],
+        reason: 'a release the WM missed must cancel its pending native grab');
+    expect(window.beginMove(), isFalse);
+    window.setTitle('Renamed');
+    expect(window.title, 'Renamed');
+    window.handleRawEvent(
+        _raw(type: xcbConfigureNotify, width: 1600, height: 1200));
+    window.flushPendingEvents();
+    expect(window.systemButtons.value, const Rect.fromLTWH(662, 0, 138, 40));
+    client.netWmState = [client.atom('_NET_WM_STATE_FULLSCREEN')];
+    window.handleRawEvent(
+        _raw(type: xcbPropertyNotify)..atom = client.atom('_NET_WM_STATE'));
+    window.flushPendingEvents();
+    expect(window.systemButtons.value, Rect.zero);
+    expect(window.captionState.value, WindowState.fullscreen);
+  });
+
+  test('standard and fixed X11 windows retain their decoration contract', () {
+    final client = _FakeStateClient();
+    final standard = _createWindow(client);
+    expect(standard.isTitleBarHidden, isFalse);
+    expect(standard.clientDecorations.value, isFalse);
+    expect(client.createRequests.single.decorated, isTrue);
+    standard.dispose();
+    final fixed = _createWindow(client,
+        options: const WindowOptions(
+            size: Size(200, 100),
+            resizable: false,
+            titleBar: WindowTitleBar.hidden));
+    addTearDown(fixed.dispose);
+    expect(fixed.canMaximize, isFalse);
+    fixed.toggleMaximized();
+    expect(client.messages, isEmpty);
+    expect(fixed.beginResize(WindowResizeEdge.left), isFalse);
+  });
+
   test('creation converts logical geometry and exposes scale and identity', () {
     final client = _FakeX11WindowClient();
     final window = _createWindow(

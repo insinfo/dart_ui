@@ -34,8 +34,9 @@ import 'widget.dart';
 ///
 /// The bar moves the window when dragged, toggles maximised on a double
 /// click and opens the window system's menu on a right click; its three buttons minimise, toggle maximised and request a close.
+/// Hidden title bars use the application's top strip instead of an extra bar.
 /// The borders start a compositor resize from the edge or corner under the
-/// press. A maximised window has no borders, since it has nothing to resize.
+/// press. Maximized and fullscreen windows have no resize borders.
 final class ClientDecorationFrame extends StatefulWidget {
   const ClientDecorationFrame({
     super.key,
@@ -60,11 +61,16 @@ final class ClientDecorationFrame extends StatefulWidget {
 
 final class _ClientDecorationFrameState extends State<ClientDecorationFrame> {
   ValueNotifier<bool>? _listened;
+  ValueListenable<WindowState>? _caption;
+  void _captionChanged() {
+    if (mounted) setState(() {});
+  }
 
   @override
   void initState() {
     super.initState();
     _listen(widget.window.clientDecorations);
+    _listenCaption();
   }
 
   @override
@@ -72,6 +78,7 @@ final class _ClientDecorationFrameState extends State<ClientDecorationFrame> {
     super.didUpdateWidget(oldWidget);
     if (!identical(oldWidget.window, widget.window)) {
       _listen(widget.window.clientDecorations);
+      _listenCaption();
     }
   }
 
@@ -79,7 +86,18 @@ final class _ClientDecorationFrameState extends State<ClientDecorationFrame> {
   void dispose() {
     _listened?.removeListener(_changed);
     _listened = null;
+    _caption?.removeListener(_captionChanged);
+    _caption = null;
     super.dispose();
+  }
+
+  void _listenCaption() {
+    _caption?.removeListener(_captionChanged);
+    final window = widget.window;
+    _caption = window is ClientCaptionWindow
+        ? (window as ClientCaptionWindow).captionState
+        : null;
+    _caption?.addListener(_captionChanged);
   }
 
   void _listen(ValueNotifier<bool> notifier) {
@@ -103,82 +121,94 @@ final class _ClientDecorationFrameState extends State<ClientDecorationFrame> {
     if (!window.clientDecorations.value) return widget.child;
     final ThemeData theme = Theme.of(context);
     final bool maximized = window.isMaximized;
-    final Widget content = Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: <Widget>[
-        SizedBox(
-          height: widget.titleBarHeight,
-          child: ColoredBox(
-            color: theme.surfaceRaised,
-            child: Row(
-              children: <Widget>[
-                Expanded(
-                  // A right click is the window system's menu, as on a
-                  // title bar it draws itself; the drag and double click
-                  // below only ever see the primary button.
-                  child: PointerListener(
-                    onPointerDown: (PointerDownEvent event) {
-                      if (event.button == PointerButton.secondary) {
-                        window.showWindowMenu(event.logicalPosition);
-                      }
-                    },
-                    child: GestureDetector(
-                      behavior: GestureHitTestBehavior.opaque,
-                      onPanStart: (_) => window.beginMove(),
-                      onDoubleTap: (_) => _toggleMaximized(),
-                      child: Padding(
-                        padding: const EdgeInsets.symmetric(horizontal: 12),
-                        child: Align(
-                          alignment: Alignment.centerLeft,
-                          child: Text(
-                            window.title,
-                            color: theme.foreground,
-                            maxLines: 1,
-                            ellipsis: '…',
+    final bool integrated = window is HiddenTitleBarWindow &&
+        (window as HiddenTitleBarWindow).isTitleBarHidden;
+    final Widget content = integrated
+        ? widget.child
+        : Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: <Widget>[
+              SizedBox(
+                height: widget.titleBarHeight,
+                child: ColoredBox(
+                  color: theme.surfaceRaised,
+                  child: Row(
+                    children: <Widget>[
+                      Expanded(
+                        // A right click is the window system's menu, as on a
+                        // title bar it draws itself; the drag and double click
+                        // below only ever see the primary button.
+                        child: PointerListener(
+                          onPointerDown: (PointerDownEvent event) {
+                            if (event.button == PointerButton.secondary) {
+                              window.showWindowMenu(event.logicalPosition);
+                            }
+                          },
+                          child: GestureDetector(
+                            behavior: GestureHitTestBehavior.opaque,
+                            onPanStart: (_) => window.beginMove(),
+                            onDoubleTap: (_) => _toggleMaximized(),
+                            child: Padding(
+                              padding:
+                                  const EdgeInsets.symmetric(horizontal: 12),
+                              child: Align(
+                                alignment: Alignment.centerLeft,
+                                child: Text(
+                                  window.title,
+                                  color: theme.foreground,
+                                  maxLines: 1,
+                                  ellipsis: '…',
+                                ),
+                              ),
+                            ),
                           ),
                         ),
                       ),
-                    ),
+                      if (window.canMinimize)
+                        _CaptionButton(
+                          key: const ValueKey<String>('csd-minimize'),
+                          size: widget.titleBarHeight,
+                          onPressed: window.minimize,
+                          child: Icon(Icons.indeterminate,
+                              size: widget.titleBarHeight * 0.45,
+                              color: theme.foreground),
+                        ),
+                      _CaptionButton(
+                        key: const ValueKey<String>('csd-maximize'),
+                        size: widget.titleBarHeight,
+                        onPressed: _toggleMaximized,
+                        // Drawn, not a glyph: U+25A1 is missing from the faces a
+                        // bare Linux or macOS install falls back to.
+                        child: _WindowGlyph(
+                          restore: maximized,
+                          extent:
+                              (widget.titleBarHeight * 0.32).roundToDouble(),
+                          color: theme.foreground,
+                        ),
+                      ),
+                      _CaptionButton(
+                        key: const ValueKey<String>('csd-close'),
+                        size: widget.titleBarHeight,
+                        onPressed: window.requestClose,
+                        child: Icon(Icons.close,
+                            size: widget.titleBarHeight * 0.45,
+                            color: theme.foreground),
+                      ),
+                    ],
                   ),
                 ),
-                if (window.canMinimize)
-                  _CaptionButton(
-                    key: const ValueKey<String>('csd-minimize'),
-                    size: widget.titleBarHeight,
-                    onPressed: window.minimize,
-                    child: Icon(Icons.indeterminate,
-                        size: widget.titleBarHeight * 0.45,
-                        color: theme.foreground),
-                  ),
-                _CaptionButton(
-                  key: const ValueKey<String>('csd-maximize'),
-                  size: widget.titleBarHeight,
-                  onPressed: _toggleMaximized,
-                  // Drawn, not a glyph: U+25A1 is missing from the faces a
-                  // bare Linux or macOS install falls back to.
-                  child: _WindowGlyph(
-                    restore: maximized,
-                    extent: (widget.titleBarHeight * 0.32).roundToDouble(),
-                    color: theme.foreground,
-                  ),
-                ),
-                _CaptionButton(
-                  key: const ValueKey<String>('csd-close'),
-                  size: widget.titleBarHeight,
-                  onPressed: window.requestClose,
-                  child: Icon(Icons.close,
-                      size: widget.titleBarHeight * 0.45,
-                      color: theme.foreground),
-                ),
-              ],
-            ),
-          ),
-        ),
-        SizedBox(height: 1, child: ColoredBox(color: theme.border)),
-        Expanded(child: widget.child),
-      ],
-    );
-    if (maximized) return content;
+              ),
+              SizedBox(height: 1, child: ColoredBox(color: theme.border)),
+              Expanded(child: widget.child),
+            ],
+          );
+    if (maximized ||
+        (window is NativeWindow &&
+            (window as NativeWindow).state == WindowState.fullscreen) ||
+        (window is ClientCaptionWindow &&
+            !(window as ClientCaptionWindow).canMaximize)) {
+      return content;
+    }
     final double b = widget.resizeBorder;
     Widget edge(WindowResizeEdge edge) => PointerListener(
           onPointerDown: (_) => window.beginResize(edge),

@@ -107,6 +107,8 @@ final class X11RawEvent {
 
   int x = 0;
   int y = 0;
+  int rootX = 0;
+  int rootY = 0;
   int width = 0;
   int height = 0;
 
@@ -194,6 +196,8 @@ final class X11RawEvent {
     // the previous event cannot be mistaken for a real one.
     x = 0;
     y = 0;
+    rootX = 0;
+    rootY = 0;
     width = 0;
     height = 0;
     count = 0;
@@ -296,6 +300,8 @@ final class X11RawEvent {
       case xcbLeaveNotify:
         timestamp = readU32(event, 4);
         window = readU32(event, 12);
+        rootX = readI16(event, 20);
+        rootY = readI16(event, 22);
         x = readI16(event, 24);
         y = readI16(event, 26);
         // Byte 28 is `state`: the modifiers held *before* this transition, so

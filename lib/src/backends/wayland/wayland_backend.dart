@@ -33,9 +33,9 @@
 ///     carries the details.
 ///   * **Client-side decorations are negotiated but not drawn here.**
 ///     `zxdg_decoration_manager_v1` is used to ask for a server-side frame;
-///     when the compositor has no such protocol (GNOME) the window reports
-///     [WaylandWindow.hasServerSideDecorations] as false and the framework
-///     must draw its own frame. Nothing in this backend paints one.
+///     when the compositor has no such protocol the framework draws its frame.
+///     Hidden title bars use the application's integrated strip instead and
+///     do not negotiate SSD. Nothing in this backend paints decorations.
 ///   * **Drag and drop carries no drag icon.** Receiving is complete and
 ///     starting a drag works, but `DragRequest.feedback` is ignored: a drag
 ///     icon is a `wl_surface` with an shm buffer of its own, which

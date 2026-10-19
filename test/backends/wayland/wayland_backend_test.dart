@@ -601,6 +601,51 @@ void main() {
     });
 
     group('xdg-decoration', () {
+      test(
+          'hidden title bar uses the client strip with or without xdg-decoration',
+          () async {
+        for (final supported in [true, false]) {
+          client.decorationsSupported = supported;
+          final window = await backend.createWindow(const WindowOptions(
+              size: Size(640, 480),
+              titleBar: WindowTitleBar.hidden)) as WaylandWindow;
+          expect(client.decorationRequests, isEmpty,
+              reason:
+                  'without negotiating SSD the protocol leaves decorations to the client');
+          expect(window.clientDecorations.value, isTrue);
+          expect(window.isTitleBarHidden, isTrue);
+          expect(
+              window.systemButtons.value, const Rect.fromLTWH(502, 0, 138, 40));
+          configure(window, 800, 600, 10,
+              stateFlags: 1 << xdgToplevelStateMaximized);
+          backend.pumpEvents();
+          expect(
+              window.systemButtons.value, const Rect.fromLTWH(662, 0, 138, 40));
+          expect(window.captionState.value, WindowState.maximised);
+          configure(window, 1024, 768, 11,
+              stateFlags: 1 << xdgToplevelStateFullscreen);
+          backend.pumpEvents();
+          expect(window.systemButtons.value, Rect.zero);
+          configure(window, 640, 480, 12);
+          backend.pumpEvents();
+          expect(
+              window.systemButtons.value, const Rect.fromLTWH(502, 0, 138, 40));
+          window.dispose();
+        }
+      });
+
+      test('fixed hidden Wayland title bar refuses maximize and resize',
+          () async {
+        final window = await backend.createWindow(const WindowOptions(
+            size: Size(200, 100),
+            resizable: false,
+            titleBar: WindowTitleBar.hidden)) as WaylandWindow;
+        expect(window.canMaximize, isFalse);
+        window.toggleMaximized();
+        expect(window.beginResize(WindowResizeEdge.left), isFalse);
+        expect(client.frameRequests, isEmpty);
+      });
+
       test('a decorated toplevel asks for a server-side frame', () async {
         await createWindow();
         expect(client.decorationRequests, hasLength(1));

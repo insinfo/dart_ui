@@ -4,6 +4,7 @@ library;
 
 import '../geometry/offset.dart';
 import '../geometry/rect.dart';
+import '../gestures/tap.dart' show MultiTapCounter;
 import '../layout/render_proxy_box.dart';
 import '../layout/render_stack.dart' show StackFit;
 import '../platform/input_events.dart';
@@ -80,6 +81,7 @@ final class _RenderDragHandle extends RenderProxyBox
   _RenderDragHandle(this.window);
 
   HiddenTitleBarWindow window;
+  final MultiTapCounter _taps = MultiTapCounter();
 
   @override
   bool hitTestSelf(Offset position) => true;
@@ -93,7 +95,7 @@ final class _RenderDragHandle extends RenderProxyBox
       return;
     }
     if (event.button != PointerButton.primary) return;
-    if (event.clickCount >= 2) {
+    if (_taps.countTap(event) == 2 || event.clickCount == 2) {
       window.toggleMaximized();
     } else {
       window.beginMove();

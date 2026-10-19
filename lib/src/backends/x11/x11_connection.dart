@@ -226,6 +226,12 @@ abstract interface class X11WindowStateClient {
   void writeNetWmState(int window, List<int> atoms);
 }
 
+/// Releases the client's implicit pointer grab before EWMH move/resize.
+abstract interface class X11InteractiveWindowClient
+    implements X11WindowStateClient {
+  void ungrabPointer(int timestamp);
+}
+
 /// The two core-protocol requests that describe the keyboard.
 ///
 /// A separate seam, like [X11CpuClient] and [X11DragDropClient], for the same
@@ -393,6 +399,7 @@ final class X11Connection
         X11ScreenClient,
         X11MonitorClient,
         X11WindowStateClient,
+        X11InteractiveWindowClient,
         X11CursorClient {
   X11Connection._(this.xcb, this.libc, this._handle);
 
@@ -1085,6 +1092,11 @@ final class X11Connection
       xcbEventMaskSubstructureRedirect | xcbEventMaskSubstructureNotify,
       eventScratch,
     );
+  }
+
+  @override
+  void ungrabPointer(int timestamp) {
+    if (!isDisposed) xcb.ungrabPointer(_handle, timestamp);
   }
 
   @override
